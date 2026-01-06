@@ -1,0 +1,218 @@
+# CLAUDE.md
+
+## Project Overview
+
+Plenum is a lightweight, agent-first database control CLI designed for autonomous AI coding agents and exposed via a local MCP server.
+
+It provides a deterministic, least-privilege execution surface for:
+- schema introspection
+- constrained query execution
+
+Plenum is not a human-oriented database client.
+
+The implementation language is Rust.
+
+---
+
+## Core Principles (Non-Negotiable)
+
+1. No query language abstraction
+   - SQL remains vendor-specific.
+   - PostgreSQL SQL ≠ MySQL SQL ≠ SQLite SQL.
+   - Do NOT introduce compatibility layers or “universal SQL”.
+
+2. Agent-first, machine-only
+   - No interactive UX
+   - No REPL or TUI
+   - No autocomplete
+   - No human-friendly output
+   - Stdout MUST be JSON only.
+
+3. Explicit over implicit
+   - No inferred databases, schemas, limits, or permissions.
+   - No auto-commit.
+   - Missing inputs MUST fail fast.
+
+4. Least privilege
+   - Read-only is the default mode.
+   - Writes and DDL require explicit capabilities.
+   - Capability checks occur BEFORE execution.
+
+5. Determinism
+   - Identical inputs produce identical outputs (excluding timing metadata).
+   - Output schemas are stable and versioned.
+
+---
+
+## Non-Goals
+
+Do NOT implement:
+- ORMs
+- query builders
+- migrations
+- interactive shells
+- implicit defaults
+- connection pooling across invocations
+- caching
+- schema inference heuristics
+- human UX features
+
+If a feature primarily benefits humans, it is out of scope.
+
+---
+
+## Supported Databases (MVP)
+
+The MVP MUST support:
+- PostgreSQL
+- MySQL (primary target)
+- SQLite
+
+All engines are first-class and equally constrained.
+
+---
+
+## CLI Surface (MVP)
+
+Exactly three commands:
+
+plenum connect  
+plenum introspect  
+plenum query  
+
+No aliases.  
+No shorthand flags.  
+No nested command trees.
+
+---
+
+## Output Contract
+
+All output is machine-parseable JSON.
+
+### Success Envelope
+
+{
+  "ok": true,
+  "engine": "mysql",
+  "command": "query",
+  "data": {},
+  "meta": {
+    "execution_ms": 14,
+    "rows_returned": 25
+  }
+}
+
+### Error Envelope
+
+{
+  "ok": false,
+  "engine": "mysql",
+  "command": "query",
+  "error": {
+    "code": "CAPABILITY_VIOLATION",
+    "message": "DDL statements are not permitted"
+  }
+}
+
+Stdout MUST NOT include logs or diagnostic text.
+
+---
+
+## Capability Model
+
+All actions are gated by explicit capabilities, including:
+- read_only
+- allow_write
+- allow_ddl
+- max_rows
+- timeout_ms
+
+Violations MUST fail before query execution.
+
+Capabilities are NEVER inferred.
+
+---
+
+## MySQL-Specific Constraints
+
+Because MySQL behavior varies by version and storage engine:
+
+- The engine implementation MUST:
+  - detect server version explicitly
+  - avoid reliance on non-standard INFORMATION_SCHEMA extensions
+  - treat implicit commits (e.g. DDL) as write operations requiring capability flags
+- No MySQL-specific behavior may leak into core logic.
+
+If behavior differs across MySQL versions, it MUST be surfaced explicitly in metadata.
+
+---
+
+## MCP Integration
+
+Plenum is exposed via a local MCP server.
+
+- Each CLI command maps to a single MCP tool
+- Credentials are passed per invocation
+- No persistent sessions
+- No shared global state
+
+The Plenum CLI remains the execution boundary.
+
+---
+
+## Rust Architecture Expectations
+
+The codebase is structured around strict trait boundaries:
+
+- Core logic is engine-agnostic
+- Each engine implements only:
+  - schema introspection
+  - constrained query execution
+- No shared SQL helpers across engines
+
+Engine quirks stay inside engine modules.
+
+---
+
+## Error Handling Rules
+
+- All errors are structured JSON
+- No panics across CLI boundaries
+- No silent fallbacks
+- Capability violations are first-class errors
+- Driver errors are wrapped and normalized
+
+---
+
+## Testing Expectations
+
+- Capability enforcement tests
+- JSON output snapshot tests
+- Engine-specific tests for PostgreSQL, MySQL, and SQLite
+- No tests requiring external cloud services
+
+Tests MUST be deterministic.
+
+---
+
+## Contribution Rules for AI Agents
+
+When contributing:
+- Do NOT broaden scope
+- Do NOT add abstractions without explicit justification
+- Do NOT introduce implicit behavior
+- Prefer deletion over generalization
+- Ask before adding dependencies
+
+When in doubt, choose the simplest explicit implementation.
+
+---
+
+## Guiding Question
+
+Before adding code, ask:
+
+Does this make autonomous agents safer, more deterministic, or more constrained?
+
+If not, it does not belong in Plenum.
