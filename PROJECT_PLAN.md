@@ -264,106 +264,106 @@
 ## Phase 2: CLI Foundation
 
 ### 2.1 CLI Structure
-- [ ] Create `src/main.rs` with CLI entry point
-- [ ] Set up `clap` with four subcommands:
-  - [ ] `connect` - Connection configuration management
-  - [ ] `introspect` - Schema introspection
-  - [ ] `query` - Constrained query execution
-  - [ ] `mcp` - MCP server (hidden from help, for AI agent integration)
-- [ ] Define common flags for connection parameters:
-  - [ ] `--engine <postgres|mysql|sqlite>`
-  - [ ] `--host`, `--port`, `--user`, `--password`, `--database`, `--file`
-- [ ] Ensure stdout is JSON-only (for both CLI and MCP modes)
-- [ ] Redirect logs to stderr if needed for debugging
-- [ ] Route `mcp` subcommand to `mcp::serve()` function
-- [ ] Mark `mcp` subcommand as `#[command(hide = true)]` in clap
+- [x] Create `src/main.rs` with CLI entry point ✅
+- [x] Set up `clap` with four subcommands: ✅
+  - [x] `connect` - Connection configuration management ✅
+  - [x] `introspect` - Schema introspection ✅
+  - [x] `query` - Constrained query execution ✅
+  - [x] `mcp` - MCP server (hidden from help, for AI agent integration) ✅
+- [x] Define common flags for connection parameters: ✅
+  - [x] `--engine <postgres|mysql|sqlite>` ✅
+  - [x] `--host`, `--port`, `--user`, `--password`, `--database`, `--file` ✅
+- [x] Ensure stdout is JSON-only (for both CLI and MCP modes) ✅
+- [x] Redirect logs to stderr if needed for debugging ✅
+- [x] Route `mcp` subcommand to `mcp::serve()` function ✅
+- [x] Mark `mcp` subcommand as `#[command(hide = true)]` in clap ✅
 
 ### 2.2 Connect Command
-- [ ] Define `connect` subcommand arguments:
-  - [ ] `--name <NAME>` (connection profile name, optional)
-  - [ ] `--engine <ENGINE>` (required for new connections)
-  - [ ] `--host <HOST>` (for postgres/mysql)
-  - [ ] `--port <PORT>` (for postgres/mysql)
-  - [ ] `--user <USER>` (for postgres/mysql)
-  - [ ] `--password <PASSWORD>` (for postgres/mysql)
-  - [ ] `--password-env <VAR>` (use env var instead of plain password)
-  - [ ] `--database <DATABASE>` (for postgres/mysql)
-  - [ ] `--file <PATH>` (for sqlite)
-  - [ ] `--save <local|global>` (where to save config)
-- [ ] Implement interactive connection picker (no args):
-  - [ ] Display list of existing named connections
-  - [ ] Show connection details (engine, host, database)
-  - [ ] Include "--- New ---" option to create new connection
-  - [ ] Allow selection via numbered input
-- [ ] Implement interactive configuration wizard:
-  - [ ] Prompt for engine selection (postgres, mysql, sqlite)
-  - [ ] Prompt for connection details based on engine
-  - [ ] Prompt for connection name
-  - [ ] Prompt for save location (local/global)
-  - [ ] Use `dialoguer` or `inquire` for TUI prompts
-- [ ] Implement non-interactive config creation (with flags):
-  - [ ] Validate all required fields present
-  - [ ] Create or update named connection
-  - [ ] Save to specified location
-- [ ] Implement connection validation:
-  - [ ] Call `DatabaseEngine::validate_connection()`
-  - [ ] Test connectivity before saving
-  - [ ] Return connection metadata (version, server info)
-- [ ] Implement config persistence:
-  - [ ] Save to local (`.plenum/config.json`)
-  - [ ] Save to global (`~/.config/plenum/connections.json`)
-  - [ ] Update existing connections
-  - [ ] Set default connection if first connection
-- [ ] Return JSON success/error envelope
-- [ ] Do NOT maintain persistent connections (validate then disconnect)
+- [x] Define `connect` subcommand arguments: ✅
+  - [x] `--name <NAME>` (connection profile name, optional) ✅
+  - [x] `--engine <ENGINE>` (required for new connections) ✅
+  - [x] `--host <HOST>` (for postgres/mysql) ✅
+  - [x] `--port <PORT>` (for postgres/mysql) ✅
+  - [x] `--user <USER>` (for postgres/mysql) ✅
+  - [x] `--password <PASSWORD>` (for postgres/mysql) ✅
+  - [x] `--password-env <VAR>` (use env var instead of plain password) ✅
+  - [x] `--database <DATABASE>` (for postgres/mysql) ✅
+  - [x] `--file <PATH>` (for sqlite) ✅
+  - [x] `--save <local|global>` (where to save config) ✅
+- [x] Implement interactive connection picker (no args): ✅
+  - [x] Display list of existing named connections ✅
+  - [x] Show connection details (engine, host, database) ✅
+  - [x] Include "--- New ---" option to create new connection ✅
+  - [x] Allow selection via numbered input ✅
+- [x] Implement interactive configuration wizard: ✅
+  - [x] Prompt for engine selection (postgres, mysql, sqlite) ✅
+  - [x] Prompt for connection details based on engine ✅
+  - [x] Prompt for connection name ✅
+  - [x] Prompt for save location (local/global) ✅
+  - [x] Use `dialoguer` or `inquire` for TUI prompts ✅
+- [x] Implement non-interactive config creation (with flags): ✅
+  - [x] Validate all required fields present ✅
+  - [x] Create or update named connection ✅
+  - [x] Save to specified location ✅
+- [x] Implement connection validation: ⚠️ Deferred to Phase 3-5 (engines not implemented)
+  - [ ] Call `DatabaseEngine::validate_connection()` (Phase 3-5)
+  - [ ] Test connectivity before saving (Phase 3-5)
+  - [ ] Return connection metadata (Phase 3-5: version, server info)
+- [x] Implement config persistence: ✅
+  - [x] Save to local (`.plenum/config.json`) ✅
+  - [x] Save to global (`~/.config/plenum/connections.json`) ✅
+  - [x] Update existing connections ✅
+  - [x] Set default connection if first connection ✅
+- [x] Return JSON success/error envelope ✅
+- [x] Do NOT maintain persistent connections (validate then disconnect) ✅
 
 ### 2.3 Introspect Command
-- [ ] Define `introspect` subcommand arguments:
-  - [ ] `--name <NAME>` (use named connection, optional)
-  - [ ] Same connection parameters as `connect` (for overrides)
-  - [ ] `--schema <SCHEMA>` (optional filter)
-- [ ] Implement connection resolution:
-  - [ ] Load from config if `--name` provided
-  - [ ] Load from default connection if no flags provided
-  - [ ] Override config with explicit CLI flags
-  - [ ] Error if no connection available
-- [ ] Implement schema introspection orchestration:
-  - [ ] Build `ConnectionConfig` from resolved connection
-  - [ ] Call `DatabaseEngine::introspect()`
-- [ ] Return JSON with schema information:
-  - [ ] Tables
-  - [ ] Columns (name, type, nullable)
-  - [ ] Primary keys
-  - [ ] Foreign keys
-  - [ ] Indexes
-- [ ] Include execution metadata
+- [x] Define `introspect` subcommand arguments: ✅
+  - [x] `--name <NAME>` (use named connection, optional) ✅
+  - [x] Same connection parameters as `connect` (for overrides) ✅
+  - [x] `--schema <SCHEMA>` (optional filter) ✅
+- [x] Implement connection resolution: ✅
+  - [x] Load from config if `--name` provided ✅
+  - [x] Load from default connection if no flags provided ✅
+  - [x] Override config with explicit CLI flags ✅
+  - [x] Error if no connection available ✅
+- [x] Implement schema introspection orchestration: ⚠️ CLI layer complete, engine calls deferred to Phase 3-5
+  - [x] Build `ConnectionConfig` from resolved connection ✅
+  - [ ] Call `DatabaseEngine::introspect()` (Phase 3-5)
+- [x] Return JSON with schema information: ⚠️ Returns NOT_IMPLEMENTED until Phase 3-5
+  - [ ] Tables (Phase 3-5)
+  - [ ] Columns (name, type, nullable) (Phase 3-5)
+  - [ ] Primary keys (Phase 3-5)
+  - [ ] Foreign keys (Phase 3-5)
+  - [ ] Indexes (Phase 3-5)
+- [x] Include execution metadata ✅
 
 ### 2.4 Query Command
-- [ ] Define `query` subcommand arguments:
-  - [ ] `--name <NAME>` (use named connection, optional)
-  - [ ] Same connection parameters as `connect` (for overrides)
-  - [ ] `--sql <SQL>` or `--file <PATH>` (required)
-  - [ ] `--allow-write` (explicit flag, default: false)
-  - [ ] `--allow-ddl` (explicit flag, default: false)
-  - [ ] `--max-rows <N>` (optional)
-  - [ ] `--timeout-ms <MS>` (optional)
-- [ ] Implement connection resolution:
-  - [ ] Load from config if `--name` provided
-  - [ ] Load from default connection if no flags provided
-  - [ ] Override config with explicit CLI flags
-  - [ ] Error if no connection available
-- [ ] Build `Capabilities` struct from flags:
-  - [ ] Read-only by default (no flag needed)
-  - [ ] `allow_write` from `--allow-write` flag
-  - [ ] `allow_ddl` from `--allow-ddl` flag
-  - [ ] `max_rows` from `--max-rows`
-  - [ ] `timeout_ms` from `--timeout-ms`
-- [ ] Validate capabilities before execution
-- [ ] Execute query through engine trait:
-  - [ ] Build `ConnectionConfig` from resolved connection
-  - [ ] Call `DatabaseEngine::execute()`
-- [ ] Return JSON with query results
-- [ ] Include execution metadata
+- [x] Define `query` subcommand arguments: ✅
+  - [x] `--name <NAME>` (use named connection, optional) ✅
+  - [x] Same connection parameters as `connect` (for overrides) ✅
+  - [x] `--sql <SQL>` or `--sql-file <PATH>` (required) ✅
+  - [x] `--allow-write` (explicit flag, default: false) ✅
+  - [x] `--allow-ddl` (explicit flag, default: false) ✅
+  - [x] `--max-rows <N>` (optional) ✅
+  - [x] `--timeout-ms <MS>` (optional) ✅
+- [x] Implement connection resolution: ✅
+  - [x] Load from config if `--name` provided ✅
+  - [x] Load from default connection if no flags provided ✅
+  - [x] Override config with explicit CLI flags ✅
+  - [x] Error if no connection available ✅
+- [x] Build `Capabilities` struct from flags: ✅
+  - [x] Read-only by default (no flag needed) ✅
+  - [x] `allow_write` from `--allow-write` flag ✅
+  - [x] `allow_ddl` from `--allow-ddl` flag ✅
+  - [x] `max_rows` from `--max-rows` ✅
+  - [x] `timeout_ms` from `--timeout-ms` ✅
+- [x] Validate capabilities before execution ✅
+- [x] Execute query through engine trait: ⚠️ CLI layer complete, engine calls deferred to Phase 3-5
+  - [x] Build `ConnectionConfig` from resolved connection ✅
+  - [ ] Call `DatabaseEngine::execute()` (Phase 3-5)
+- [x] Return JSON with query results ⚠️ Returns NOT_IMPLEMENTED until Phase 3-5 ✅
+- [x] Include execution metadata ✅
 
 ---
 
