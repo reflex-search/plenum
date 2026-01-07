@@ -1,0 +1,12 @@
+# Cargo configuration for Plenum
+
+[target.'cfg(all())']
+rustflags = [
+    "-W", "clippy::all",
+    "-W", "clippy::pedantic",
+    "-W", "clippy::nursery",
+    # Allow some pedantic lints that are too noisy
+    "-A", "clippy::module-name-repetitions",
+    "-A", "clippy::missing-errors-doc",
+    "-A", "clippy::missing-panics-doc",
+]

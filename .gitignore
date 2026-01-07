@@ -1,0 +1,36 @@
+# Rust build artifacts
+/target
+
+# IDE directories
+/.idea
+/.vscode
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Cargo
+# NOTE: Cargo.lock is NOT ignored - it should be committed for binary projects
+
+# Test artifacts
+*.profraw
+*.profdata
+
+# Benchmarking
+/criterion
+
+# Generated documentation
+/doc

@@ -1,0 +1,5 @@
+[toolchain]
+channel = "stable"
+# Minimum Supported Rust Version (MSRV): 1.70+
+# We use stable channel to ensure compatibility with latest async/await features
+# and recent improvements to the Rust compiler.

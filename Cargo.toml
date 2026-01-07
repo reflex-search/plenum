@@ -1,0 +1,62 @@
+[package]
+name = "plenum"
+version = "0.1.0"
+edition = "2021"
+authors = ["Plenum Contributors"]
+license = "MIT OR Apache-2.0"
+description = "Agent-first database control CLI with least-privilege execution"
+repository = "https://github.com/yourusername/plenum"
+keywords = ["database", "cli", "mcp", "agent", "sql"]
+categories = ["command-line-utilities", "database"]
+
+[lib]
+name = "plenum"
+path = "src/lib.rs"
+
+[[bin]]
+name = "plenum"
+path = "src/main.rs"
+
+[dependencies]
+# CLI framework
+clap = { version = "4.5", features = ["derive"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+schemars = "0.8"  # JSON schema generation for MCP tool definitions
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Async runtime (required by rmcp and async database drivers)
+tokio = { version = "1.0", features = ["full"] }
+
+# MCP server (official Rust SDK)
+rmcp = "0.1"
+
+# Configuration management
+dialoguer = "0.11"  # Interactive prompts for connection setup
+dirs = "5.0"        # Cross-platform configuration directory paths
+
+# Database drivers (native drivers only, NO sqlx)
+# Maximum engine isolation - each driver is completely independent
+# NOTE: Made optional for Phase 0 to avoid build dependency issues
+# Will be enabled as required features in Phases 3-5 when implementing engines
+tokio-postgres = { version = "0.7", optional = true }  # PostgreSQL native driver
+mysql_async = { version = "0.34", optional = true }     # MySQL native async driver
+rusqlite = { version = "0.32", optional = true }        # SQLite native driver
+
+[features]
+default = []
+postgres = ["dep:tokio-postgres"]
+mysql = ["dep:mysql_async"]
+sqlite = ["dep:rusqlite"]
+all-engines = ["postgres", "mysql", "sqlite"]
+
+[dev-dependencies]
+# Testing utilities
+pretty_assertions = "1.4"  # Better test output formatting
+insta = "1.34"             # Snapshot testing for JSON output validation
+criterion = "0.5"          # Benchmarking framework
