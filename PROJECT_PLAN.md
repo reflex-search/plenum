@@ -94,289 +94,336 @@
 ## Phase 1: Core Architecture
 
 ### 1.1 Define Core Traits
-- [ ] Create `src/engine/mod.rs` with trait definitions
-- [ ] Define `DatabaseEngine` trait (stateless design)
-  - [ ] `fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo>`
-  - [ ] `fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo>`
-  - [ ] `fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult>`
-- [ ] Define `Capabilities` struct
-  - [ ] `allow_write: bool` (default: false)
-  - [ ] `allow_ddl: bool` (default: false)
-  - [ ] `max_rows: Option<usize>`
-  - [ ] `timeout_ms: Option<u64>`
-- [ ] Define `ConnectionConfig` struct
-  - [ ] `engine: DatabaseType`
-  - [ ] `host: Option<String>` (for postgres/mysql)
-  - [ ] `port: Option<u16>` (for postgres/mysql)
-  - [ ] `user: Option<String>` (for postgres/mysql)
-  - [ ] `password: Option<String>` (for postgres/mysql)
-  - [ ] `database: Option<String>` (for postgres/mysql)
-  - [ ] `file: Option<PathBuf>` (for sqlite)
-- [ ] Define `ConnectionInfo` struct (returned by validate_connection)
-  - [ ] `database_version: String`
-  - [ ] `server_info: String`
-  - [ ] `connected_database: String`
-  - [ ] `user: String`
-- [ ] Define `SchemaInfo` struct
-- [ ] Define `QueryResult` struct
+- [x] Create `src/engine/mod.rs` with trait definitions ✅
+- [x] Define `DatabaseEngine` trait (stateless design) ✅
+  - [x] `fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo>` ✅
+  - [x] `fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo>` ✅
+  - [x] `fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult>` ✅
+- [x] Define `Capabilities` struct ✅
+  - [x] `allow_write: bool` (default: false) ✅
+  - [x] `allow_ddl: bool` (default: false) ✅
+  - [x] `max_rows: Option<usize>` ✅
+  - [x] `timeout_ms: Option<u64>` ✅
+- [x] Define `ConnectionConfig` struct ✅
+  - [x] `engine: DatabaseType` ✅
+  - [x] `host: Option<String>` (for postgres/mysql) ✅
+  - [x] `port: Option<u16>` (for postgres/mysql) ✅
+  - [x] `user: Option<String>` (for postgres/mysql) ✅
+  - [x] `password: Option<String>` (for postgres/mysql) ✅
+  - [x] `database: Option<String>` (for postgres/mysql) ✅
+  - [x] `file: Option<PathBuf>` (for sqlite) ✅
+- [x] Define `ConnectionInfo` struct (returned by validate_connection) ✅
+  - [x] `database_version: String` ✅
+  - [x] `server_info: String` ✅
+  - [x] `connected_database: String` ✅
+  - [x] `user: String` ✅
+- [x] Define `SchemaInfo` struct ✅
+- [x] Define `QueryResult` struct ✅
 
 ### 1.2 Define Output Envelope Types
-- [ ] Create `src/output/mod.rs`
-- [ ] Define `SuccessEnvelope<T>` struct
-  - [ ] `ok: bool` (always true)
-  - [ ] `engine: String`
-  - [ ] `command: String`
-  - [ ] `data: T`
-  - [ ] `meta: Metadata`
-- [ ] Define `ErrorEnvelope` struct
-  - [ ] `ok: bool` (always false)
-  - [ ] `engine: String`
-  - [ ] `command: String`
-  - [ ] `error: ErrorInfo`
-- [ ] Define `ErrorInfo` struct
-  - [ ] `code: String`
-  - [ ] `message: String`
-- [ ] Define `Metadata` struct
-  - [ ] `execution_ms: u64`
-  - [ ] `rows_returned: Option<usize>`
-- [ ] Implement `Serialize` for all envelope types
+- [x] Create `src/output/mod.rs` ✅
+- [x] Define `SuccessEnvelope<T>` struct ✅
+  - [x] `ok: bool` (always true) ✅
+  - [x] `engine: String` ✅
+  - [x] `command: String` ✅
+  - [x] `data: T` ✅
+  - [x] `meta: Metadata` ✅
+- [x] Define `ErrorEnvelope` struct ✅
+  - [x] `ok: bool` (always false) ✅
+  - [x] `engine: String` ✅
+  - [x] `command: String` ✅
+  - [x] `error: ErrorInfo` ✅
+- [x] Define `ErrorInfo` struct ✅
+  - [x] `code: String` ✅
+  - [x] `message: String` ✅
+- [x] Define `Metadata` struct ✅
+  - [x] `execution_ms: u64` ✅
+  - [x] `rows_returned: Option<usize>` ✅
+- [x] Implement `Serialize` for all envelope types ✅
 
 ### 1.3 Error Handling Infrastructure
-- [ ] Create `src/error/mod.rs`
-- [ ] Define `PlenumError` enum with variants:
-  - [ ] `CapabilityViolation(String)`
-  - [ ] `ConnectionFailed(String)`
-  - [ ] `QueryFailed(String)`
-  - [ ] `InvalidInput(String)`
-  - [ ] `EngineError { engine: String, detail: String }`
-- [ ] Implement error code mapping
-- [ ] Implement conversion to `ErrorEnvelope`
-- [ ] Ensure no panics across public boundaries
+- [x] Create `src/error/mod.rs` ✅
+- [x] Define `PlenumError` enum with variants: ✅
+  - [x] `CapabilityViolation(String)` ✅
+  - [x] `ConnectionFailed(String)` ✅
+  - [x] `QueryFailed(String)` ✅
+  - [x] `InvalidInput(String)` ✅
+  - [x] `EngineError { engine: String, detail: String }` ✅
+- [x] Implement error code mapping ✅
+- [x] Implement conversion to `ErrorEnvelope` ✅
+- [x] Ensure no panics across public boundaries ✅
 
 ### 1.4 Capability Validation
-- [ ] Create `src/capability/mod.rs`
-- [ ] Implement capability validator
-- [ ] **SQL Categorization Strategy: Regex-based with engine-specific implementations**
-  - [ ] **Rationale:** Simplest explicit implementation, no external dependencies, respects vendor SQL differences
-  - [ ] **Pattern:** Each engine implements its own `categorize_query(sql: &str) -> Result<QueryCategory>` logic
-  - [ ] **No shared SQL helpers across engines** (aligns with CLAUDE.md principle)
-- [ ] Define SQL statement categorization:
-  - [ ] Read-only: SELECT, WITH ... SELECT (CTEs)
-  - [ ] Write: INSERT, UPDATE, DELETE, CALL/EXEC (stored procedures)
-  - [ ] DDL: CREATE, DROP, ALTER, TRUNCATE, RENAME
-  - [ ] Transaction control: BEGIN, COMMIT, ROLLBACK (treat as read-only)
-- [ ] Implement SQL pre-processing (before categorization):
-  - [ ] Trim leading/trailing whitespace
-  - [ ] Strip SQL comments: `--` line comments and `/* */` block comments
-  - [ ] Normalize to uppercase for pattern matching
-  - [ ] **Detect multi-statement queries** (contains `;` separators)
-  - [ ] **Reject multi-statement queries in MVP** (safest approach, can relax post-MVP)
-- [ ] Implement engine-specific categorization:
-  - [ ] PostgreSQL: Standard SQL categorization
-  - [ ] MySQL: Include implicit commit DDL list (CREATE/ALTER/DROP/TRUNCATE/RENAME/LOCK TABLES)
-  - [ ] SQLite: SQLite-specific DDL handling
-- [ ] Handle edge cases:
-  - [ ] **EXPLAIN queries**: Strip EXPLAIN prefix, categorize underlying statement
-  - [ ] **EXPLAIN ANALYZE**: Categorize underlying statement (executes in PostgreSQL)
-  - [ ] **CTEs (WITH)**: Match final statement type (e.g., `WITH ... SELECT` → read-only)
-  - [ ] **Stored procedures (CALL/EXEC)**: Treat as write (conservative, procedures can do anything)
-  - [ ] **Transaction control (BEGIN/COMMIT/ROLLBACK)**: Treat as read-only (no-op without write capability)
-  - [ ] **Unknown statement types**: Treat as DDL (fail-safe, most restrictive)
-  - [ ] **Empty queries**: Return error
-  - [ ] **Parsing errors**: Return error
-- [ ] Implement capability hierarchy:
-  - [ ] **DDL implies write**: If `allow_ddl = true`, treat `allow_write` as true
-  - [ ] **Write does NOT imply DDL**: `allow_write` alone cannot execute DDL
-  - [ ] Read-only is default (both `allow_write` and `allow_ddl` are false)
-  - [ ] Rationale: DDL operations are inherently write operations (more dangerous)
-- [ ] Implement pre-execution capability checks:
-  - [ ] DDL queries require `allow_ddl = true` (explicit flag required)
-  - [ ] Write queries require `allow_write = true` OR `allow_ddl = true`
-  - [ ] Read-only queries always permitted
-- [ ] Handle MySQL implicit commit cases:
-  - [ ] Maintain explicit list of DDL statements that cause implicit commit
-  - [ ] Document in MySQL engine module
-  - [ ] Surface in error messages if needed
-- [ ] Add capability validation unit tests:
-  - [ ] **Comprehensive edge case matrix per engine**
-  - [ ] Comment variations (`--`, `/* */`, mixed)
-  - [ ] Whitespace variations (leading, trailing, mixed)
-  - [ ] Case sensitivity (lowercase, uppercase, mixed)
-  - [ ] CTE queries (`WITH ... SELECT`, `WITH ... INSERT`)
-  - [ ] EXPLAIN queries (with and without ANALYZE)
-  - [ ] Transaction control (BEGIN, COMMIT, ROLLBACK)
-  - [ ] Multi-statement detection (should reject)
-  - [ ] Unknown statement types (should default to DDL)
-  - [ ] Empty queries (should error)
-  - [ ] Stored procedure calls (CALL, EXEC)
-  - [ ] Engine-specific edge cases (PostgreSQL/MySQL/SQLite quirks)
+- [x] Create `src/capability/mod.rs` ✅
+- [x] Implement capability validator ✅
+- [x] **SQL Categorization Strategy: Regex-based with engine-specific implementations** ✅
+  - [x] **Rationale:** Simplest explicit implementation, no external dependencies, respects vendor SQL differences ✅
+  - [x] **Pattern:** Each engine implements its own `categorize_query(sql: &str) -> Result<QueryCategory>` logic ✅
+  - [x] **No shared SQL helpers across engines** (aligns with CLAUDE.md principle) ✅
+- [x] Define SQL statement categorization: ✅
+  - [x] Read-only: SELECT, WITH ... SELECT (CTEs) ✅
+  - [x] Write: INSERT, UPDATE, DELETE, CALL/EXEC (stored procedures) ✅
+  - [x] DDL: CREATE, DROP, ALTER, TRUNCATE, RENAME ✅
+  - [x] Transaction control: BEGIN, COMMIT, ROLLBACK (treat as read-only) ✅
+- [x] Implement SQL pre-processing (before categorization): ✅
+  - [x] Trim leading/trailing whitespace ✅
+  - [x] Strip SQL comments: `--` line comments and `/* */` block comments ✅
+  - [x] Normalize to uppercase for pattern matching ✅
+  - [x] **Detect multi-statement queries** (contains `;` separators) ✅
+  - [x] **Reject multi-statement queries in MVP** (safest approach, can relax post-MVP) ✅
+- [x] Implement engine-specific categorization: ✅
+  - [x] PostgreSQL: Standard SQL categorization ✅
+  - [x] MySQL: Include implicit commit DDL list (CREATE/ALTER/DROP/TRUNCATE/RENAME/LOCK TABLES) ✅
+  - [x] SQLite: SQLite-specific DDL handling ✅
+- [x] Handle edge cases: ✅
+  - [x] **EXPLAIN queries**: Strip EXPLAIN prefix, categorize underlying statement ✅
+  - [x] **EXPLAIN ANALYZE**: Categorize underlying statement (executes in PostgreSQL) ✅
+  - [x] **CTEs (WITH)**: Match final statement type (e.g., `WITH ... SELECT` → read-only) ✅
+  - [x] **Stored procedures (CALL/EXEC)**: Treat as write (conservative, procedures can do anything) ✅
+  - [x] **Transaction control (BEGIN/COMMIT/ROLLBACK)**: Treat as read-only (no-op without write capability) ✅
+  - [x] **Unknown statement types**: Treat as DDL (fail-safe, most restrictive) ✅
+  - [x] **Empty queries**: Return error ✅
+  - [x] **Parsing errors**: Return error ✅
+- [x] Implement capability hierarchy: ✅
+  - [x] **DDL implies write**: If `allow_ddl = true`, treat `allow_write` as true ✅
+  - [x] **Write does NOT imply DDL**: `allow_write` alone cannot execute DDL ✅
+  - [x] Read-only is default (both `allow_write` and `allow_ddl` are false) ✅
+  - [x] Rationale: DDL operations are inherently write operations (more dangerous) ✅
+- [x] Implement pre-execution capability checks: ✅
+  - [x] DDL queries require `allow_ddl = true` (explicit flag required) ✅
+  - [x] Write queries require `allow_write = true` OR `allow_ddl = true` ✅
+  - [x] Read-only queries always permitted ✅
+- [x] Handle MySQL implicit commit cases: ✅
+  - [x] Maintain explicit list of DDL statements that cause implicit commit ✅
+  - [x] Document in MySQL engine module ✅
+  - [x] Surface in error messages if needed ✅
+- [x] Add capability validation unit tests: ✅
+  - [x] **Comprehensive edge case matrix per engine** ✅
+  - [x] Comment variations (`--`, `/* */`, mixed) ✅
+  - [x] Whitespace variations (leading, trailing, mixed) ✅
+  - [x] Case sensitivity (lowercase, uppercase, mixed) ✅
+  - [x] CTE queries (`WITH ... SELECT`, `WITH ... INSERT`) ✅
+  - [x] EXPLAIN queries (with and without ANALYZE) ✅
+  - [x] Transaction control (BEGIN, COMMIT, ROLLBACK) ✅
+  - [x] Multi-statement detection (should reject) ✅
+  - [x] Unknown statement types (should default to DDL) ✅
+  - [x] Empty queries (should error) ✅
+  - [x] Stored procedure calls (CALL, EXEC) ✅
+  - [x] Engine-specific edge cases (PostgreSQL/MySQL/SQLite quirks) ✅
 
 ### 1.5 Configuration Management
-- [ ] Create `src/config/mod.rs`
-- [ ] Define configuration file formats:
-  - [ ] Local: `.plenum/config.json` (team-shareable)
-  - [ ] Global: `~/.config/plenum/connections.json` (per-user)
-- [ ] Define `ConnectionRegistry` for loading/saving configs
-- [ ] Implement config file structure:
-  - [ ] Named connection profiles
-  - [ ] Default connection selection
-  - [ ] Per-project scoping for global config (keyed by working directory)
-- [ ] Implement config loading with precedence:
-  - [ ] Explicit CLI flags (highest priority)
-  - [ ] Local config (`.plenum/config.json`)
-  - [ ] Global config (`~/.config/plenum/connections.json`)
-- [ ] Support environment variable substitution:
-  - [ ] `password_env` field for credential security
-  - [ ] Resolve env vars at runtime
-- [ ] Implement config saving:
-  - [ ] Save to local vs global locations
-  - [ ] Update existing named connections
-  - [ ] Create new named connections
-- [ ] Add config validation:
-  - [ ] Required fields per engine type
-  - [ ] Connection name uniqueness
-  - [ ] File permissions checks
-- [ ] Add config migration/versioning support
-- [ ] Implement connection resolution logic:
-  - [ ] By name (`--name prod`)
-  - [ ] Runtime parameter overrides
-  - [ ] Fallback to default connection
+- [x] Create `src/config/mod.rs` ✅
+- [x] Define configuration file formats: ✅
+  - [x] Local: `.plenum/config.json` (team-shareable) ✅
+  - [x] Global: `~/.config/plenum/connections.json` (per-user) ✅
+- [x] Define `ConnectionRegistry` for loading/saving configs ✅
+- [x] Implement config file structure: ✅
+  - [x] Named connection profiles ✅
+  - [x] Default connection selection ✅
+  - [x] Per-project scoping for global config (keyed by working directory) ✅
+- [x] Implement config loading with precedence: ✅
+  - [x] Explicit CLI flags (highest priority) ✅
+  - [x] Local config (`.plenum/config.json`) ✅
+  - [x] Global config (`~/.config/plenum/connections.json`) ✅
+- [x] Support environment variable substitution: ✅
+  - [x] `password_env` field for credential security ✅
+  - [x] Resolve env vars at runtime ✅
+- [x] Implement config saving: ✅
+  - [x] Save to local vs global locations ✅
+  - [x] Update existing named connections ✅
+  - [x] Create new named connections ✅
+- [x] Add config validation: ✅
+  - [x] Required fields per engine type ✅
+  - [x] Connection name uniqueness ✅
+  - [x] File permissions checks ✅
+- [x] Add config migration/versioning support ✅
+- [x] Implement connection resolution logic: ✅
+  - [x] By name (`--name prod`) ✅
+  - [x] Runtime parameter overrides ✅
+  - [x] Fallback to default connection ✅
 
 ### 1.6 Library Module Structure
-- [ ] Create `src/lib.rs` with public API exports
-- [ ] **IMPORTANT:** Design all modules for reuse by both CLI and MCP
-- [ ] Export core types for both CLI and MCP use:
-  - [ ] `pub use engine::{DatabaseEngine, ConnectionConfig, ConnectionInfo, SchemaInfo, QueryResult};`
-  - [ ] `pub use capability::Capabilities;`
-  - [ ] `pub use output::{SuccessEnvelope, ErrorEnvelope};`
-  - [ ] `pub use config::{resolve_connection, save_connection};`
-  - [ ] `pub use error::PlenumError;`
-- [ ] Design internal functions to be CLI/MCP agnostic:
-  - [ ] `execute_connect(config: ConnectionConfig) -> Result<ConnectionInfo>`
-  - [ ] `execute_introspect(config: ConnectionConfig, filter: Option<&str>) -> Result<SchemaInfo>`
-  - [ ] `execute_query(config: ConnectionConfig, sql: &str, caps: Capabilities) -> Result<QueryResult>`
-- [ ] Ensure all business logic lives in library modules, not in CLI/MCP wrappers
-- [ ] CLI and MCP should be thin wrappers calling library functions
-- [ ] Document public API in module-level docs
+- [x] Create `src/lib.rs` with public API exports ✅
+- [x] **IMPORTANT:** Design all modules for reuse by both CLI and MCP ✅
+- [x] Export core types for both CLI and MCP use: ✅
+  - [x] `pub use engine::{DatabaseEngine, ConnectionConfig, ConnectionInfo, SchemaInfo, QueryResult};` ✅
+  - [x] `pub use capability::Capabilities;` ✅
+  - [x] `pub use output::{SuccessEnvelope, ErrorEnvelope};` ✅
+  - [x] `pub use config::{resolve_connection, save_connection};` ✅
+  - [x] `pub use error::PlenumError;` ✅
+- [x] Design internal functions to be CLI/MCP agnostic: ✅
+  - [x] `execute_connect(config: ConnectionConfig) -> Result<ConnectionInfo>` ✅
+  - [x] `execute_introspect(config: ConnectionConfig, filter: Option<&str>) -> Result<SchemaInfo>` ✅
+  - [x] `execute_query(config: ConnectionConfig, sql: &str, caps: Capabilities) -> Result<QueryResult>` ✅
+- [x] Ensure all business logic lives in library modules, not in CLI/MCP wrappers ✅
+- [x] CLI and MCP should be thin wrappers calling library functions ✅
+- [x] Document public API in module-level docs ✅
 
 ---
 
 ## Phase 2: CLI Foundation
 
 ### 2.1 CLI Structure
-- [ ] Create `src/main.rs` with CLI entry point
-- [ ] Set up `clap` with four subcommands:
-  - [ ] `connect` - Connection configuration management
-  - [ ] `introspect` - Schema introspection
-  - [ ] `query` - Constrained query execution
-  - [ ] `mcp` - MCP server (hidden from help, for AI agent integration)
-- [ ] Define common flags for connection parameters:
-  - [ ] `--engine <postgres|mysql|sqlite>`
-  - [ ] `--host`, `--port`, `--user`, `--password`, `--database`, `--file`
-- [ ] Ensure stdout is JSON-only (for both CLI and MCP modes)
-- [ ] Redirect logs to stderr if needed for debugging
-- [ ] Route `mcp` subcommand to `mcp::serve()` function
-- [ ] Mark `mcp` subcommand as `#[command(hide = true)]` in clap
+- [x] Create `src/main.rs` with CLI entry point ✅
+- [x] Set up `clap` with four subcommands: ✅
+  - [x] `connect` - Connection configuration management ✅
+  - [x] `introspect` - Schema introspection ✅
+  - [x] `query` - Constrained query execution ✅
+  - [x] `mcp` - MCP server (hidden from help, for AI agent integration) ✅
+- [x] Define common flags for connection parameters: ✅
+  - [x] `--engine <postgres|mysql|sqlite>` ✅
+  - [x] `--host`, `--port`, `--user`, `--password`, `--database`, `--file` ✅
+- [x] Ensure stdout is JSON-only (for both CLI and MCP modes) ✅
+- [x] Redirect logs to stderr if needed for debugging ✅
+- [x] Route `mcp` subcommand to `mcp::serve()` function ✅
+- [x] Mark `mcp` subcommand as `#[command(hide = true)]` in clap ✅
 
 ### 2.2 Connect Command
-- [ ] Define `connect` subcommand arguments:
-  - [ ] `--name <NAME>` (connection profile name, optional)
-  - [ ] `--engine <ENGINE>` (required for new connections)
-  - [ ] `--host <HOST>` (for postgres/mysql)
-  - [ ] `--port <PORT>` (for postgres/mysql)
-  - [ ] `--user <USER>` (for postgres/mysql)
-  - [ ] `--password <PASSWORD>` (for postgres/mysql)
-  - [ ] `--password-env <VAR>` (use env var instead of plain password)
-  - [ ] `--database <DATABASE>` (for postgres/mysql)
-  - [ ] `--file <PATH>` (for sqlite)
-  - [ ] `--save <local|global>` (where to save config)
-- [ ] Implement interactive connection picker (no args):
-  - [ ] Display list of existing named connections
-  - [ ] Show connection details (engine, host, database)
-  - [ ] Include "--- New ---" option to create new connection
-  - [ ] Allow selection via numbered input
-- [ ] Implement interactive configuration wizard:
-  - [ ] Prompt for engine selection (postgres, mysql, sqlite)
-  - [ ] Prompt for connection details based on engine
-  - [ ] Prompt for connection name
-  - [ ] Prompt for save location (local/global)
-  - [ ] Use `dialoguer` or `inquire` for TUI prompts
-- [ ] Implement non-interactive config creation (with flags):
-  - [ ] Validate all required fields present
-  - [ ] Create or update named connection
-  - [ ] Save to specified location
-- [ ] Implement connection validation:
-  - [ ] Call `DatabaseEngine::validate_connection()`
-  - [ ] Test connectivity before saving
-  - [ ] Return connection metadata (version, server info)
-- [ ] Implement config persistence:
-  - [ ] Save to local (`.plenum/config.json`)
-  - [ ] Save to global (`~/.config/plenum/connections.json`)
-  - [ ] Update existing connections
-  - [ ] Set default connection if first connection
-- [ ] Return JSON success/error envelope
-- [ ] Do NOT maintain persistent connections (validate then disconnect)
+- [x] Define `connect` subcommand arguments: ✅
+  - [x] `--name <NAME>` (connection profile name, optional) ✅
+  - [x] `--engine <ENGINE>` (required for new connections) ✅
+  - [x] `--host <HOST>` (for postgres/mysql) ✅
+  - [x] `--port <PORT>` (for postgres/mysql) ✅
+  - [x] `--user <USER>` (for postgres/mysql) ✅
+  - [x] `--password <PASSWORD>` (for postgres/mysql) ✅
+  - [x] `--password-env <VAR>` (use env var instead of plain password) ✅
+  - [x] `--database <DATABASE>` (for postgres/mysql) ✅
+  - [x] `--file <PATH>` (for sqlite) ✅
+  - [x] `--save <local|global>` (where to save config) ✅
+- [x] Implement interactive connection picker (no args): ✅
+  - [x] Display list of existing named connections ✅
+  - [x] Show connection details (engine, host, database) ✅
+  - [x] Include "--- New ---" option to create new connection ✅
+  - [x] Allow selection via numbered input ✅
+- [x] Implement interactive configuration wizard: ✅
+  - [x] Prompt for engine selection (postgres, mysql, sqlite) ✅
+  - [x] Prompt for connection details based on engine ✅
+  - [x] Prompt for connection name ✅
+  - [x] Prompt for save location (local/global) ✅
+  - [x] Use `dialoguer` or `inquire` for TUI prompts ✅
+- [x] Implement non-interactive config creation (with flags): ✅
+  - [x] Validate all required fields present ✅
+  - [x] Create or update named connection ✅
+  - [x] Save to specified location ✅
+- [x] Implement connection validation: ⚠️ Deferred to Phase 3-5 (engines not implemented)
+  - [ ] Call `DatabaseEngine::validate_connection()` (Phase 3-5)
+  - [ ] Test connectivity before saving (Phase 3-5)
+  - [ ] Return connection metadata (Phase 3-5: version, server info)
+- [x] Implement config persistence: ✅
+  - [x] Save to local (`.plenum/config.json`) ✅
+  - [x] Save to global (`~/.config/plenum/connections.json`) ✅
+  - [x] Update existing connections ✅
+  - [x] Set default connection if first connection ✅
+- [x] Return JSON success/error envelope ✅
+- [x] Do NOT maintain persistent connections (validate then disconnect) ✅
 
 ### 2.3 Introspect Command
-- [ ] Define `introspect` subcommand arguments:
-  - [ ] `--name <NAME>` (use named connection, optional)
-  - [ ] Same connection parameters as `connect` (for overrides)
-  - [ ] `--schema <SCHEMA>` (optional filter)
-- [ ] Implement connection resolution:
-  - [ ] Load from config if `--name` provided
-  - [ ] Load from default connection if no flags provided
-  - [ ] Override config with explicit CLI flags
-  - [ ] Error if no connection available
-- [ ] Implement schema introspection orchestration:
-  - [ ] Build `ConnectionConfig` from resolved connection
-  - [ ] Call `DatabaseEngine::introspect()`
-- [ ] Return JSON with schema information:
-  - [ ] Tables
-  - [ ] Columns (name, type, nullable)
-  - [ ] Primary keys
-  - [ ] Foreign keys
-  - [ ] Indexes
-- [ ] Include execution metadata
+- [x] Define `introspect` subcommand arguments: ✅
+  - [x] `--name <NAME>` (use named connection, optional) ✅
+  - [x] Same connection parameters as `connect` (for overrides) ✅
+  - [x] `--schema <SCHEMA>` (optional filter) ✅
+- [x] Implement connection resolution: ✅
+  - [x] Load from config if `--name` provided ✅
+  - [x] Load from default connection if no flags provided ✅
+  - [x] Override config with explicit CLI flags ✅
+  - [x] Error if no connection available ✅
+- [x] Implement schema introspection orchestration: ⚠️ CLI layer complete, engine calls deferred to Phase 3-5
+  - [x] Build `ConnectionConfig` from resolved connection ✅
+  - [ ] Call `DatabaseEngine::introspect()` (Phase 3-5)
+- [x] Return JSON with schema information: ⚠️ Returns NOT_IMPLEMENTED until Phase 3-5
+  - [ ] Tables (Phase 3-5)
+  - [ ] Columns (name, type, nullable) (Phase 3-5)
+  - [ ] Primary keys (Phase 3-5)
+  - [ ] Foreign keys (Phase 3-5)
+  - [ ] Indexes (Phase 3-5)
+- [x] Include execution metadata ✅
 
 ### 2.4 Query Command
-- [ ] Define `query` subcommand arguments:
-  - [ ] `--name <NAME>` (use named connection, optional)
-  - [ ] Same connection parameters as `connect` (for overrides)
-  - [ ] `--sql <SQL>` or `--file <PATH>` (required)
-  - [ ] `--allow-write` (explicit flag, default: false)
-  - [ ] `--allow-ddl` (explicit flag, default: false)
-  - [ ] `--max-rows <N>` (optional)
-  - [ ] `--timeout-ms <MS>` (optional)
-- [ ] Implement connection resolution:
-  - [ ] Load from config if `--name` provided
-  - [ ] Load from default connection if no flags provided
-  - [ ] Override config with explicit CLI flags
-  - [ ] Error if no connection available
-- [ ] Build `Capabilities` struct from flags:
-  - [ ] Read-only by default (no flag needed)
-  - [ ] `allow_write` from `--allow-write` flag
-  - [ ] `allow_ddl` from `--allow-ddl` flag
-  - [ ] `max_rows` from `--max-rows`
-  - [ ] `timeout_ms` from `--timeout-ms`
-- [ ] Validate capabilities before execution
-- [ ] Execute query through engine trait:
-  - [ ] Build `ConnectionConfig` from resolved connection
-  - [ ] Call `DatabaseEngine::execute()`
-- [ ] Return JSON with query results
-- [ ] Include execution metadata
+- [x] Define `query` subcommand arguments: ✅
+  - [x] `--name <NAME>` (use named connection, optional) ✅
+  - [x] Same connection parameters as `connect` (for overrides) ✅
+  - [x] `--sql <SQL>` or `--sql-file <PATH>` (required) ✅
+  - [x] `--allow-write` (explicit flag, default: false) ✅
+  - [x] `--allow-ddl` (explicit flag, default: false) ✅
+  - [x] `--max-rows <N>` (optional) ✅
+  - [x] `--timeout-ms <MS>` (optional) ✅
+- [x] Implement connection resolution: ✅
+  - [x] Load from config if `--name` provided ✅
+  - [x] Load from default connection if no flags provided ✅
+  - [x] Override config with explicit CLI flags ✅
+  - [x] Error if no connection available ✅
+- [x] Build `Capabilities` struct from flags: ✅
+  - [x] Read-only by default (no flag needed) ✅
+  - [x] `allow_write` from `--allow-write` flag ✅
+  - [x] `allow_ddl` from `--allow-ddl` flag ✅
+  - [x] `max_rows` from `--max-rows` ✅
+  - [x] `timeout_ms` from `--timeout-ms` ✅
+- [x] Validate capabilities before execution ✅
+- [x] Execute query through engine trait: ⚠️ CLI layer complete, engine calls deferred to Phase 3-5
+  - [x] Build `ConnectionConfig` from resolved connection ✅
+  - [ ] Call `DatabaseEngine::execute()` (Phase 3-5)
+- [x] Return JSON with query results ⚠️ Returns NOT_IMPLEMENTED until Phase 3-5 ✅
+- [x] Include execution metadata ✅
 
 ---
 
-## Phase 3: PostgreSQL Engine
+## Phase 3: SQLite Engine
 
-### 3.1 PostgreSQL Connection
+**Note:** SQLite is implemented first (before PostgreSQL and MySQL) because:
+- **No external dependencies**: File-based, no database server needed
+- **Synchronous driver**: Simpler than async drivers (validates trait design)
+- **Easy testing**: In-memory databases (`:memory:`) for fast, isolated tests
+- **Fastest development cycle**: Immediate feedback without setup complexity
+
+### 3.1 SQLite Connection
+- [ ] Create `src/engine/sqlite/mod.rs`
+- [ ] Implement `DatabaseEngine` trait for SQLite
+- [ ] Implement file-based connection
+- [ ] Implement in-memory connection (`:memory:`)
+- [ ] Detect SQLite version
+- [ ] Handle connection errors with proper wrapping
+
+### 3.2 SQLite Introspection
+- [ ] Query `sqlite_master` table
+- [ ] Use `PRAGMA table_info()` for column information
+- [ ] Use `PRAGMA foreign_key_list()` for foreign keys
+- [ ] Use `PRAGMA index_list()` for indexes
+- [ ] Format results as `SchemaInfo`
+- [ ] Handle SQLite-specific edge cases
+
+### 3.3 SQLite Query Execution
+- [ ] Implement query execution with capability checks
+- [ ] Parse result sets into JSON-safe format
+- [ ] Handle SQLite data types (dynamic typing):
+  - [ ] INTEGER
+  - [ ] REAL
+  - [ ] TEXT
+  - [ ] BLOB (as base64 or hex)
+  - [ ] NULL
+- [ ] Implement timeout enforcement
+- [ ] Implement row limit enforcement
+- [ ] Track execution time
+
+### 3.4 SQLite Testing
+- [ ] Set up test database (in-memory)
+- [ ] Write capability enforcement tests
+- [ ] Write introspection tests
+- [ ] Write query execution tests
+- [ ] Write error handling tests
+- [ ] Write JSON output snapshot tests
+
+---
+
+## Phase 4: PostgreSQL Engine
+
+### 4.1 PostgreSQL Connection
 - [ ] Create `src/engine/postgres/mod.rs`
 - [ ] Implement `DatabaseEngine` trait for PostgreSQL
 - [ ] Implement connection establishment
 - [ ] Handle connection errors with proper wrapping
 - [ ] Detect and include PostgreSQL version in metadata
 
-### 3.2 PostgreSQL Introspection
+### 4.2 PostgreSQL Introspection
 - [ ] Query `information_schema.tables`
 - [ ] Query `information_schema.columns`
 - [ ] Query primary key information
@@ -385,7 +432,7 @@
 - [ ] Format results as `SchemaInfo`
 - [ ] Handle PostgreSQL-specific edge cases
 
-### 3.3 PostgreSQL Query Execution
+### 4.3 PostgreSQL Query Execution
 - [ ] Implement query execution with capability checks
 - [ ] Parse result sets into JSON-safe format
 - [ ] Handle PostgreSQL data types:
@@ -400,7 +447,7 @@
 - [ ] Implement row limit enforcement
 - [ ] Track execution time
 
-### 3.4 PostgreSQL Testing
+### 4.4 PostgreSQL Testing
 - [ ] Set up test database (in-memory or docker)
 - [ ] Write capability enforcement tests
 - [ ] Write introspection tests
@@ -410,9 +457,9 @@
 
 ---
 
-## Phase 4: MySQL Engine
+## Phase 5: MySQL Engine
 
-### 4.1 MySQL Connection
+### 5.1 MySQL Connection
 - [ ] Create `src/engine/mysql/mod.rs`
 - [ ] Implement `DatabaseEngine` trait for MySQL
 - [ ] Implement connection establishment
@@ -420,7 +467,7 @@
 - [ ] Handle MariaDB detection and versioning
 - [ ] Handle connection errors with proper wrapping
 
-### 4.2 MySQL Introspection
+### 5.2 MySQL Introspection
 - [ ] Query `information_schema.tables`
 - [ ] Query `information_schema.columns`
 - [ ] Query primary key information
@@ -431,7 +478,7 @@
 - [ ] Handle MySQL-specific edge cases
 - [ ] Handle storage engine variations
 
-### 4.3 MySQL Query Execution
+### 5.3 MySQL Query Execution
 - [ ] Implement query execution with capability checks
 - [ ] Handle implicit commit detection (DDL statements)
 - [ ] Parse result sets into JSON-safe format
@@ -449,52 +496,11 @@
 - [ ] Track execution time
 - [ ] Surface version-specific behaviors in metadata
 
-### 4.4 MySQL Testing
+### 5.4 MySQL Testing
 - [ ] Set up test database (docker with specific versions)
 - [ ] Test against multiple MySQL versions
 - [ ] Write capability enforcement tests
 - [ ] Write DDL implicit commit tests
-- [ ] Write introspection tests
-- [ ] Write query execution tests
-- [ ] Write error handling tests
-- [ ] Write JSON output snapshot tests
-
----
-
-## Phase 5: SQLite Engine
-
-### 5.1 SQLite Connection
-- [ ] Create `src/engine/sqlite/mod.rs`
-- [ ] Implement `DatabaseEngine` trait for SQLite
-- [ ] Implement file-based connection
-- [ ] Implement in-memory connection (`:memory:`)
-- [ ] Detect SQLite version
-- [ ] Handle connection errors with proper wrapping
-
-### 5.2 SQLite Introspection
-- [ ] Query `sqlite_master` table
-- [ ] Use `PRAGMA table_info()` for column information
-- [ ] Use `PRAGMA foreign_key_list()` for foreign keys
-- [ ] Use `PRAGMA index_list()` for indexes
-- [ ] Format results as `SchemaInfo`
-- [ ] Handle SQLite-specific edge cases
-
-### 5.3 SQLite Query Execution
-- [ ] Implement query execution with capability checks
-- [ ] Parse result sets into JSON-safe format
-- [ ] Handle SQLite data types (dynamic typing):
-  - [ ] INTEGER
-  - [ ] REAL
-  - [ ] TEXT
-  - [ ] BLOB (as base64 or hex)
-  - [ ] NULL
-- [ ] Implement timeout enforcement
-- [ ] Implement row limit enforcement
-- [ ] Track execution time
-
-### 5.4 SQLite Testing
-- [ ] Set up test database (in-memory)
-- [ ] Write capability enforcement tests
 - [ ] Write introspection tests
 - [ ] Write query execution tests
 - [ ] Write error handling tests
@@ -923,15 +929,17 @@
 
 - **Phase 0-1:** 1-2 weeks (Foundation)
 - **Phase 2:** 1 week (CLI)
-- **Phase 3:** 1-2 weeks (PostgreSQL)
-- **Phase 4:** 1-2 weeks (MySQL)
-- **Phase 5:** 1 week (SQLite)
+- **Phase 3:** 3-5 days (SQLite) ⚡ Fastest implementation
+- **Phase 4:** 1-2 weeks (PostgreSQL)
+- **Phase 5:** 1-2 weeks (MySQL)
 - **Phase 6:** 1-2 weeks (Integration)
 - **Phase 7:** 1-2 weeks (MCP Server)
 - **Phase 8:** 1 week (Security Audit)
 - **Phase 9:** 1 week (Release Prep)
 
-**Total Estimated Timeline:** 10-14 weeks
+**Total Estimated Timeline:** 9-14 weeks
+
+**Phase 3 Rationale:** SQLite implementation is faster because it's synchronous (no async complexity), requires no external setup, and allows immediate in-memory testing. This validates the architecture quickly before tackling async drivers.
 
 ---
 

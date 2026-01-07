@@ -1,0 +1,9 @@
+{
+  "connections": {
+    "test-sqlite": {
+      "engine": "sqlite",
+      "file": "/tmp/test.db"
+    }
+  },
+  "default": "test-sqlite"
+}
