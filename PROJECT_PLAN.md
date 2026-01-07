@@ -11,12 +11,28 @@
 ## Phase 0: Project Foundation
 
 ### 0.1 Repository Setup
-- [ ] Initialize Rust project with Cargo
-- [ ] Configure `.gitignore` for Rust projects
-- [ ] Set up basic project structure
-- [ ] Configure Cargo.toml with project metadata
-- [ ] Add LICENSE file
-- [ ] Create initial README.md with project description
+- [x] Initialize Git repository ✅
+- [ ] Initialize Rust project structure
+  - [ ] Run `cargo init --name plenum --lib`
+  - [ ] Configure Cargo.toml with both binary and library targets:
+    ```toml
+    [lib]
+    name = "plenum"
+    path = "src/lib.rs"
+
+    [[bin]]
+    name = "plenum"
+    path = "src/main.rs"
+    ```
+  - [ ] Configure Cargo.toml with project metadata (version, authors, edition, license)
+  - [ ] Set up `src/lib.rs` to export internal API
+  - [ ] Set up `src/main.rs` as CLI entry point
+- [ ] Configure `.gitignore` for Rust builds
+  - [ ] Add `/target`
+  - [ ] Add `Cargo.lock`
+  - [ ] Add `/.idea` and other IDE-specific directories
+- [ ] Add LICENSE file (MIT OR Apache-2.0)
+- [ ] Update README.md with project description and build instructions
 
 ### 0.2 Development Environment
 - [ ] Define Rust toolchain version (stable/nightly)
@@ -26,18 +42,46 @@
 - [ ] Document build/test commands
 
 ### 0.3 Dependency Assessment
+
+**CRITICAL: MCP Architecture Research (moved from Phase 7.1)**
+- [ ] Research MCP (Model Context Protocol) implementation in Rust
+  - [ ] Evaluate `rmcp` crate (official Rust SDK for MCP)
+  - [ ] Verify stdio transport compatibility with stateless design
+  - [ ] Confirm JSON-RPC protocol handling via `rmcp`
+  - [ ] Test `#[tool]` macro pattern compatibility with our architecture
+  - [ ] Verify async requirements (tokio integration)
+  - [ ] Review reflex-search implementation pattern: https://github.com/reflex-search/reflex
+- [ ] Document MCP architecture decision:
+  - [ ] **Decision:** Single crate with `plenum mcp` subcommand (not workspace)
+  - [ ] **Pattern:** Follow reflex-search implementation pattern
+  - [ ] **Rationale:** Simpler structure, proven pattern, uses standard tooling
+  - [ ] **Key principle:** Both CLI and MCP call same internal library functions
+- [ ] Select MCP dependencies:
+  - [ ] `rmcp` - Official Rust MCP SDK
+  - [ ] `tokio` - Async runtime (required by rmcp)
+  - [ ] `schemars` - JSON schema generation for MCP tool definitions
+
+**Database Driver Selection (MUST use native drivers)**
 - [ ] Research and select database driver crates:
-  - [ ] PostgreSQL: `tokio-postgres` or `sqlx`
-  - [ ] MySQL: `mysql_async` or `sqlx`
-  - [ ] SQLite: `rusqlite` or `sqlx`
+  - [ ] PostgreSQL: `tokio-postgres` (native driver, NOT sqlx)
+  - [ ] MySQL: `mysql_async` (native driver, NOT sqlx)
+  - [ ] SQLite: `rusqlite` (native driver, NOT sqlx)
+- [ ] Document rationale for native drivers:
+  - [ ] Maximum isolation between engines
+  - [ ] Vendor-specific behavior preserved
+  - [ ] No risk of abstraction leakage
+  - [ ] Each engine handles its own quirks independently
+  - [ ] Aligns with "no compatibility layers" principle (CLAUDE.md)
+
+**Core Libraries**
 - [ ] Select JSON serialization library: `serde_json`
 - [ ] Select CLI framework: `clap`
-- [ ] Select error handling: `thiserror` or `anyhow`
+- [ ] Select error handling: `thiserror` and `anyhow`
 - [ ] Select configuration management libraries:
   - [ ] Interactive prompts: `dialoguer` or `inquire`
   - [ ] Cross-platform config paths: `dirs`
   - [ ] Config format: JSON via `serde_json`
-- [ ] Document dependency rationale
+- [ ] Document dependency rationale in RESEARCH.md
 
 ---
 
@@ -145,21 +189,41 @@
   - [ ] Runtime parameter overrides
   - [ ] Fallback to default connection
 
+### 1.6 Library Module Structure
+- [ ] Create `src/lib.rs` with public API exports
+- [ ] **IMPORTANT:** Design all modules for reuse by both CLI and MCP
+- [ ] Export core types for both CLI and MCP use:
+  - [ ] `pub use engine::{DatabaseEngine, ConnectionConfig, ConnectionInfo, SchemaInfo, QueryResult};`
+  - [ ] `pub use capability::Capabilities;`
+  - [ ] `pub use output::{SuccessEnvelope, ErrorEnvelope};`
+  - [ ] `pub use config::{resolve_connection, save_connection};`
+  - [ ] `pub use error::PlenumError;`
+- [ ] Design internal functions to be CLI/MCP agnostic:
+  - [ ] `execute_connect(config: ConnectionConfig) -> Result<ConnectionInfo>`
+  - [ ] `execute_introspect(config: ConnectionConfig, filter: Option<&str>) -> Result<SchemaInfo>`
+  - [ ] `execute_query(config: ConnectionConfig, sql: &str, caps: Capabilities) -> Result<QueryResult>`
+- [ ] Ensure all business logic lives in library modules, not in CLI/MCP wrappers
+- [ ] CLI and MCP should be thin wrappers calling library functions
+- [ ] Document public API in module-level docs
+
 ---
 
 ## Phase 2: CLI Foundation
 
 ### 2.1 CLI Structure
 - [ ] Create `src/main.rs` with CLI entry point
-- [ ] Set up `clap` with three subcommands:
-  - [ ] `connect`
-  - [ ] `introspect`
-  - [ ] `query`
-- [ ] Define common flags:
+- [ ] Set up `clap` with four subcommands:
+  - [ ] `connect` - Connection configuration management
+  - [ ] `introspect` - Schema introspection
+  - [ ] `query` - Constrained query execution
+  - [ ] `mcp` - MCP server (hidden from help, for AI agent integration)
+- [ ] Define common flags for connection parameters:
   - [ ] `--engine <postgres|mysql|sqlite>`
-  - [ ] Connection string parameters
-- [ ] Ensure stdout is JSON-only
-- [ ] Redirect logs to stderr (if needed for debugging)
+  - [ ] `--host`, `--port`, `--user`, `--password`, `--database`, `--file`
+- [ ] Ensure stdout is JSON-only (for both CLI and MCP modes)
+- [ ] Redirect logs to stderr if needed for debugging
+- [ ] Route `mcp` subcommand to `mcp::serve()` function
+- [ ] Mark `mcp` subcommand as `#[command(hide = true)]` in clap
 
 ### 2.2 Connect Command
 - [ ] Define `connect` subcommand arguments:
@@ -443,47 +507,149 @@
 
 ## Phase 7: MCP Server
 
-### 7.1 MCP Server Foundation
-- [ ] Research MCP server implementation in Rust
-- [ ] Create `src/mcp/mod.rs`
-- [ ] Define MCP server structure
-- [ ] Implement server initialization
-- [ ] Configure local socket/port
+**Note:** MCP architecture research completed in Phase 0.3
 
-### 7.2 Tool Mapping
-- [ ] Map `plenum connect` to MCP tool
-  - [ ] Define tool schema
-  - [ ] Pass connection parameters
-  - [ ] Return JSON response
-- [ ] Map `plenum introspect` to MCP tool
-  - [ ] Define tool schema
-  - [ ] Pass connection + introspection parameters
-  - [ ] Return JSON response
-- [ ] Map `plenum query` to MCP tool
-  - [ ] Define tool schema
-  - [ ] Pass connection + query + capability parameters
-  - [ ] Return JSON response
+### 7.1 MCP Server Setup
+- [ ] Create `src/mcp.rs` module
+- [ ] Import `rmcp` types:
+  - [ ] `use rmcp::{tool, ServerHandler, CallToolResult, Parameters};`
+  - [ ] `use rmcp::transport::stdio;`
+  - [ ] `use rmcp::model::ServerInfo;`
+- [ ] Define `PlenumServer` struct:
+  ```rust
+  #[derive(Clone)]
+  pub struct PlenumServer;
+  ```
+- [ ] Implement `ServerHandler` trait:
+  ```rust
+  impl ServerHandler for PlenumServer {
+      fn get_info(&self) -> ServerInfo {
+          ServerInfo {
+              name: "plenum".into(),
+              version: env!("CARGO_PKG_VERSION").into(),
+          }
+      }
+  }
+  ```
+- [ ] Create `serve()` async function to start MCP server:
+  ```rust
+  pub async fn serve() -> anyhow::Result<()> {
+      let server = PlenumServer;
+      server.serve(stdio()).await?;
+      Ok(())
+  }
+  ```
+- [ ] Wire up `plenum mcp` subcommand in main.rs to call `mcp::serve()`
+- [ ] Add `#[tokio::main]` to main function for async support
 
-### 7.3 Credential Handling
-- [ ] Implement per-invocation credential passing
-- [ ] Ensure credentials are not logged
-- [ ] Ensure credentials are not persisted
-- [ ] Validate credential formats
-- [ ] Handle missing credentials gracefully
+### 7.2 MCP Tool: connect
+- [ ] Define `ConnectRequest` struct with `serde` and `schemars` derives:
+  - [ ] `name: Option<String>` - Named connection profile
+  - [ ] `engine: String` - Database engine (postgres, mysql, sqlite)
+  - [ ] `host: Option<String>` - For postgres/mysql
+  - [ ] `port: Option<u16>` - For postgres/mysql
+  - [ ] `user: Option<String>` - For postgres/mysql
+  - [ ] `password: Option<String>` - For postgres/mysql
+  - [ ] `password_env: Option<String>` - Environment variable for password
+  - [ ] `database: Option<String>` - For postgres/mysql
+  - [ ] `file: Option<PathBuf>` - For sqlite
+  - [ ] `save: Option<String>` - Save location (local/global)
+- [ ] Implement `#[tool]` method on `PlenumServer`:
+  ```rust
+  #[tool(description = "Validate and save database connection configuration")]
+  async fn connect(
+      &self,
+      Parameters(request): Parameters<ConnectRequest>,
+  ) -> Result<CallToolResult, McpError> {
+      // Build ConnectionConfig from request
+      // Call crate::execute_connect()
+      // Wrap result in SuccessEnvelope
+      // Return as MCP tool result
+  }
+  ```
+- [ ] Handle errors and convert to `McpError`
+- [ ] Return connection metadata (version, server info) in response
 
-### 7.4 Stateless Design
-- [ ] Verify no shared state between invocations
-- [ ] Verify no persistent connections
-- [ ] Verify no caching
-- [ ] Document stateless design decisions
+### 7.3 MCP Tool: introspect
+- [ ] Define `IntrospectRequest` struct:
+  - [ ] `name: Option<String>` - Use named connection
+  - [ ] Connection parameters (for overrides)
+  - [ ] `schema: Option<String>` - Schema filter
+- [ ] Implement `#[tool]` method:
+  ```rust
+  #[tool(description = "Introspect database schema and return table/column information")]
+  async fn introspect(
+      &self,
+      Parameters(request): Parameters<IntrospectRequest>,
+  ) -> Result<CallToolResult, McpError>
+  ```
+- [ ] Resolve connection from config or explicit parameters
+- [ ] Call library function `crate::execute_introspect()`
+- [ ] Return schema information (tables, columns, keys, indexes) as MCP tool result
+- [ ] Include execution metadata in response
 
-### 7.5 MCP Testing
-- [ ] Create MCP client test harness
-- [ ] Test tool invocation for each command
-- [ ] Test error propagation through MCP
-- [ ] Test concurrent tool invocations
-- [ ] Test credential passing security
-- [ ] Verify JSON response format
+### 7.4 MCP Tool: query
+- [ ] Define `QueryRequest` struct:
+  - [ ] `name: Option<String>` - Use named connection
+  - [ ] Connection parameters (for overrides)
+  - [ ] `sql: String` - SQL query to execute (required)
+  - [ ] `allow_write: Option<bool>` - Enable write operations (default: false)
+  - [ ] `allow_ddl: Option<bool>` - Enable DDL operations (default: false)
+  - [ ] `max_rows: Option<usize>` - Limit result set size
+  - [ ] `timeout_ms: Option<u64>` - Query timeout in milliseconds
+- [ ] Implement `#[tool]` method:
+  ```rust
+  #[tool(description = "Execute SQL query with capability constraints (read-only by default)")]
+  async fn query(
+      &self,
+      Parameters(request): Parameters<QueryRequest>,
+  ) -> Result<CallToolResult, McpError>
+  ```
+- [ ] Resolve connection from config or explicit parameters
+- [ ] Build `Capabilities` struct from request flags
+- [ ] Call library function `crate::execute_query()`
+- [ ] Return query results with execution metadata
+- [ ] Ensure capability violations are caught and returned as errors
+
+### 7.5 Stateless Design Verification
+- [ ] Verify `PlenumServer` struct has no state fields
+- [ ] Verify each tool invocation is completely independent
+- [ ] Verify connections are opened and closed within each tool call
+- [ ] Test concurrent tool invocations for thread safety
+- [ ] Document that credentials are passed per-invocation (never cached)
+- [ ] Ensure no global mutable state anywhere in MCP module
+
+### 7.6 MCP Protocol Testing
+- [ ] Test MCP initialization handshake
+- [ ] Test `tools/list` returns all three tools with correct schemas
+- [ ] Test `tools/call` for `connect` tool:
+  - [ ] With valid connection parameters
+  - [ ] With invalid parameters (error handling)
+  - [ ] With named connection reference
+- [ ] Test `tools/call` for `introspect` tool:
+  - [ ] With direct connection parameters
+  - [ ] With named connection
+  - [ ] With schema filter
+- [ ] Test `tools/call` for `query` tool:
+  - [ ] Read-only query (default)
+  - [ ] Write query with `--allow-write`
+  - [ ] DDL query with `--allow-ddl`
+  - [ ] Capability violation (should fail before execution)
+- [ ] Verify tool schemas are correctly generated via `schemars`
+- [ ] Test error propagation through MCP protocol
+- [ ] Verify JSON output format matches CLI output format
+- [ ] Test with actual MCP client (Claude Desktop configuration)
+- [ ] Document MCP client configuration in README:
+  ```json
+  {
+    "mcpServers": {
+      "plenum": {
+        "command": "plenum",
+        "args": ["mcp"]
+      }
+    }
+  }
+  ```
 
 ---
 
@@ -598,31 +764,30 @@
 ## Dependencies Checklist
 
 ### Core Dependencies
-- [ ] `clap` - CLI framework
-- [ ] `serde` - Serialization framework
+- [ ] `clap` - CLI framework (with derive feature)
+- [ ] `serde` - Serialization framework (with derive feature)
 - [ ] `serde_json` - JSON serialization
-- [ ] `thiserror` - Error handling
-- [ ] `tokio` - Async runtime (if using async drivers)
+- [ ] `thiserror` - Error handling (structured errors)
+- [ ] `anyhow` - Error context and convenience
+- [ ] `tokio` - Async runtime (required by rmcp and async database drivers)
 
-### Database Drivers
-- [ ] PostgreSQL driver (choose one):
-  - [ ] `tokio-postgres`
-  - [ ] `sqlx` with postgres feature
-- [ ] MySQL driver (choose one):
-  - [ ] `mysql_async`
-  - [ ] `sqlx` with mysql feature
-- [ ] SQLite driver (choose one):
-  - [ ] `rusqlite`
-  - [ ] `sqlx` with sqlite feature
+### MCP Server Dependencies
+- [ ] `rmcp` - Official Rust MCP SDK
+- [ ] `schemars` - JSON schema generation for MCP tool definitions
 
-### MCP Server
-- [ ] Research available Rust MCP server libraries
-- [ ] Document MCP server dependency
+### Database Drivers (native drivers only, NO sqlx)
+- [ ] `tokio-postgres` - PostgreSQL native driver
+- [ ] `mysql_async` - MySQL native driver
+- [ ] `rusqlite` - SQLite native driver
+
+### Configuration Management
+- [ ] `dialoguer` or `inquire` - Interactive prompts for connection setup
+- [ ] `dirs` - Cross-platform configuration directory paths
 
 ### Testing
 - [ ] `criterion` - Benchmarking
 - [ ] `pretty_assertions` - Better test output
-- [ ] `insta` - Snapshot testing
+- [ ] `insta` - Snapshot testing for JSON output validation
 
 ---
 
@@ -637,10 +802,12 @@
 
 ### Risk 2: Database Driver Compatibility
 **Mitigation:**
-- [ ] Test with multiple database versions
-- [ ] Document version requirements
-- [ ] Isolate driver-specific code
-- [ ] Consider using `sqlx` for unified interface
+- [ ] Use native drivers (NOT sqlx) to maximize engine isolation
+- [ ] Test with multiple database versions for each engine
+- [ ] Document version requirements clearly
+- [ ] Isolate driver-specific code in engine modules
+- [ ] Each engine handles its own quirks independently
+- [ ] No shared database abstraction layer
 
 ### Risk 3: MySQL Implicit Commits
 **Mitigation:**
@@ -658,10 +825,13 @@
 
 ### Risk 5: MCP Integration Complexity
 **Mitigation:**
-- [ ] Keep MCP layer thin
-- [ ] Maintain CLI as primary interface
-- [ ] Test MCP and CLI independently
-- [ ] Document integration boundaries
+- [ ] Use proven pattern from reflex-search project
+- [ ] Use standard `rmcp` SDK (official tooling, not custom implementation)
+- [ ] Keep MCP layer thin (just tool definitions wrapping library functions)
+- [ ] Maintain library functions as single source of truth for both CLI and MCP
+- [ ] Test MCP and CLI independently with identical assertions
+- [ ] Document integration boundaries clearly
+- [ ] Verify determinism: same library call should produce same result from CLI or MCP
 
 ---
 

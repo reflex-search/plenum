@@ -102,9 +102,9 @@ The purpose of `plenum connect` was unclear in a stateless design where connecti
 
 ---
 
-### 🚨 PROBLEM 3: MCP Server Architecture Undefined
+### ✅ PROBLEM 3: MCP Server Architecture Undefined [RESOLVED]
 
-**Location:** PROJECT_PLAN.md Phase 7 (lines 351-394)
+**Location:** PROJECT_PLAN.md Phase 7 (lines 444-487)
 
 **Issue:**
 The plan doesn't specify how the MCP server relates to the CLI. Three fundamentally different architectures are possible:
@@ -175,6 +175,52 @@ Simpler to implement but:
 3. Restructure project as workspace if using Architecture B
 4. Update PROJECT_PLAN.md Phase 7 to reflect architectural decision
 
+**Resolution: Single Crate with MCP Subcommand (Modified Architecture C)**
+
+**Architecture Decision:**
+```
+plenum/ (single crate)
+├── src/
+│   ├── main.rs       # Routes to CLI or MCP subcommand
+│   ├── lib.rs        # Exports public API for both CLI and MCP
+│   ├── cli.rs        # CLI command handling
+│   ├── mcp.rs        # MCP server using rmcp SDK
+│   └── [engine/, capability.rs, config.rs, output.rs, error.rs]
+└── Cargo.toml
+```
+
+**Pattern:** Follows reflex-search implementation (https://github.com/reflex-search/reflex)
+
+**Key Characteristics:**
+- Single binary with `plenum mcp` hidden subcommand
+- Uses `rmcp` crate (official Rust MCP SDK) with `#[tool]` macros
+- Stdio transport for JSON-RPC over stdin/stdout
+- Both CLI and MCP call same internal library functions (determinism guaranteed)
+- No workspace needed (simpler project structure)
+
+**MCP Tools Mapping:**
+- `connect` tool → calls same logic as `plenum connect` CLI
+- `introspect` tool → calls same logic as `plenum introspect` CLI
+- `query` tool → calls same logic as `plenum query` CLI
+
+**Benefits:**
+- ✅ Proven pattern (used by reflex-search)
+- ✅ Uses standard tooling (rmcp SDK)
+- ✅ Simpler than workspace approach
+- ✅ Maintains determinism (shared code paths)
+- ✅ Easy to test and distribute (single binary)
+- ✅ Aligns with CLAUDE.md ("CLI remains the execution boundary")
+
+**Changes Made to PROJECT_PLAN.md:**
+- Phase 0.1: Updated repository setup for binary + library targets
+- Phase 0.3: Moved MCP research from Phase 7.1 to Phase 0 (resolves PROBLEM 6)
+- Phase 0.3: Added rmcp, tokio, schemars dependencies
+- Phase 1.6: Added new phase for library module structure
+- Phase 2.1: Added fourth subcommand `mcp`
+- Phase 7: Complete rewrite to use rmcp SDK pattern
+
+**Date Resolved:** 2026-01-06
+
 ---
 
 ### 🚨 PROBLEM 4: SQLx Suggestion Violates Isolation Principle
@@ -234,6 +280,22 @@ If `sqlx` is used, it must be used **only for a single engine** with that engine
 2. Remove "Consider using sqlx for unified interface" from risk mitigation
 3. Update Phase 0.3 to mandate native drivers
 4. Document rationale in RESEARCH.md
+
+**Resolution Status: RESOLVED ✅**
+
+**Changes Made to PROJECT_PLAN.md:**
+- Phase 0.3 (lines 64-74): Explicitly mandates native drivers with "NOT sqlx" warnings
+- Dependencies Checklist (line 778): Header updated to "Database Drivers (native drivers only, NO sqlx)"
+- Risk Mitigation (line 805): Updated to mandate native drivers for maximum engine isolation
+
+**Changes Made to RESEARCH.md:**
+- Added "Database Driver Selection Strategy" section documenting:
+  - Decision: Native drivers only (tokio-postgres, mysql_async, rusqlite)
+  - Rationale: Maximum isolation, vendor-specific behavior preservation, no abstraction leakage
+  - Implementation implications: Each engine module is completely independent
+  - Forbidden approaches: sqlx, Diesel, SeaORM, any cross-database abstraction
+
+**Date Resolved:** 2026-01-06
 
 ---
 
@@ -600,10 +662,10 @@ Before proceeding to implementation, verify all problems are resolved:
 ### Critical Issues
 - [x] **PROBLEM 1:** Trait design rewritten to be stateless ✅ (2026-01-06)
 - [x] **PROBLEM 2:** `connect` command purpose clarified as configuration management ✅ (2026-01-06)
-- [ ] **PROBLEM 3:** MCP architecture chosen and documented
-- [ ] **PROBLEM 4:** SQLx removed; native drivers mandated
+- [x] **PROBLEM 3:** MCP architecture chosen and documented ✅ (2026-01-06)
+- [x] **PROBLEM 4:** SQLx removed; native drivers mandated ✅ (2026-01-06)
 - [ ] **PROBLEM 5:** `--read-only` flag removed from design (✅ partially done in Phase 2.4)
-- [ ] **PROBLEM 6:** MCP research moved to Phase 0
+- [x] **PROBLEM 6:** MCP research moved to Phase 0 ✅ (resolved with PROBLEM 3, 2026-01-06)
 - [ ] **PROBLEM 7:** Security model clarified in plan
 
 ### Moderate Issues
@@ -613,7 +675,7 @@ Before proceeding to implementation, verify all problems are resolved:
 ### Documentation Updates Required
 - [x] Update PROJECT_PLAN.md with resolutions (Phases 0.3, 1.1, 1.5, 2.2, 2.3, 2.4) ✅
 - [x] Update CLAUDE.md if command surface changes ✅
-- [ ] Update RESEARCH.md with architectural decisions
+- [x] Update RESEARCH.md with architectural decisions (native driver strategy documented) ✅
 - [ ] Document security model clearly
 
 ---

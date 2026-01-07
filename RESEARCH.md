@@ -135,6 +135,60 @@ Plenum exposes its functionality through a local MCP server:
 - No panics across CLI boundaries
 - Capability violations are first-class errors
 
+### Database Driver Selection Strategy
+
+**Decision:** Use native, engine-specific drivers. Do NOT use sqlx or any cross-database abstraction layer.
+
+**Selected Drivers:**
+- **PostgreSQL**: `tokio-postgres` - Official PostgreSQL Rust driver
+- **MySQL**: `mysql_async` - Purpose-built MySQL async driver
+- **SQLite**: `rusqlite` - Official SQLite wrapper for Rust
+
+**Rationale:**
+
+1. **Maximum Isolation Between Engines**
+   - Each engine module uses a completely different driver crate
+   - No shared types or traits between engine implementations
+   - Impossible for cross-engine behavior to leak through shared abstractions
+
+2. **Vendor-Specific Behavior Preserved**
+   - PostgreSQL quirks stay in PostgreSQL driver
+   - MySQL quirks stay in MySQL driver
+   - SQLite quirks stay in SQLite driver
+   - No normalization or abstraction layer to hide differences
+
+3. **No Risk of Abstraction Leakage**
+   - Using sqlx with multiple feature flags would create a unified interface
+   - Unified interfaces hide vendor differences (explicitly forbidden by CLAUDE.md)
+   - Native drivers prevent accidental SQL compatibility assumptions
+
+4. **Aligns with Core Principles**
+   - "No compatibility layers" (CLAUDE.md line 22)
+   - "No shared SQL helpers across engines" (CLAUDE.md line 172)
+   - "Engine quirks stay inside engine modules" (CLAUDE.md line 174)
+
+**What This Means for Implementation:**
+
+Each engine module (`src/engine/postgres/`, `src/engine/mysql/`, `src/engine/sqlite/`) will:
+- Import only its own native driver
+- Handle connection management independently
+- Implement data type conversion independently
+- Handle errors using driver-specific error types
+- Have zero shared database code with other engines
+
+The only shared code across engines is:
+- The `DatabaseEngine` trait definition (interface contract)
+- JSON envelope types (output format)
+- Capability checking logic (permission enforcement)
+- Error code mapping (for normalized JSON errors)
+
+**Forbidden:**
+- ❌ sqlx (provides unified interface across databases)
+- ❌ Diesel (ORM with cross-database abstraction)
+- ❌ SeaORM (ORM with cross-database abstraction)
+- ❌ Any crate that abstracts over multiple database engines
+- ❌ Shared query building or SQL generation helpers
+
 ---
 
 ## Explicit Non-Goals
