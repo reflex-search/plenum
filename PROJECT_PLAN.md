@@ -305,10 +305,12 @@
   - [x] Validate all required fields present ✅
   - [x] Create or update named connection ✅
   - [x] Save to specified location ✅
-- [x] Implement connection validation: ⚠️ Deferred to Phase 3-5 (engines not implemented)
-  - [ ] Call `DatabaseEngine::validate_connection()` (Phase 3-5)
-  - [ ] Test connectivity before saving (Phase 3-5)
-  - [ ] Return connection metadata (Phase 3-5: version, server info)
+- [x] Implement connection validation: ✅ SQLite complete, Postgres/MySQL pending
+  - [x] Call `DatabaseEngine::validate_connection()` for SQLite ✅ (Phase 3)
+  - [ ] Call `DatabaseEngine::validate_connection()` for Postgres (Phase 4)
+  - [ ] Call `DatabaseEngine::validate_connection()` for MySQL (Phase 5)
+  - [x] Test connectivity before saving (SQLite) ✅
+  - [x] Return connection metadata (SQLite: version, server info) ✅
 - [x] Implement config persistence: ✅
   - [x] Save to local (`.plenum/config.json`) ✅
   - [x] Save to global (`~/.config/plenum/connections.json`) ✅
@@ -327,15 +329,19 @@
   - [x] Load from default connection if no flags provided ✅
   - [x] Override config with explicit CLI flags ✅
   - [x] Error if no connection available ✅
-- [x] Implement schema introspection orchestration: ⚠️ CLI layer complete, engine calls deferred to Phase 3-5
+- [x] Implement schema introspection orchestration: ✅ SQLite complete, Postgres/MySQL pending
   - [x] Build `ConnectionConfig` from resolved connection ✅
-  - [ ] Call `DatabaseEngine::introspect()` (Phase 3-5)
-- [x] Return JSON with schema information: ⚠️ Returns NOT_IMPLEMENTED until Phase 3-5
-  - [ ] Tables (Phase 3-5)
-  - [ ] Columns (name, type, nullable) (Phase 3-5)
-  - [ ] Primary keys (Phase 3-5)
-  - [ ] Foreign keys (Phase 3-5)
-  - [ ] Indexes (Phase 3-5)
+  - [x] Call `DatabaseEngine::introspect()` for SQLite ✅ (Phase 3)
+  - [ ] Call `DatabaseEngine::introspect()` for Postgres (Phase 4)
+  - [ ] Call `DatabaseEngine::introspect()` for MySQL (Phase 5)
+- [x] Return JSON with schema information: ✅ SQLite complete, Postgres/MySQL pending
+  - [x] Tables (SQLite) ✅
+  - [x] Columns (name, type, nullable) (SQLite) ✅
+  - [x] Primary keys (SQLite) ✅
+  - [x] Foreign keys (SQLite) ✅
+  - [x] Indexes (SQLite) ✅
+  - [ ] Tables, Columns, Keys, Indexes for Postgres (Phase 4)
+  - [ ] Tables, Columns, Keys, Indexes for MySQL (Phase 5)
 - [x] Include execution metadata ✅
 
 ### 2.4 Query Command
@@ -359,10 +365,12 @@
   - [x] `max_rows` from `--max-rows` ✅
   - [x] `timeout_ms` from `--timeout-ms` ✅
 - [x] Validate capabilities before execution ✅
-- [x] Execute query through engine trait: ⚠️ CLI layer complete, engine calls deferred to Phase 3-5
+- [x] Execute query through engine trait: ✅ SQLite complete, Postgres/MySQL pending
   - [x] Build `ConnectionConfig` from resolved connection ✅
-  - [ ] Call `DatabaseEngine::execute()` (Phase 3-5)
-- [x] Return JSON with query results ⚠️ Returns NOT_IMPLEMENTED until Phase 3-5 ✅
+  - [x] Call `DatabaseEngine::execute()` for SQLite ✅ (Phase 3)
+  - [ ] Call `DatabaseEngine::execute()` for Postgres (Phase 4)
+  - [ ] Call `DatabaseEngine::execute()` for MySQL (Phase 5)
+- [x] Return JSON with query results ✅ SQLite complete, Postgres/MySQL pending
 - [x] Include execution metadata ✅
 
 ---
