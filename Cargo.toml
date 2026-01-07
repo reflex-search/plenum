@@ -44,16 +44,20 @@ dirs = "5.0"        # Cross-platform configuration directory paths
 # Maximum engine isolation - each driver is completely independent
 # NOTE: Made optional for Phase 0 to avoid build dependency issues
 # Will be enabled as required features in Phases 3-5 when implementing engines
-tokio-postgres = { version = "0.7", optional = true }  # PostgreSQL native driver
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"], optional = true }  # PostgreSQL native driver
 mysql_async = { version = "0.34", optional = true }     # MySQL native async driver
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }  # SQLite native driver with bundled lib
 
-# BLOB encoding for SQLite (Base64)
+# BLOB encoding (Base64) - used by SQLite and PostgreSQL
 base64 = "0.22"
+
+# PostgreSQL type conversions (timestamp, uuid, etc.)
+chrono = { version = "0.4", optional = true }  # Date/time types
+uuid = { version = "1.0", optional = true }     # UUID type
 
 [features]
 default = ["sqlite"]  # Enable SQLite by default for Phase 3
-postgres = ["dep:tokio-postgres"]
+postgres = ["dep:tokio-postgres", "dep:chrono", "dep:uuid"]
 mysql = ["dep:mysql_async"]
 sqlite = ["dep:rusqlite"]
 all-engines = ["postgres", "mysql", "sqlite"]

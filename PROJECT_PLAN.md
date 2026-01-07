@@ -305,12 +305,12 @@
   - [x] Validate all required fields present ✅
   - [x] Create or update named connection ✅
   - [x] Save to specified location ✅
-- [x] Implement connection validation: ✅ SQLite complete, Postgres/MySQL pending
+- [x] Implement connection validation: ✅ SQLite and Postgres complete, MySQL pending
   - [x] Call `DatabaseEngine::validate_connection()` for SQLite ✅ (Phase 3)
-  - [ ] Call `DatabaseEngine::validate_connection()` for Postgres (Phase 4)
+  - [x] Call `DatabaseEngine::validate_connection()` for Postgres ✅ (Phase 4)
   - [ ] Call `DatabaseEngine::validate_connection()` for MySQL (Phase 5)
-  - [x] Test connectivity before saving (SQLite) ✅
-  - [x] Return connection metadata (SQLite: version, server info) ✅
+  - [x] Test connectivity before saving (SQLite, Postgres) ✅
+  - [x] Return connection metadata (version, server info) ✅
 - [x] Implement config persistence: ✅
   - [x] Save to local (`.plenum/config.json`) ✅
   - [x] Save to global (`~/.config/plenum/connections.json`) ✅
@@ -329,18 +329,17 @@
   - [x] Load from default connection if no flags provided ✅
   - [x] Override config with explicit CLI flags ✅
   - [x] Error if no connection available ✅
-- [x] Implement schema introspection orchestration: ✅ SQLite complete, Postgres/MySQL pending
+- [x] Implement schema introspection orchestration: ✅ SQLite and Postgres complete, MySQL pending
   - [x] Build `ConnectionConfig` from resolved connection ✅
   - [x] Call `DatabaseEngine::introspect()` for SQLite ✅ (Phase 3)
-  - [ ] Call `DatabaseEngine::introspect()` for Postgres (Phase 4)
+  - [x] Call `DatabaseEngine::introspect()` for Postgres ✅ (Phase 4)
   - [ ] Call `DatabaseEngine::introspect()` for MySQL (Phase 5)
-- [x] Return JSON with schema information: ✅ SQLite complete, Postgres/MySQL pending
-  - [x] Tables (SQLite) ✅
-  - [x] Columns (name, type, nullable) (SQLite) ✅
-  - [x] Primary keys (SQLite) ✅
-  - [x] Foreign keys (SQLite) ✅
-  - [x] Indexes (SQLite) ✅
-  - [ ] Tables, Columns, Keys, Indexes for Postgres (Phase 4)
+- [x] Return JSON with schema information: ✅ SQLite and Postgres complete, MySQL pending
+  - [x] Tables (SQLite, Postgres) ✅
+  - [x] Columns (name, type, nullable) (SQLite, Postgres) ✅
+  - [x] Primary keys (SQLite, Postgres) ✅
+  - [x] Foreign keys (SQLite, Postgres) ✅
+  - [x] Indexes (SQLite, Postgres) ✅
   - [ ] Tables, Columns, Keys, Indexes for MySQL (Phase 5)
 - [x] Include execution metadata ✅
 
@@ -365,12 +364,12 @@
   - [x] `max_rows` from `--max-rows` ✅
   - [x] `timeout_ms` from `--timeout-ms` ✅
 - [x] Validate capabilities before execution ✅
-- [x] Execute query through engine trait: ✅ SQLite complete, Postgres/MySQL pending
+- [x] Execute query through engine trait: ✅ SQLite and Postgres complete, MySQL pending
   - [x] Build `ConnectionConfig` from resolved connection ✅
   - [x] Call `DatabaseEngine::execute()` for SQLite ✅ (Phase 3)
-  - [ ] Call `DatabaseEngine::execute()` for Postgres (Phase 4)
+  - [x] Call `DatabaseEngine::execute()` for Postgres ✅ (Phase 4)
   - [ ] Call `DatabaseEngine::execute()` for MySQL (Phase 5)
-- [x] Return JSON with query results ✅ SQLite complete, Postgres/MySQL pending
+- [x] Return JSON with query results ✅ SQLite and Postgres complete, MySQL pending
 - [x] Include execution metadata ✅
 
 ---
@@ -422,46 +421,46 @@
 
 ---
 
-## Phase 4: PostgreSQL Engine
+## Phase 4: PostgreSQL Engine ✅ COMPLETE
 
 ### 4.1 PostgreSQL Connection
-- [ ] Create `src/engine/postgres/mod.rs`
-- [ ] Implement `DatabaseEngine` trait for PostgreSQL
-- [ ] Implement connection establishment
-- [ ] Handle connection errors with proper wrapping
-- [ ] Detect and include PostgreSQL version in metadata
+- [x] Create `src/engine/postgres/mod.rs` ✅
+- [x] Implement `DatabaseEngine` trait for PostgreSQL ✅
+- [x] Implement connection establishment ✅
+- [x] Handle connection errors with proper wrapping ✅
+- [x] Detect and include PostgreSQL version in metadata ✅
 
 ### 4.2 PostgreSQL Introspection
-- [ ] Query `information_schema.tables`
-- [ ] Query `information_schema.columns`
-- [ ] Query primary key information
-- [ ] Query foreign key information
-- [ ] Query index information
-- [ ] Format results as `SchemaInfo`
-- [ ] Handle PostgreSQL-specific edge cases
+- [x] Query `information_schema.tables` ✅
+- [x] Query `information_schema.columns` ✅
+- [x] Query primary key information ✅
+- [x] Query foreign key information ✅
+- [x] Query index information ✅
+- [x] Format results as `SchemaInfo` ✅
+- [x] Handle PostgreSQL-specific edge cases ✅
 
 ### 4.3 PostgreSQL Query Execution
-- [ ] Implement query execution with capability checks
-- [ ] Parse result sets into JSON-safe format
-- [ ] Handle PostgreSQL data types:
-  - [ ] Numeric types
-  - [ ] String types
-  - [ ] Date/time types
-  - [ ] Boolean types
-  - [ ] NULL values
-  - [ ] Arrays (as JSON arrays)
-  - [ ] JSON/JSONB (as nested JSON)
-- [ ] Implement timeout enforcement
-- [ ] Implement row limit enforcement
-- [ ] Track execution time
+- [x] Implement query execution with capability checks ✅
+- [x] Parse result sets into JSON-safe format ✅
+- [x] Handle PostgreSQL data types: ✅
+  - [x] Numeric types ✅
+  - [x] String types ✅
+  - [x] Date/time types ✅
+  - [x] Boolean types ✅
+  - [x] NULL values ✅
+  - [x] Arrays (as JSON arrays) ✅
+  - [x] JSON/JSONB (as nested JSON) ✅
+- [x] Implement timeout enforcement ✅
+- [x] Implement row limit enforcement ✅
+- [x] Track execution time ✅
 
 ### 4.4 PostgreSQL Testing
-- [ ] Set up test database (in-memory or docker)
-- [ ] Write capability enforcement tests
-- [ ] Write introspection tests
-- [ ] Write query execution tests
-- [ ] Write error handling tests
-- [ ] Write JSON output snapshot tests
+- [x] Set up test database (integration tests with `#[ignore]` attribute) ✅
+- [x] Write capability enforcement tests ✅
+- [x] Write introspection tests ✅
+- [x] Write query execution tests ✅
+- [x] Write error handling tests ✅
+- [x] Write JSON output snapshot tests (11 tests total) ✅
 
 ---
 

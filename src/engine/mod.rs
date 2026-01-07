@@ -21,9 +21,10 @@ use crate::error::Result;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;  // Phase 3 ✅
 
+#[cfg(feature = "postgres")]
+pub mod postgres;  // Phase 4 (in progress)
+
 // Future phases:
-// #[cfg(feature = "postgres")]
-// pub mod postgres;  // Phase 4
 // #[cfg(feature = "mysql")]
 // pub mod mysql;     // Phase 5
 

@@ -14,9 +14,15 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use plenum::{
-    Capabilities, ConfigLocation, ConnectionConfig, DatabaseType, ErrorEnvelope, Metadata,
+    Capabilities, ConfigLocation, ConnectionConfig, DatabaseEngine, DatabaseType, ErrorEnvelope, Metadata,
     PlenumError, Result, SuccessEnvelope,
 };
+
+// Import database engines
+#[cfg(feature = "sqlite")]
+use plenum::engine::sqlite::SqliteEngine;
+#[cfg(feature = "postgres")]
+use plenum::engine::postgres::PostgresEngine;
 
 /// Plenum - Agent-First Database Control CLI
 #[derive(Parser)]
@@ -649,42 +655,47 @@ async fn handle_introspect(
         }
     };
 
-    // TODO: Phase 3-5: Call DatabaseEngine::introspect() once engines are implemented
-    // For now, return a "not implemented" error since engines don't exist yet
-    let error_envelope = ErrorEnvelope::new(
-        config.engine.as_str(),
-        "introspect",
-        plenum::ErrorInfo::new(
-            "NOT_IMPLEMENTED",
-            format!(
-                "Database engine '{}' not yet implemented. Introspection will be available in Phase 3-5.",
-                config.engine.as_str()
-            ),
-        ),
-    );
+    // Call appropriate database engine for introspection
+    let introspect_result = match config.engine {
+        #[cfg(feature = "sqlite")]
+        DatabaseType::SQLite => SqliteEngine::introspect(&config, schema.as_deref()),
 
-    output_error(&error_envelope);
-    Err(1)
+        #[cfg(feature = "postgres")]
+        DatabaseType::Postgres => PostgresEngine::introspect(&config, schema.as_deref()),
 
-    // Future implementation (Phase 3-5):
-    // match DatabaseEngine::introspect(&config, schema.as_deref()) {
-    //     Ok(schema_info) => {
-    //         let elapsed_ms = start.elapsed().as_millis() as u64;
-    //         let envelope = SuccessEnvelope::new(
-    //             config.engine.as_str(),
-    //             "introspect",
-    //             schema_info,
-    //             Metadata::new(elapsed_ms),
-    //         );
-    //         output_success(&envelope);
-    //         Ok(())
-    //     }
-    //     Err(e) => {
-    //         let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "introspect", &e);
-    //         output_error(&envelope);
-    //         Err(1)
-    //     }
-    // }
+        #[cfg(not(feature = "mysql"))]
+        DatabaseType::MySQL => {
+            Err(PlenumError::invalid_input(
+                "MySQL engine not enabled. Build with --features mysql to enable MySQL support."
+            ))
+        }
+
+        #[cfg(all(not(feature = "sqlite"), not(feature = "postgres"), not(feature = "mysql")))]
+        _ => {
+            Err(PlenumError::invalid_input(
+                format!("Engine '{}' not available. No database engines enabled in build.", config.engine.as_str())
+            ))
+        }
+    };
+
+    match introspect_result {
+        Ok(schema_info) => {
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let envelope = SuccessEnvelope::new(
+                config.engine.as_str(),
+                "introspect",
+                schema_info,
+                Metadata::new(elapsed_ms),
+            );
+            output_success(&envelope);
+            Ok(())
+        }
+        Err(e) => {
+            let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "introspect", &e);
+            output_error(&envelope);
+            Err(1)
+        }
+    }
 }
 
 async fn handle_query(
@@ -770,42 +781,48 @@ async fn handle_query(
         }
     }
 
-    // TODO: Phase 3-5: Call DatabaseEngine::execute() once engines are implemented
-    // For now, return a "not implemented" error since engines don't exist yet
-    let error_envelope = ErrorEnvelope::new(
-        config.engine.as_str(),
-        "query",
-        plenum::ErrorInfo::new(
-            "NOT_IMPLEMENTED",
-            format!(
-                "Database engine '{}' not yet implemented. Query execution will be available in Phase 3-5.",
-                config.engine.as_str()
-            ),
-        ),
-    );
+    // Call appropriate database engine for query execution
+    let execute_result = match config.engine {
+        #[cfg(feature = "sqlite")]
+        DatabaseType::SQLite => SqliteEngine::execute(&config, &sql_text, &capabilities),
 
-    output_error(&error_envelope);
-    Err(1)
+        #[cfg(feature = "postgres")]
+        DatabaseType::Postgres => PostgresEngine::execute(&config, &sql_text, &capabilities),
 
-    // Future implementation (Phase 3-5):
-    // match DatabaseEngine::execute(&config, &sql_text, &capabilities) {
-    //     Ok(query_result) => {
-    //         let elapsed_ms = start.elapsed().as_millis() as u64;
-    //         let envelope = SuccessEnvelope::new(
-    //             config.engine.as_str(),
-    //             "query",
-    //             query_result,
-    //             Metadata::with_rows(elapsed_ms, query_result.rows.len()),
-    //         );
-    //         output_success(&envelope);
-    //         Ok(())
-    //     }
-    //     Err(e) => {
-    //         let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "query", &e);
-    //         output_error(&envelope);
-    //         Err(1)
-    //     }
-    // }
+        #[cfg(not(feature = "mysql"))]
+        DatabaseType::MySQL => {
+            Err(PlenumError::invalid_input(
+                "MySQL engine not enabled. Build with --features mysql to enable MySQL support."
+            ))
+        }
+
+        #[cfg(all(not(feature = "sqlite"), not(feature = "postgres"), not(feature = "mysql")))]
+        _ => {
+            Err(PlenumError::invalid_input(
+                format!("Engine '{}' not available. No database engines enabled in build.", config.engine.as_str())
+            ))
+        }
+    };
+
+    match execute_result {
+        Ok(query_result) => {
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let row_count = query_result.rows.len();
+            let envelope = SuccessEnvelope::new(
+                config.engine.as_str(),
+                "query",
+                query_result,
+                Metadata::with_rows(elapsed_ms, row_count),
+            );
+            output_success(&envelope);
+            Ok(())
+        }
+        Err(e) => {
+            let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "query", &e);
+            output_error(&envelope);
+            Err(1)
+        }
+    }
 }
 
 async fn handle_mcp() -> std::result::Result<(), i32> {
