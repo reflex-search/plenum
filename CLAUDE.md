@@ -22,8 +22,8 @@ The implementation language is Rust.
    - Do NOT introduce compatibility layers or “universal SQL”.
 
 2. Agent-first, machine-only
-   - No interactive UX
-   - No REPL or TUI
+   - No interactive runtime UX (REPL or TUI for query execution)
+   - Interactive configuration is allowed (for `plenum connect` setup)
    - No autocomplete
    - No human-friendly output
    - Stdout MUST be JSON only.
@@ -76,13 +76,61 @@ All engines are first-class and equally constrained.
 
 Exactly three commands:
 
-plenum connect  
-plenum introspect  
-plenum query  
+**plenum connect** - Configuration management for database connections
+  - Interactive picker for existing connections (no args)
+  - Interactive wizard for creating new connections
+  - Non-interactive connection creation (with flags)
+  - Validates and stores connection details locally or globally
+  - Does NOT maintain persistent connections
 
-No aliases.  
-No shorthand flags.  
+**plenum introspect** - Schema introspection
+  - Uses stored connections or explicit connection flags
+  - Returns schema information as JSON
+
+**plenum query** - Constrained query execution
+  - Uses stored connections or explicit connection flags
+  - Requires explicit capability flags for writes/DDL
+  - Returns query results as JSON
+
+No aliases.
+No shorthand flags.
 No nested command trees.
+
+---
+
+## Connection Configuration
+
+Connection details can be stored for agent convenience:
+
+**Storage Locations:**
+- Local: `.plenum/config.json` (team-shareable, per-project)
+- Global: `~/.config/plenum/connections.json` (per-user, keyed by project path)
+
+**Resolution Precedence:**
+1. Explicit CLI flags (highest priority)
+2. Local config file
+3. Global config file
+4. Error if no connection available
+
+**Named Connections:**
+Connections are stored as named profiles (e.g., "local", "dev", "prod").
+Agents can reference connections by name: `plenum query --name prod --sql "..."`
+
+**Security:**
+- Credentials stored as plain JSON (user responsibility for machine security)
+- Support for environment variable references (`password_env` field)
+- Local configs can be committed to version control for team sharing
+- Global configs remain user-private
+
+**Stateless Execution:**
+Despite stored configurations, each command invocation:
+- Reads config from disk
+- Opens connection
+- Executes operation
+- Closes connection
+- Returns result
+
+No connections persist between invocations.
 
 ---
 
@@ -121,12 +169,13 @@ Stdout MUST NOT include logs or diagnostic text.
 
 ## Capability Model
 
-All actions are gated by explicit capabilities, including:
-- read_only
-- allow_write
-- allow_ddl
-- max_rows
-- timeout_ms
+Read-only is the default mode (SELECT queries only).
+
+Operations requiring higher privileges are gated by explicit capability flags:
+- allow_write (enables INSERT, UPDATE, DELETE)
+- allow_ddl (enables CREATE, DROP, ALTER, etc.)
+- max_rows (limits result set size)
+- timeout_ms (limits execution time)
 
 Violations MUST fail before query execution.
 

@@ -4,122 +4,101 @@
 
 This document identifies architectural contradictions between PROJECT_PLAN.md and CLAUDE.md's core principles. Each issue must be resolved before implementation begins.
 
-**Status:** All issues unresolved
+**Status:** Problems 1 & 2 resolved
 **Last Updated:** 2026-01-06
 
 ---
 
 ## Critical Issues (Implementation Blockers)
 
-### 🚨 PROBLEM 1: Stateful Trait Design Contradicts Stateless Requirement
+### ✅ PROBLEM 1: Stateful Trait Design Contradicts Stateless Requirement [RESOLVED]
 
 **Location:** PROJECT_PLAN.md Phase 1.1 (line 45)
 
 **Issue:**
-```rust
-fn connect(config: ConnectionConfig) -> Result<Self>
-```
+The original trait signature `fn connect(config: ConnectionConfig) -> Result<Self>` suggested maintaining connection state, contradicting the stateless design requirement.
 
-This trait signature suggests the `DatabaseEngine` trait maintains connection state by returning `Self`, which would be stored and reused across operations.
+**Resolution: Option A - Stateless Trait**
 
-**Contradiction with CLAUDE.md:**
-- "No persistent sessions" (CLAUDE.md line 157)
-- "Stateless design" (RESEARCH.md line 114)
-- PROJECT_PLAN.md itself states "Do NOT maintain persistent connections" (line 129)
-
-**Why This Matters:**
-A stateful design fundamentally contradicts the MCP integration model where "credentials are passed per invocation" and there is "no shared global state." This architectural mismatch will create friction throughout the codebase.
-
-**Proposed Solution:**
-
-**Option A: Stateless Trait (Recommended)**
 ```rust
 trait DatabaseEngine {
+    fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo>;
     fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo>;
     fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult>;
 }
 ```
 
-Each operation is self-contained with no connection state. Engines handle connection/disconnection internally per operation.
+**Changes Made:**
+- Updated PROJECT_PLAN.md Phase 1.1 with stateless trait design
+- All trait methods are static and take `&ConnectionConfig` as parameter
+- Each operation handles connection internally: connect → execute → disconnect
+- No connection state stored between operations
+- Enforces statelessness by design (impossible to violate)
 
-**Option B: Connection-Per-Operation**
-```rust
-trait DatabaseEngine {
-    fn connect(config: &ConnectionConfig) -> Result<Connection>;
-}
+**Benefits:**
+- Perfect alignment with MCP per-invocation model
+- Simple mental model: one function call = one complete operation
+- No lifecycle management needed
+- Prevents accidental state leakage
 
-trait Connection {
-    fn introspect(&self, schema_filter: Option<&str>) -> Result<SchemaInfo>;
-    fn execute(&self, query: &str, caps: &Capabilities) -> Result<QueryResult>;
-}
-```
-
-Connection object is created and dropped within a single CLI invocation. Never persisted between invocations.
-
-**Recommendation:** Option A is simpler and enforces statelessness by design.
-
-**Dependencies:**
-- Affects all of Phase 1.1 (trait definitions)
-- Impacts Phase 3, 4, 5 (all engine implementations)
-- Determines MCP server architecture (Phase 7)
-
-**Action Required:**
-Rewrite Phase 1.1 trait definitions to be stateless before proceeding.
+**Date Resolved:** 2026-01-06
 
 ---
 
-### 🚨 PROBLEM 2: Unclear Purpose of `connect` Command
+### ✅ PROBLEM 2: Unclear Purpose of `connect` Command [RESOLVED]
 
 **Location:** PROJECT_PLAN.md Phase 2.2 (lines 118-129)
 
 **Issue:**
-If Plenum is stateless and connections are not persistent, what does `plenum connect` actually do? The plan specifies:
-- "Implement connection validation" (line 127)
-- "Return JSON success/error envelope" (line 128)
-- "Do NOT maintain persistent connections" (line 129)
+The purpose of `plenum connect` was unclear in a stateless design where connections are not persistent.
 
-But `introspect` and `query` commands both accept full connection parameters (lines 132-135, 145-152), making them self-sufficient.
+**Resolution: Option C (Enhanced) - Configuration Management**
 
-**Contradiction with CLAUDE.md:**
-CLAUDE.md specifies "Exactly three commands" (line 77) but doesn't justify why a separate `connect` command exists if it doesn't establish a persistent session.
+`plenum connect` is for **managing stored connection configurations**, not establishing persistent sessions.
 
-**Why This Matters:**
-If `connect` only validates credentials, it's redundant—`introspect` or `query` would fail on invalid credentials anyway. This violates the "simplest explicit implementation" principle (CLAUDE.md line 208).
+**Behavior:**
 
-**Proposed Solution:**
+1. **Interactive connection picker** (no args):
+   - Lists existing named connections (local, dev, prod)
+   - Shows "--- New ---" option to create new connection
+   - Launches configuration wizard for new connections
 
-**Option A: Remove `connect` Command**
-Only keep:
-- `plenum introspect` (validates connection as side effect of introspection)
-- `plenum query` (validates connection as side effect of query)
+2. **Interactive configuration wizard**:
+   - Prompts for engine, host, port, user, password, database
+   - Prompts for connection name
+   - Prompts for save location (local/global)
+   - Validates connection before saving
 
-This is simpler and more aligned with stateless design.
+3. **Non-interactive configuration** (with flags):
+   ```bash
+   plenum connect --name prod --engine postgres --host prod.example.com \
+     --user readonly --password secret --database myapp --save global
+   ```
 
-**Option B: Make `connect` a Dedicated Validation Tool**
-Keep `connect` as an explicit credential validation step:
-```bash
-plenum connect --engine postgres --host localhost --user admin --password secret
-# Returns: {"ok": true, "engine": "postgres", "command": "connect", "meta": {...}}
-```
+4. **Connection validation**:
+   - Tests connectivity
+   - Returns connection metadata (version, server info)
+   - Does NOT maintain persistent connection
 
-Useful for debugging connection issues without executing queries.
+**Storage:**
+- Local: `.plenum/config.json` (team-shareable)
+- Global: `~/.config/plenum/connections.json` (per-user, keyed by project path)
 
-**Option C: Reinterpret `connect` as "Connection String Builder"**
-`connect` validates and returns a connection string for use in other commands. But this contradicts the "no human conveniences" principle.
+**Changes Made:**
+- Added PROJECT_PLAN.md Phase 1.5 (Configuration Management)
+- Updated Phase 2.2 with interactive/non-interactive modes
+- Updated Phases 2.3 & 2.4 to support `--name` flag for named connections
+- Updated CLAUDE.md with "Connection Configuration" section
+- Added Phase 0.3 dependencies: `dialoguer`/`inquire`, `dirs`
 
-**Recommendation:**
+**Benefits:**
+- Agents don't manage credentials (human configures once)
+- Simple agent commands: `plenum query --name prod --sql "..."`
+- Teams can share local configs (for dev environments)
+- Users keep production credentials private (global config)
+- Maintains stateless execution (config read on each invocation)
 
-Option B maintains the three-command structure while providing clear utility. If chosen, update CLAUDE.md to explicitly state: *"`connect` validates credentials without executing queries or introspection."*
-
-Alternatively, Option A simplifies to two commands and removes ambiguity.
-
-**Dependencies:**
-- Affects CLI command surface definition (Phase 2.1)
-- Impacts MCP tool mapping (Phase 7.2)
-- Requires update to CLAUDE.md if command is removed
-
-**Action Required:**
-Explicitly decide the purpose of `connect` or remove it. Document the decision in CLAUDE.md.
+**Date Resolved:** 2026-01-06
 
 ---
 
@@ -619,11 +598,11 @@ WITH RECURSIVE cte AS (...) SELECT ...
 Before proceeding to implementation, verify all problems are resolved:
 
 ### Critical Issues
-- [ ] **PROBLEM 1:** Trait design rewritten to be stateless
-- [ ] **PROBLEM 2:** `connect` command purpose clarified or removed
+- [x] **PROBLEM 1:** Trait design rewritten to be stateless ✅ (2026-01-06)
+- [x] **PROBLEM 2:** `connect` command purpose clarified as configuration management ✅ (2026-01-06)
 - [ ] **PROBLEM 3:** MCP architecture chosen and documented
 - [ ] **PROBLEM 4:** SQLx removed; native drivers mandated
-- [ ] **PROBLEM 5:** `--read-only` flag removed from design
+- [ ] **PROBLEM 5:** `--read-only` flag removed from design (✅ partially done in Phase 2.4)
 - [ ] **PROBLEM 6:** MCP research moved to Phase 0
 - [ ] **PROBLEM 7:** Security model clarified in plan
 
@@ -632,8 +611,8 @@ Before proceeding to implementation, verify all problems are resolved:
 - [ ] **PROBLEM 9:** SQL parsing strategy explicitly chosen
 
 ### Documentation Updates Required
-- [ ] Update PROJECT_PLAN.md with resolutions
-- [ ] Update CLAUDE.md if command surface changes
+- [x] Update PROJECT_PLAN.md with resolutions (Phases 0.3, 1.1, 1.5, 2.2, 2.3, 2.4) ✅
+- [x] Update CLAUDE.md if command surface changes ✅
 - [ ] Update RESEARCH.md with architectural decisions
 - [ ] Document security model clearly
 
