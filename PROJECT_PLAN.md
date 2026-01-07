@@ -154,7 +154,15 @@
   - [ ] Read-only: SELECT
   - [ ] Write: INSERT, UPDATE, DELETE
   - [ ] DDL: CREATE, DROP, ALTER, TRUNCATE, RENAME
-- [ ] Implement pre-execution capability checks
+- [ ] Implement capability hierarchy:
+  - [ ] **DDL implies write**: If `allow_ddl = true`, treat `allow_write` as true
+  - [ ] **Write does NOT imply DDL**: `allow_write` alone cannot execute DDL
+  - [ ] Read-only is default (both `allow_write` and `allow_ddl` are false)
+  - [ ] Rationale: DDL operations are inherently write operations (more dangerous)
+- [ ] Implement pre-execution capability checks:
+  - [ ] DDL queries require `allow_ddl = true` (explicit flag required)
+  - [ ] Write queries require `allow_write = true` OR `allow_ddl = true`
+  - [ ] Read-only queries always permitted
 - [ ] Handle MySQL implicit commit cases
 - [ ] Add capability validation unit tests
 

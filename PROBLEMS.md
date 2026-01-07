@@ -299,65 +299,43 @@ If `sqlx` is used, it must be used **only for a single engine** with that engine
 
 ---
 
-### 🚨 PROBLEM 5: Read-Only Flag Design Error
+### ✅ PROBLEM 5: Read-Only Flag Design Error [RESOLVED]
 
 **Location:** PROJECT_PLAN.md Phase 2.4, line 148
 
 **Issue:**
-```
-- [ ] `--read-only` (default: true)
-- [ ] `--allow-write` (explicit flag)
-- [ ] `--allow-ddl` (explicit flag)
-```
+The original design included a redundant `--read-only` flag when read-only is already the default.
 
-If read-only is the **default**, why have a `--read-only` flag?
+**Resolution: Capability Flag Design + Hierarchy Definition**
 
-**Contradiction with CLAUDE.md:**
-- "Read-only is the default mode" (CLAUDE.md line 37)
-- "Capabilities are NEVER inferred" (CLAUDE.md line 133)
-- "Least privilege" principle (CLAUDE.md line 36-39)
+**Changes Made to PROJECT_PLAN.md:**
+- Phase 2.4 (lines 293-307): Removed `--read-only` flag ✅
+- Phase 2.4 (line 303): Explicitly states "Read-only by default (no flag needed)" ✅
+- Phase 1.1 (lines 97-98): `Capabilities` struct has no `read_only` field ✅
+- Phase 1.4 (lines 157-167): Added capability hierarchy documentation ✅
 
-**Why This Matters:**
-Having a `--read-only` flag implies read-only is **optional** rather than the **default**. It creates ambiguity about the capability model:
-- Does omitting all flags mean read-only? (should be yes)
-- Can you pass `--read-only` with `--allow-write`? (contradiction)
-- Does `--read-only` do anything if it's the default? (redundant)
+**Changes Made to CLAUDE.md:**
+- Added "Capability Hierarchy" section with:
+  - Three-tier model: Read-only (default) → Write → DDL
+  - Explicit rule: `--allow-ddl` implicitly grants write permissions
+  - Explicit rule: `--allow-write` does NOT enable DDL
+  - Five concrete examples showing allowed/denied combinations
 
-**Proposed Solution:**
+**Capability Hierarchy Decision:**
+**DDL implies write** (DDL is a superset of write operations)
 
-**Correct capability flags:**
-- **No `--read-only` flag** (it's the immutable default)
-- `--allow-write` (opts into write operations: INSERT, UPDATE, DELETE)
-- `--allow-ddl` (opts into DDL operations: CREATE, DROP, ALTER)
+**Final Flag Behavior:**
+- **No flags** → Read-only (SELECT only)
+- `--allow-write` → INSERT, UPDATE, DELETE (but NOT DDL)
+- `--allow-ddl` → DDL operations AND write operations
 
-**Capability matrix:**
-```bash
-# Default: read-only (SELECT queries only)
-plenum query --sql "SELECT * FROM users"
+**Rationale:**
+- Maintains explicitness: Agents must explicitly request `--allow-ddl`
+- Logical hierarchy: If you can DROP TABLE, you should be able to INSERT
+- Agent safety: DDL is more dangerous than write, so it's a superset capability
+- Aligns with CLAUDE.md principle: "DDL operations are write operations"
 
-# Explicit write permission
-plenum query --sql "UPDATE users SET ..." --allow-write
-
-# DDL permission (implies write)
-plenum query --sql "CREATE TABLE ..." --allow-ddl
-
-# Invalid: DDL requires explicit flag even with --allow-write
-plenum query --sql "DROP TABLE ..." --allow-write  # SHOULD FAIL
-```
-
-**Implementation detail:**
-`--allow-ddl` should imply `--allow-write` (DDL operations are inherently write operations), but both must be explicit.
-
-**Dependencies:**
-- Affects Phase 2.4 (query command design)
-- Impacts Phase 1.2 (Capabilities struct)
-- Influences capability validation (Phase 1.4)
-
-**Action Required:**
-1. Remove `--read-only` flag from Phase 2.4
-2. Clarify that default is read-only (no flag needed)
-3. Define capability hierarchy (does DDL imply write?)
-4. Update CLAUDE.md if hierarchy needs documentation
+**Date Resolved:** 2026-01-06
 
 ---
 
@@ -664,7 +642,7 @@ Before proceeding to implementation, verify all problems are resolved:
 - [x] **PROBLEM 2:** `connect` command purpose clarified as configuration management ✅ (2026-01-06)
 - [x] **PROBLEM 3:** MCP architecture chosen and documented ✅ (2026-01-06)
 - [x] **PROBLEM 4:** SQLx removed; native drivers mandated ✅ (2026-01-06)
-- [ ] **PROBLEM 5:** `--read-only` flag removed from design (✅ partially done in Phase 2.4)
+- [x] **PROBLEM 5:** `--read-only` flag removed; capability hierarchy defined ✅ (2026-01-06)
 - [x] **PROBLEM 6:** MCP research moved to Phase 0 ✅ (resolved with PROBLEM 3, 2026-01-06)
 - [ ] **PROBLEM 7:** Security model clarified in plan
 
@@ -673,10 +651,10 @@ Before proceeding to implementation, verify all problems are resolved:
 - [ ] **PROBLEM 9:** SQL parsing strategy explicitly chosen
 
 ### Documentation Updates Required
-- [x] Update PROJECT_PLAN.md with resolutions (Phases 0.3, 1.1, 1.5, 2.2, 2.3, 2.4) ✅
-- [x] Update CLAUDE.md if command surface changes ✅
+- [x] Update PROJECT_PLAN.md with resolutions (Phases 0.3, 1.1, 1.4, 1.5, 2.2, 2.3, 2.4) ✅
+- [x] Update CLAUDE.md with capability hierarchy ✅
 - [x] Update RESEARCH.md with architectural decisions (native driver strategy documented) ✅
-- [ ] Document security model clearly
+- [ ] Document security model clearly (PROBLEM 7)
 
 ---
 

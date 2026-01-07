@@ -181,6 +181,25 @@ Violations MUST fail before query execution.
 
 Capabilities are NEVER inferred.
 
+### Capability Hierarchy
+
+Capabilities follow a strict hierarchy:
+- **Read-only** (default): No flags needed, SELECT queries only
+- **Write**: Requires `--allow-write` flag, enables INSERT, UPDATE, DELETE
+- **DDL**: Requires `--allow-ddl` flag, enables DDL operations AND write operations
+
+**Important rules:**
+- `--allow-ddl` implicitly grants write permissions (DDL is a superset of write)
+- `--allow-write` does NOT enable DDL operations (DDL requires explicit flag)
+- Agents must explicitly request `--allow-ddl` even if write is already enabled
+
+**Examples:**
+- `plenum query --sql "SELECT ..."` → allowed (read-only default)
+- `plenum query --sql "INSERT ..." --allow-write` → allowed
+- `plenum query --sql "CREATE TABLE ..." --allow-write` → DENIED (needs --allow-ddl)
+- `plenum query --sql "CREATE TABLE ..." --allow-ddl` → allowed (DDL implies write)
+- `plenum query --sql "INSERT ..." --allow-ddl` → allowed (DDL implies write)
+
 ---
 
 ## MySQL-Specific Constraints
