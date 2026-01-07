@@ -367,16 +367,63 @@
 
 ---
 
-## Phase 3: PostgreSQL Engine
+## Phase 3: SQLite Engine
 
-### 3.1 PostgreSQL Connection
+**Note:** SQLite is implemented first (before PostgreSQL and MySQL) because:
+- **No external dependencies**: File-based, no database server needed
+- **Synchronous driver**: Simpler than async drivers (validates trait design)
+- **Easy testing**: In-memory databases (`:memory:`) for fast, isolated tests
+- **Fastest development cycle**: Immediate feedback without setup complexity
+
+### 3.1 SQLite Connection
+- [ ] Create `src/engine/sqlite/mod.rs`
+- [ ] Implement `DatabaseEngine` trait for SQLite
+- [ ] Implement file-based connection
+- [ ] Implement in-memory connection (`:memory:`)
+- [ ] Detect SQLite version
+- [ ] Handle connection errors with proper wrapping
+
+### 3.2 SQLite Introspection
+- [ ] Query `sqlite_master` table
+- [ ] Use `PRAGMA table_info()` for column information
+- [ ] Use `PRAGMA foreign_key_list()` for foreign keys
+- [ ] Use `PRAGMA index_list()` for indexes
+- [ ] Format results as `SchemaInfo`
+- [ ] Handle SQLite-specific edge cases
+
+### 3.3 SQLite Query Execution
+- [ ] Implement query execution with capability checks
+- [ ] Parse result sets into JSON-safe format
+- [ ] Handle SQLite data types (dynamic typing):
+  - [ ] INTEGER
+  - [ ] REAL
+  - [ ] TEXT
+  - [ ] BLOB (as base64 or hex)
+  - [ ] NULL
+- [ ] Implement timeout enforcement
+- [ ] Implement row limit enforcement
+- [ ] Track execution time
+
+### 3.4 SQLite Testing
+- [ ] Set up test database (in-memory)
+- [ ] Write capability enforcement tests
+- [ ] Write introspection tests
+- [ ] Write query execution tests
+- [ ] Write error handling tests
+- [ ] Write JSON output snapshot tests
+
+---
+
+## Phase 4: PostgreSQL Engine
+
+### 4.1 PostgreSQL Connection
 - [ ] Create `src/engine/postgres/mod.rs`
 - [ ] Implement `DatabaseEngine` trait for PostgreSQL
 - [ ] Implement connection establishment
 - [ ] Handle connection errors with proper wrapping
 - [ ] Detect and include PostgreSQL version in metadata
 
-### 3.2 PostgreSQL Introspection
+### 4.2 PostgreSQL Introspection
 - [ ] Query `information_schema.tables`
 - [ ] Query `information_schema.columns`
 - [ ] Query primary key information
@@ -385,7 +432,7 @@
 - [ ] Format results as `SchemaInfo`
 - [ ] Handle PostgreSQL-specific edge cases
 
-### 3.3 PostgreSQL Query Execution
+### 4.3 PostgreSQL Query Execution
 - [ ] Implement query execution with capability checks
 - [ ] Parse result sets into JSON-safe format
 - [ ] Handle PostgreSQL data types:
@@ -400,7 +447,7 @@
 - [ ] Implement row limit enforcement
 - [ ] Track execution time
 
-### 3.4 PostgreSQL Testing
+### 4.4 PostgreSQL Testing
 - [ ] Set up test database (in-memory or docker)
 - [ ] Write capability enforcement tests
 - [ ] Write introspection tests
@@ -410,9 +457,9 @@
 
 ---
 
-## Phase 4: MySQL Engine
+## Phase 5: MySQL Engine
 
-### 4.1 MySQL Connection
+### 5.1 MySQL Connection
 - [ ] Create `src/engine/mysql/mod.rs`
 - [ ] Implement `DatabaseEngine` trait for MySQL
 - [ ] Implement connection establishment
@@ -420,7 +467,7 @@
 - [ ] Handle MariaDB detection and versioning
 - [ ] Handle connection errors with proper wrapping
 
-### 4.2 MySQL Introspection
+### 5.2 MySQL Introspection
 - [ ] Query `information_schema.tables`
 - [ ] Query `information_schema.columns`
 - [ ] Query primary key information
@@ -431,7 +478,7 @@
 - [ ] Handle MySQL-specific edge cases
 - [ ] Handle storage engine variations
 
-### 4.3 MySQL Query Execution
+### 5.3 MySQL Query Execution
 - [ ] Implement query execution with capability checks
 - [ ] Handle implicit commit detection (DDL statements)
 - [ ] Parse result sets into JSON-safe format
@@ -449,52 +496,11 @@
 - [ ] Track execution time
 - [ ] Surface version-specific behaviors in metadata
 
-### 4.4 MySQL Testing
+### 5.4 MySQL Testing
 - [ ] Set up test database (docker with specific versions)
 - [ ] Test against multiple MySQL versions
 - [ ] Write capability enforcement tests
 - [ ] Write DDL implicit commit tests
-- [ ] Write introspection tests
-- [ ] Write query execution tests
-- [ ] Write error handling tests
-- [ ] Write JSON output snapshot tests
-
----
-
-## Phase 5: SQLite Engine
-
-### 5.1 SQLite Connection
-- [ ] Create `src/engine/sqlite/mod.rs`
-- [ ] Implement `DatabaseEngine` trait for SQLite
-- [ ] Implement file-based connection
-- [ ] Implement in-memory connection (`:memory:`)
-- [ ] Detect SQLite version
-- [ ] Handle connection errors with proper wrapping
-
-### 5.2 SQLite Introspection
-- [ ] Query `sqlite_master` table
-- [ ] Use `PRAGMA table_info()` for column information
-- [ ] Use `PRAGMA foreign_key_list()` for foreign keys
-- [ ] Use `PRAGMA index_list()` for indexes
-- [ ] Format results as `SchemaInfo`
-- [ ] Handle SQLite-specific edge cases
-
-### 5.3 SQLite Query Execution
-- [ ] Implement query execution with capability checks
-- [ ] Parse result sets into JSON-safe format
-- [ ] Handle SQLite data types (dynamic typing):
-  - [ ] INTEGER
-  - [ ] REAL
-  - [ ] TEXT
-  - [ ] BLOB (as base64 or hex)
-  - [ ] NULL
-- [ ] Implement timeout enforcement
-- [ ] Implement row limit enforcement
-- [ ] Track execution time
-
-### 5.4 SQLite Testing
-- [ ] Set up test database (in-memory)
-- [ ] Write capability enforcement tests
 - [ ] Write introspection tests
 - [ ] Write query execution tests
 - [ ] Write error handling tests
@@ -923,15 +929,17 @@
 
 - **Phase 0-1:** 1-2 weeks (Foundation)
 - **Phase 2:** 1 week (CLI)
-- **Phase 3:** 1-2 weeks (PostgreSQL)
-- **Phase 4:** 1-2 weeks (MySQL)
-- **Phase 5:** 1 week (SQLite)
+- **Phase 3:** 3-5 days (SQLite) ⚡ Fastest implementation
+- **Phase 4:** 1-2 weeks (PostgreSQL)
+- **Phase 5:** 1-2 weeks (MySQL)
 - **Phase 6:** 1-2 weeks (Integration)
 - **Phase 7:** 1-2 weeks (MCP Server)
 - **Phase 8:** 1 week (Security Audit)
 - **Phase 9:** 1 week (Release Prep)
 
-**Total Estimated Timeline:** 10-14 weeks
+**Total Estimated Timeline:** 9-14 weeks
+
+**Phase 3 Rationale:** SQLite implementation is faster because it's synchronous (no async complexity), requires no external setup, and allows immediate in-memory testing. This validates the architecture quickly before tackling async drivers.
 
 ---
 
