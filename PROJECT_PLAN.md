@@ -12,6 +12,12 @@
 
 ### 0.1 Repository Setup
 - [x] Initialize Git repository ✅
+- [x] Create documentation files ✅
+  - [x] CLAUDE.md (core principles and architecture)
+  - [x] PROJECT_PLAN.md (implementation roadmap)
+  - [x] PROBLEMS.md (architectural issues tracking)
+  - [x] RESEARCH.md (design decisions and rationale)
+  - [x] README.md (placeholder - needs expansion)
 - [ ] Initialize Rust project structure
   - [ ] Run `cargo init --name plenum --lib`
   - [ ] Configure Cargo.toml with both binary and library targets:
@@ -29,10 +35,10 @@
   - [ ] Set up `src/main.rs` as CLI entry point
 - [ ] Configure `.gitignore` for Rust builds
   - [ ] Add `/target`
-  - [ ] Add `Cargo.lock`
   - [ ] Add `/.idea` and other IDE-specific directories
+  - [ ] Note: Do NOT add `Cargo.lock` (should be committed for binary projects)
 - [ ] Add LICENSE file (MIT OR Apache-2.0)
-- [ ] Update README.md with project description and build instructions
+- [ ] Expand README.md with project description and build instructions
 
 ### 0.2 Development Environment
 - [ ] Define Rust toolchain version (stable/nightly)

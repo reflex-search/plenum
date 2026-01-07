@@ -4,8 +4,8 @@
 
 This document identifies architectural contradictions between PROJECT_PLAN.md and CLAUDE.md's core principles. Each issue must be resolved before implementation begins.
 
-**Status:** Problems 1 & 2 resolved
-**Last Updated:** 2026-01-06
+**Status:** Problems 1-8 resolved (critical issues complete)
+**Last Updated:** 2026-01-07
 
 ---
 
@@ -538,47 +538,41 @@ Agents must sanitize inputs, validate queries, and implement application-level s
 
 ## Moderate Issues (Should Fix Before Implementation)
 
-### ⚠️ PROBLEM 8: Phase 0 Redundancy
+### ✅ PROBLEM 8: Phase 0 Redundancy [RESOLVED]
 
-**Location:** PROJECT_PLAN.md Phase 0.1, lines 13-19
+**Location:** PROJECT_PLAN.md Phase 0.1, lines 13-41
 
 **Issue:**
-```
-### 0.1 Repository Setup
-- [ ] Initialize Rust project with Cargo
-- [ ] Configure `.gitignore` for Rust projects
-- [ ] Set up basic project structure
-- [ ] Add LICENSE file
-- [ ] Create initial README.md with project description
-```
+Phase 0.1 tasks didn't accurately reflect the current repository state. Git repository was already initialized with documentation files (CLAUDE.md, PROJECT_PLAN.md, PROBLEMS.md, RESEARCH.md, README.md), but the checklist didn't acknowledge this progress.
 
-**Current State:**
-Git status shows repository already initialized with commits:
-- `036a688 Initial commit`
-- `333061d Add CLAUDE.md`
-- `4393759 Initial plan`
+**Additional Issues Found:**
+1. README.md already exists but isn't marked as created
+2. Cargo.lock incorrectly listed in .gitignore (should be committed for binary projects)
+3. Existing documentation files not acknowledged
 
-**Proposed Solution:**
-Rewrite Phase 0.1 to reflect current state:
-```
-### 0.1 Repository Setup
-- [x] Initialize Rust project with Cargo
-- [ ] Initialize Cargo project structure
-  - [ ] Run `cargo init --name plenum`
-  - [ ] Configure Cargo.toml with metadata
-  - [ ] Set up workspace structure (if using Architecture B from PROBLEM 3)
-- [ ] Configure `.gitignore` for Rust builds
-  - [ ] Add `/target`
-  - [ ] Add `Cargo.lock` (if library)
-- [ ] Add LICENSE file (choose license)
-- [ ] Update README.md with build instructions
-```
+**Resolution:**
 
-**Dependencies:**
-- Depends on PROBLEM 3 resolution (workspace structure)
+**Changes Made to PROJECT_PLAN.md Phase 0.1:**
+- Added new checklist section acknowledging completed documentation files ✅
+- Marked all documentation files as complete (CLAUDE.md, PROJECT_PLAN.md, PROBLEMS.md, RESEARCH.md)
+- Changed "Update README.md" to "Expand README.md" to reflect it exists but needs content
+- Removed Cargo.lock from .gitignore checklist with note explaining it should be committed
+- Added clarifying note: "Do NOT add `Cargo.lock` (should be committed for binary projects)"
 
-**Action Required:**
-Update Phase 0.1 tasks to reflect repository's current state.
+**Rationale:**
+- **Git repository**: Already initialized ✅
+- **Documentation**: Core planning docs already created ✅
+- **Cargo.lock handling**: For binary/application projects (like plenum), Cargo.lock should be committed to ensure reproducible builds
+- **Clarity**: Phase 0.1 now clearly shows what's done vs. what remains
+
+**Current State After Resolution:**
+Phase 0.1 accurately reflects repository state and specifies remaining tasks:
+- Rust project initialization (Cargo.toml, src/ structure)
+- .gitignore configuration
+- LICENSE file creation
+- README.md expansion with project description and build instructions
+
+**Date Resolved:** 2026-01-07
 
 ---
 
@@ -697,7 +691,7 @@ Before proceeding to implementation, verify all problems are resolved:
 - [x] **PROBLEM 7:** Security model clarified in plan ✅ (2026-01-06)
 
 ### Moderate Issues
-- [ ] **PROBLEM 8:** Phase 0 updated to reflect repo state
+- [x] **PROBLEM 8:** Phase 0 updated to reflect repo state ✅ (2026-01-07)
 - [ ] **PROBLEM 9:** SQL parsing strategy explicitly chosen
 
 ### Documentation Updates Required
