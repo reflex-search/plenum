@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://plenum.dev/schemas/error_envelope.json",
+  "title": "Plenum Error Envelope",
+  "description": "Error response envelope for all Plenum operations",
+  "type": "object",
+  "required": ["ok", "engine", "command", "error"],
+  "properties": {
+    "ok": {
+      "type": "boolean",
+      "const": false,
+      "description": "Always false for error envelopes"
+    },
+    "engine": {
+      "type": "string",
+      "description": "Database engine that was being used (empty string if unknown or not applicable)"
+    },
+    "command": {
+      "type": "string",
+      "description": "The command that failed"
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "CAPABILITY_VIOLATION",
+            "CONNECTION_FAILED",
+            "QUERY_FAILED",
+            "INVALID_INPUT",
+            "ENGINE_ERROR",
+            "CONFIG_ERROR",
+            "INTERNAL_ERROR",
+            "NOT_IMPLEMENTED",
+            "NO_SUBCOMMAND"
+          ],
+          "description": "Stable error code for programmatic handling"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable error message (agent-appropriate, no sensitive data)"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Error details"
+    }
+  },
+  "additionalProperties": false
+}

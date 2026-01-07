@@ -1,0 +1,13 @@
+---
+source: tests/output_validation.rs
+expression: json_str
+---
+{
+  "ok": false,
+  "engine": "postgres",
+  "command": "query",
+  "error": {
+    "code": "QUERY_FAILED",
+    "message": "Column 'invalid' does not exist"
+  }
+}

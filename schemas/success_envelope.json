@@ -1,0 +1,220 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://plenum.dev/schemas/success_envelope.json",
+  "title": "Plenum Success Envelope",
+  "description": "Success response envelope for all Plenum operations",
+  "type": "object",
+  "required": ["ok", "engine", "command", "data", "meta"],
+  "properties": {
+    "ok": {
+      "type": "boolean",
+      "const": true,
+      "description": "Always true for success envelopes"
+    },
+    "engine": {
+      "type": "string",
+      "enum": ["postgres", "mysql", "sqlite", ""],
+      "description": "Database engine that executed the operation (empty string for engine-agnostic operations)"
+    },
+    "command": {
+      "type": "string",
+      "enum": ["connect", "introspect", "query"],
+      "description": "The command that was executed"
+    },
+    "data": {
+      "description": "Command-specific result data (structure varies by command)",
+      "oneOf": [
+        { "$ref": "#/$defs/ConnectionInfo" },
+        { "$ref": "#/$defs/SchemaInfo" },
+        { "$ref": "#/$defs/QueryResult" },
+        { "type": "object" }
+      ]
+    },
+    "meta": {
+      "type": "object",
+      "required": ["execution_ms"],
+      "properties": {
+        "execution_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Execution time in milliseconds"
+        },
+        "rows_returned": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of rows returned (for query command)"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "ConnectionInfo": {
+      "type": "object",
+      "required": ["database_version", "server_info", "connected_database", "user"],
+      "properties": {
+        "database_version": {
+          "type": "string",
+          "description": "Database version string"
+        },
+        "server_info": {
+          "type": "string",
+          "description": "Server/engine information"
+        },
+        "connected_database": {
+          "type": "string",
+          "description": "Name of connected database"
+        },
+        "user": {
+          "type": "string",
+          "description": "Connected user (or 'N/A' for SQLite)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SchemaInfo": {
+      "type": "object",
+      "required": ["tables"],
+      "properties": {
+        "tables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TableInfo"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "TableInfo": {
+      "type": "object",
+      "required": ["name", "columns"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Table name"
+        },
+        "schema": {
+          "type": ["string", "null"],
+          "description": "Schema name (null for SQLite)"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ColumnInfo"
+          }
+        },
+        "primary_key": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          },
+          "description": "Primary key column names"
+        },
+        "foreign_keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ForeignKeyInfo"
+          }
+        },
+        "indexes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IndexInfo"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ColumnInfo": {
+      "type": "object",
+      "required": ["name", "data_type", "nullable"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "data_type": {
+          "type": "string"
+        },
+        "nullable": {
+          "type": "boolean"
+        },
+        "default": {
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ForeignKeyInfo": {
+      "type": "object",
+      "required": ["name", "columns", "referenced_table", "referenced_columns"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "referenced_table": {
+          "type": "string"
+        },
+        "referenced_columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "IndexInfo": {
+      "type": "object",
+      "required": ["name", "columns", "unique"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unique": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "QueryResult": {
+      "type": "object",
+      "required": ["columns", "rows"],
+      "properties": {
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Column names in result set"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "description": "Row data as key-value pairs (column name -> value)"
+          },
+          "description": "Result rows"
+        },
+        "rows_affected": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Number of rows affected (for DML/DDL operations, null for SELECT)"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

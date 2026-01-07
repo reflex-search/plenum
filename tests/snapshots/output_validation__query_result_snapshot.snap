@@ -1,0 +1,23 @@
+---
+source: tests/output_validation.rs
+expression: json_str
+---
+{
+  "columns": [
+    "id",
+    "name",
+    "email"
+  ],
+  "rows": [
+    {
+      "email": null,
+      "id": 1,
+      "name": "Alice"
+    },
+    {
+      "email": "bob@example.com",
+      "id": 2,
+      "name": "Bob"
+    }
+  ]
+}
