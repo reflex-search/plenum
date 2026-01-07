@@ -24,9 +24,9 @@ pub mod sqlite;  // Phase 3 ✅
 #[cfg(feature = "postgres")]
 pub mod postgres;  // Phase 4 (in progress)
 
-// Future phases:
-// #[cfg(feature = "mysql")]
-// pub mod mysql;     // Phase 5
+// MySQL engine (Phase 5)
+#[cfg(feature = "mysql")]
+pub mod mysql;
 
 /// Supported database engine types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

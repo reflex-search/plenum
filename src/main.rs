@@ -23,6 +23,8 @@ use plenum::{
 use plenum::engine::sqlite::SqliteEngine;
 #[cfg(feature = "postgres")]
 use plenum::engine::postgres::PostgresEngine;
+#[cfg(feature = "mysql")]
+use plenum::engine::mysql::MySqlEngine;
 
 /// Plenum - Agent-First Database Control CLI
 #[derive(Parser)]
@@ -659,21 +661,28 @@ async fn handle_introspect(
     let introspect_result = match config.engine {
         #[cfg(feature = "sqlite")]
         DatabaseType::SQLite => SqliteEngine::introspect(&config, schema.as_deref()),
+        #[cfg(not(feature = "sqlite"))]
+        DatabaseType::SQLite => {
+            Err(PlenumError::invalid_input(
+                "SQLite engine not enabled. Build with --features sqlite to enable SQLite support."
+            ))
+        }
 
         #[cfg(feature = "postgres")]
         DatabaseType::Postgres => PostgresEngine::introspect(&config, schema.as_deref()),
+        #[cfg(not(feature = "postgres"))]
+        DatabaseType::Postgres => {
+            Err(PlenumError::invalid_input(
+                "PostgreSQL engine not enabled. Build with --features postgres to enable PostgreSQL support."
+            ))
+        }
 
+        #[cfg(feature = "mysql")]
+        DatabaseType::MySQL => MySqlEngine::introspect(&config, schema.as_deref()),
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => {
             Err(PlenumError::invalid_input(
                 "MySQL engine not enabled. Build with --features mysql to enable MySQL support."
-            ))
-        }
-
-        #[cfg(all(not(feature = "sqlite"), not(feature = "postgres"), not(feature = "mysql")))]
-        _ => {
-            Err(PlenumError::invalid_input(
-                format!("Engine '{}' not available. No database engines enabled in build.", config.engine.as_str())
             ))
         }
     };
@@ -785,21 +794,28 @@ async fn handle_query(
     let execute_result = match config.engine {
         #[cfg(feature = "sqlite")]
         DatabaseType::SQLite => SqliteEngine::execute(&config, &sql_text, &capabilities),
+        #[cfg(not(feature = "sqlite"))]
+        DatabaseType::SQLite => {
+            Err(PlenumError::invalid_input(
+                "SQLite engine not enabled. Build with --features sqlite to enable SQLite support."
+            ))
+        }
 
         #[cfg(feature = "postgres")]
         DatabaseType::Postgres => PostgresEngine::execute(&config, &sql_text, &capabilities),
+        #[cfg(not(feature = "postgres"))]
+        DatabaseType::Postgres => {
+            Err(PlenumError::invalid_input(
+                "PostgreSQL engine not enabled. Build with --features postgres to enable PostgreSQL support."
+            ))
+        }
 
+        #[cfg(feature = "mysql")]
+        DatabaseType::MySQL => MySqlEngine::execute(&config, &sql_text, &capabilities),
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => {
             Err(PlenumError::invalid_input(
                 "MySQL engine not enabled. Build with --features mysql to enable MySQL support."
-            ))
-        }
-
-        #[cfg(all(not(feature = "sqlite"), not(feature = "postgres"), not(feature = "mysql")))]
-        _ => {
-            Err(PlenumError::invalid_input(
-                format!("Engine '{}' not available. No database engines enabled in build.", config.engine.as_str())
             ))
         }
     };

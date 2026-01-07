@@ -45,7 +45,7 @@ dirs = "5.0"        # Cross-platform configuration directory paths
 # NOTE: Made optional for Phase 0 to avoid build dependency issues
 # Will be enabled as required features in Phases 3-5 when implementing engines
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"], optional = true }  # PostgreSQL native driver
-mysql_async = { version = "0.34", optional = true }     # MySQL native async driver
+mysql_async = { version = "0.34", default-features = false, features = ["default-rustls"], optional = true }     # MySQL native async driver
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }  # SQLite native driver with bundled lib
 
 # BLOB encoding (Base64) - used by SQLite and PostgreSQL
