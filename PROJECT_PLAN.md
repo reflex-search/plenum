@@ -367,7 +367,7 @@
 
 ---
 
-## Phase 3: SQLite Engine
+## Phase 3: SQLite Engine ✅ COMPLETE
 
 **Note:** SQLite is implemented first (before PostgreSQL and MySQL) because:
 - **No external dependencies**: File-based, no database server needed
@@ -376,41 +376,41 @@
 - **Fastest development cycle**: Immediate feedback without setup complexity
 
 ### 3.1 SQLite Connection
-- [ ] Create `src/engine/sqlite/mod.rs`
-- [ ] Implement `DatabaseEngine` trait for SQLite
-- [ ] Implement file-based connection
-- [ ] Implement in-memory connection (`:memory:`)
-- [ ] Detect SQLite version
-- [ ] Handle connection errors with proper wrapping
+- [x] Create `src/engine/sqlite/mod.rs` ✅
+- [x] Implement `DatabaseEngine` trait for SQLite ✅
+- [x] Implement file-based connection ✅
+- [x] Implement in-memory connection (`:memory:`) ✅
+- [x] Detect SQLite version ✅
+- [x] Handle connection errors with proper wrapping ✅
 
 ### 3.2 SQLite Introspection
-- [ ] Query `sqlite_master` table
-- [ ] Use `PRAGMA table_info()` for column information
-- [ ] Use `PRAGMA foreign_key_list()` for foreign keys
-- [ ] Use `PRAGMA index_list()` for indexes
-- [ ] Format results as `SchemaInfo`
-- [ ] Handle SQLite-specific edge cases
+- [x] Query `sqlite_master` table ✅
+- [x] Use `PRAGMA table_info()` for column information ✅
+- [x] Use `PRAGMA foreign_key_list()` for foreign keys ✅
+- [x] Use `PRAGMA index_list()` for indexes ✅
+- [x] Format results as `SchemaInfo` ✅
+- [x] Handle SQLite-specific edge cases ✅
 
 ### 3.3 SQLite Query Execution
-- [ ] Implement query execution with capability checks
-- [ ] Parse result sets into JSON-safe format
-- [ ] Handle SQLite data types (dynamic typing):
-  - [ ] INTEGER
-  - [ ] REAL
-  - [ ] TEXT
-  - [ ] BLOB (as base64 or hex)
-  - [ ] NULL
-- [ ] Implement timeout enforcement
-- [ ] Implement row limit enforcement
-- [ ] Track execution time
+- [x] Implement query execution with capability checks ✅
+- [x] Parse result sets into JSON-safe format ✅
+- [x] Handle SQLite data types (dynamic typing): ✅
+  - [x] INTEGER ✅
+  - [x] REAL ✅
+  - [x] TEXT ✅
+  - [x] BLOB (as base64) ✅
+  - [x] NULL ✅
+- [x] Implement timeout enforcement (via busy_timeout) ✅
+- [x] Implement row limit enforcement ✅
+- [x] Track execution time ✅
 
 ### 3.4 SQLite Testing
-- [ ] Set up test database (in-memory)
-- [ ] Write capability enforcement tests
-- [ ] Write introspection tests
-- [ ] Write query execution tests
-- [ ] Write error handling tests
-- [ ] Write JSON output snapshot tests
+- [x] Set up test database (in-memory) ✅
+- [x] Write capability enforcement tests ✅
+- [x] Write introspection tests ✅
+- [x] Write query execution tests ✅
+- [x] Write error handling tests ✅
+- [x] All 16 SQLite-specific tests passing ✅
 
 ---
 

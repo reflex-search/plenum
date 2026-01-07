@@ -17,10 +17,15 @@ use std::path::PathBuf;
 
 use crate::error::Result;
 
-// Engine-specific implementations will be added in Phases 3-5
-// pub mod postgres;  // Phase 3
-// pub mod mysql;     // Phase 4
-// pub mod sqlite;    // Phase 5
+// Engine-specific implementations
+#[cfg(feature = "sqlite")]
+pub mod sqlite;  // Phase 3 ✅
+
+// Future phases:
+// #[cfg(feature = "postgres")]
+// pub mod postgres;  // Phase 4
+// #[cfg(feature = "mysql")]
+// pub mod mysql;     // Phase 5
 
 /// Supported database engine types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -46,10 +46,13 @@ dirs = "5.0"        # Cross-platform configuration directory paths
 # Will be enabled as required features in Phases 3-5 when implementing engines
 tokio-postgres = { version = "0.7", optional = true }  # PostgreSQL native driver
 mysql_async = { version = "0.34", optional = true }     # MySQL native async driver
-rusqlite = { version = "0.32", optional = true }        # SQLite native driver
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }  # SQLite native driver with bundled lib
+
+# BLOB encoding for SQLite (Base64)
+base64 = "0.22"
 
 [features]
-default = []
+default = ["sqlite"]  # Enable SQLite by default for Phase 3
 postgres = ["dep:tokio-postgres"]
 mysql = ["dep:mysql_async"]
 sqlite = ["dep:rusqlite"]
