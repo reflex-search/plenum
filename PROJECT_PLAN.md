@@ -156,10 +156,34 @@
 ### 1.4 Capability Validation
 - [ ] Create `src/capability/mod.rs`
 - [ ] Implement capability validator
+- [ ] **SQL Categorization Strategy: Regex-based with engine-specific implementations**
+  - [ ] **Rationale:** Simplest explicit implementation, no external dependencies, respects vendor SQL differences
+  - [ ] **Pattern:** Each engine implements its own `categorize_query(sql: &str) -> Result<QueryCategory>` logic
+  - [ ] **No shared SQL helpers across engines** (aligns with CLAUDE.md principle)
 - [ ] Define SQL statement categorization:
-  - [ ] Read-only: SELECT
-  - [ ] Write: INSERT, UPDATE, DELETE
+  - [ ] Read-only: SELECT, WITH ... SELECT (CTEs)
+  - [ ] Write: INSERT, UPDATE, DELETE, CALL/EXEC (stored procedures)
   - [ ] DDL: CREATE, DROP, ALTER, TRUNCATE, RENAME
+  - [ ] Transaction control: BEGIN, COMMIT, ROLLBACK (treat as read-only)
+- [ ] Implement SQL pre-processing (before categorization):
+  - [ ] Trim leading/trailing whitespace
+  - [ ] Strip SQL comments: `--` line comments and `/* */` block comments
+  - [ ] Normalize to uppercase for pattern matching
+  - [ ] **Detect multi-statement queries** (contains `;` separators)
+  - [ ] **Reject multi-statement queries in MVP** (safest approach, can relax post-MVP)
+- [ ] Implement engine-specific categorization:
+  - [ ] PostgreSQL: Standard SQL categorization
+  - [ ] MySQL: Include implicit commit DDL list (CREATE/ALTER/DROP/TRUNCATE/RENAME/LOCK TABLES)
+  - [ ] SQLite: SQLite-specific DDL handling
+- [ ] Handle edge cases:
+  - [ ] **EXPLAIN queries**: Strip EXPLAIN prefix, categorize underlying statement
+  - [ ] **EXPLAIN ANALYZE**: Categorize underlying statement (executes in PostgreSQL)
+  - [ ] **CTEs (WITH)**: Match final statement type (e.g., `WITH ... SELECT` → read-only)
+  - [ ] **Stored procedures (CALL/EXEC)**: Treat as write (conservative, procedures can do anything)
+  - [ ] **Transaction control (BEGIN/COMMIT/ROLLBACK)**: Treat as read-only (no-op without write capability)
+  - [ ] **Unknown statement types**: Treat as DDL (fail-safe, most restrictive)
+  - [ ] **Empty queries**: Return error
+  - [ ] **Parsing errors**: Return error
 - [ ] Implement capability hierarchy:
   - [ ] **DDL implies write**: If `allow_ddl = true`, treat `allow_write` as true
   - [ ] **Write does NOT imply DDL**: `allow_write` alone cannot execute DDL
@@ -169,8 +193,23 @@
   - [ ] DDL queries require `allow_ddl = true` (explicit flag required)
   - [ ] Write queries require `allow_write = true` OR `allow_ddl = true`
   - [ ] Read-only queries always permitted
-- [ ] Handle MySQL implicit commit cases
-- [ ] Add capability validation unit tests
+- [ ] Handle MySQL implicit commit cases:
+  - [ ] Maintain explicit list of DDL statements that cause implicit commit
+  - [ ] Document in MySQL engine module
+  - [ ] Surface in error messages if needed
+- [ ] Add capability validation unit tests:
+  - [ ] **Comprehensive edge case matrix per engine**
+  - [ ] Comment variations (`--`, `/* */`, mixed)
+  - [ ] Whitespace variations (leading, trailing, mixed)
+  - [ ] Case sensitivity (lowercase, uppercase, mixed)
+  - [ ] CTE queries (`WITH ... SELECT`, `WITH ... INSERT`)
+  - [ ] EXPLAIN queries (with and without ANALYZE)
+  - [ ] Transaction control (BEGIN, COMMIT, ROLLBACK)
+  - [ ] Multi-statement detection (should reject)
+  - [ ] Unknown statement types (should default to DDL)
+  - [ ] Empty queries (should error)
+  - [ ] Stored procedure calls (CALL, EXEC)
+  - [ ] Engine-specific edge cases (PostgreSQL/MySQL/SQLite quirks)
 
 ### 1.5 Configuration Management
 - [ ] Create `src/config/mod.rs`

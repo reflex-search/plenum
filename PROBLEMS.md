@@ -4,7 +4,7 @@
 
 This document identifies architectural contradictions between PROJECT_PLAN.md and CLAUDE.md's core principles. Each issue must be resolved before implementation begins.
 
-**Status:** Problems 1-8 resolved (critical issues complete)
+**Status:** All problems resolved (1-9 complete) ✅
 **Last Updated:** 2026-01-07
 
 ---
@@ -576,104 +576,69 @@ Phase 0.1 accurately reflects repository state and specifies remaining tasks:
 
 ---
 
-### ⚠️ PROBLEM 9: SQL Parsing Strategy Undefined
+### ✅ PROBLEM 9: SQL Parsing Strategy Undefined [RESOLVED]
 
-**Location:** PROJECT_PLAN.md Phase 1.4, lines 91-100
+**Location:** PROJECT_PLAN.md Phase 1.4, lines 156-212
 
 **Issue:**
-```
-### 1.4 Capability Validation
-- [ ] Implement capability validator
-- [ ] Define SQL statement categorization:
-  - [ ] Read-only: SELECT
-  - [ ] Write: INSERT, UPDATE, DELETE
-  - [ ] DDL: CREATE, DROP, ALTER, TRUNCATE, RENAME
-```
+The plan didn't specify **how** SQL would be categorized into read-only/write/DDL before execution. Three approaches were considered:
+- **Option A:** Regex pattern matching (simple, no dependencies)
+- **Option B:** SQL parser library (robust but adds dependency, may not handle vendor-specific SQL)
+- **Option C:** Database-specific query analysis (complex, requires connectivity just for validation)
 
-**Missing Detail:**
-The plan doesn't specify **how** SQL will be categorized. Options include:
+**Resolution: Option A - Regex-based with Engine-Specific Implementations**
 
-**Option A: Regex Pattern Matching**
-```rust
-fn is_ddl(sql: &str) -> bool {
-    let sql_upper = sql.trim().to_uppercase();
-    sql_upper.starts_with("CREATE ")
-        || sql_upper.starts_with("DROP ")
-        || sql_upper.starts_with("ALTER ")
-        // ... etc
-}
-```
+**Decision:**
+Use regex-based SQL categorization with engine-specific implementations (no shared SQL helpers).
 
-**Pros:** Simple, no dependencies
-**Cons:** Brittle, can be fooled by comments or whitespace
+**Key Specifications:**
+1. **Engine-specific implementations**: Each engine (PostgreSQL/MySQL/SQLite) implements its own `categorize_query(sql: &str) -> Result<QueryCategory>` logic
+2. **Pre-processing steps**:
+   - Strip SQL comments (`--` and `/* */`)
+   - Normalize whitespace and case
+   - Detect multi-statement queries
+3. **Multi-statement handling**: Reject multi-statement queries in MVP (safest approach)
+4. **Edge case handling**:
+   - EXPLAIN queries: Strip prefix, categorize underlying statement
+   - CTEs (WITH): Match final statement type
+   - Transaction control (BEGIN/COMMIT/ROLLBACK): Treat as read-only
+   - Stored procedures (CALL/EXEC): Treat as write (conservative)
+   - Unknown statements: Treat as DDL (fail-safe, most restrictive)
+5. **MySQL-specific**: Maintain explicit list of implicit commit DDL statements
+6. **Test coverage**: Comprehensive edge case matrix per engine
 
-**Option B: SQL Parser Library**
-```rust
-use sqlparser::parser::Parser;
-use sqlparser::dialect::GenericDialect;
+**Rationale:**
+- ✅ Aligns with "simplest explicit implementation" (CLAUDE.md:300)
+- ✅ No external dependencies needed (uses stdlib regex)
+- ✅ Respects "no shared SQL helpers across engines" (CLAUDE.md:240)
+- ✅ Fast pre-execution validation
+- ✅ Deterministic and testable
+- ✅ Fail-safe defaults protect agent safety
+- ✅ Can evolve to sqlparser post-MVP if regex proves insufficient
 
-fn categorize_query(sql: &str) -> QueryCategory {
-    let dialect = GenericDialect {};
-    let ast = Parser::parse_sql(&dialect, sql)?;
-    // Analyze AST
-}
-```
+**Trade-offs Accepted:**
+- Some edge cases may require iteration (but comprehensive tests will catch them)
+- Regex can be fooled by complex patterns (but fail-safe defaults protect safety)
 
-**Pros:** Robust, handles edge cases
-**Cons:** Adds dependency, may not support all vendor-specific SQL
+**Changes Made to PROJECT_PLAN.md:**
+- Phase 1.4 (lines 156-212): Expanded with comprehensive SQL categorization strategy
+  - Added regex-based approach with engine-specific implementations
+  - Documented pre-processing steps (comment stripping, whitespace normalization)
+  - Specified multi-statement query rejection for MVP
+  - Listed edge cases: EXPLAIN, CTEs, transaction control, stored procedures, unknown statements
+  - Added comprehensive test matrix requirements per engine
+  - Documented MySQL implicit commit handling
 
-**Option C: Database-Specific Query Analysis**
-Let each database engine categorize queries using its own parser:
-```rust
-// PostgreSQL might use EXPLAIN without execution
-// MySQL might use query attributes
-// SQLite might parse with its own tokenizer
-```
+**Changes Made to RESEARCH.md:**
+- Added "SQL Categorization Strategy" section with:
+  - Decision rationale (regex vs parser library vs database-specific analysis)
+  - Engine-specific implementation approach
+  - Pre-processing and edge case handling details
+  - Known limitations and accepted trade-offs
+  - Comprehensive test coverage requirements
+  - Post-MVP evolution criteria (when to consider sqlparser)
 
-**Pros:** Most accurate for vendor-specific SQL
-**Cons:** Complex, requires database connectivity just for validation
-
-**Proposed Solution:**
-
-**Recommendation: Start with Option A (Regex), Plan for Option B**
-
-Phase 1 implementation:
-- Use simple regex-based categorization
-- Document known limitations
-- Add comprehensive test suite for edge cases
-- Ensure false positives fail-safe (e.g., unknown query → treated as DDL)
-
-Post-MVP:
-- Consider adding `sqlparser` if regex proves insufficient
-- Evaluate per-database parsing if vendor-specific issues arise
-
-**Edge Cases to Handle:**
-```sql
--- Comments before statements
-/* multi-line comment */ SELECT ...
-
--- Multiple statements
-SELECT * FROM users; DROP TABLE users;
-
--- Whitespace variations
-  \n  \t  CREATE  TABLE ...
-
--- CTEs that look like DDL
-WITH RECURSIVE cte AS (...) SELECT ...
-
--- MySQL implicit commit DDL list (comprehensive)
-```
-
-**Dependencies:**
-- Affects Phase 0.3 (dependency selection)
-- Impacts Phase 1.4 (capability validation)
-- Influences testing strategy (Phase 3.4, 4.4, 5.4)
-
-**Action Required:**
-1. Explicitly choose parsing strategy in Phase 1.4
-2. Add dependency to Phase 0.3 if using parser library
-3. Create comprehensive test matrix for statement categorization
-4. Document edge cases and failure modes in RESEARCH.md
+**Date Resolved:** 2026-01-07
 
 ---
 
@@ -692,13 +657,13 @@ Before proceeding to implementation, verify all problems are resolved:
 
 ### Moderate Issues
 - [x] **PROBLEM 8:** Phase 0 updated to reflect repo state ✅ (2026-01-07)
-- [ ] **PROBLEM 9:** SQL parsing strategy explicitly chosen
+- [x] **PROBLEM 9:** SQL parsing strategy explicitly chosen ✅ (2026-01-07)
 
 ### Documentation Updates Required
 - [x] Update PROJECT_PLAN.md with resolutions (Phases 0.3, 1.1, 1.4, 1.5, 2.2, 2.3, 2.4, 8.2) ✅
 - [x] Update CLAUDE.md with capability hierarchy ✅
 - [x] Update CLAUDE.md with security model (PROBLEM 7) ✅
-- [x] Update RESEARCH.md with architectural decisions (native driver strategy documented) ✅
+- [x] Update RESEARCH.md with architectural decisions (native driver strategy, SQL categorization strategy) ✅
 
 ---
 

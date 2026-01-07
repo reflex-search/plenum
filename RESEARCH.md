@@ -191,6 +191,213 @@ The only shared code across engines is:
 
 ---
 
+## SQL Categorization Strategy
+
+**Decision:** Use regex-based SQL categorization with engine-specific implementations. Do NOT use external SQL parser libraries.
+
+**Context:**
+Plenum enforces capability constraints (read-only, write, DDL) by categorizing SQL statements **before execution**. The implementation strategy must:
+- Align with "simplest explicit implementation" principle
+- Respect vendor-specific SQL differences (PostgreSQL ≠ MySQL ≠ SQLite)
+- Not introduce cross-engine abstraction layers
+- Enable fast pre-execution validation
+- Be deterministic and testable
+
+**Evaluated Approaches:**
+
+1. **Regex Pattern Matching** ✅ **SELECTED**
+   - Simple, no external dependencies
+   - Engine-specific implementations possible
+   - Fast pre-execution checks
+   - Requires careful edge case handling
+
+2. **SQL Parser Library (sqlparser crate)** ❌ **REJECTED**
+   - Adds external dependency
+   - Generic parser may not handle vendor-specific SQL
+   - Creates abstraction layer (violates "no shared SQL helpers")
+   - More robust but conflicts with "simplest explicit implementation"
+
+3. **Database-Specific Query Analysis** ❌ **REJECTED**
+   - Requires database connection just for validation
+   - Defeats "capability checks occur BEFORE execution"
+   - Far too complex for MVP
+
+**Implementation Architecture:**
+
+Each engine implements its own `categorize_query(sql: &str) -> Result<QueryCategory>` logic:
+
+```rust
+// src/capability/mod.rs
+pub enum QueryCategory {
+    ReadOnly,
+    Write,
+    DDL,
+}
+
+// Each engine has its own categorization
+// src/engine/postgres/mod.rs
+impl PostgresEngine {
+    fn categorize_query(sql: &str) -> Result<QueryCategory> { ... }
+}
+
+// src/engine/mysql/mod.rs
+impl MySQLEngine {
+    fn categorize_query(sql: &str) -> Result<QueryCategory> { ... }
+}
+
+// src/engine/sqlite/mod.rs
+impl SQLiteEngine {
+    fn categorize_query(sql: &str) -> Result<QueryCategory> { ... }
+}
+```
+
+**Pre-Processing Steps** (before categorization):
+1. Trim leading/trailing whitespace
+2. Strip SQL comments: `--` line comments and `/* */` block comments
+3. Normalize to uppercase for pattern matching
+4. Detect multi-statement queries (presence of `;` separators)
+5. **Reject multi-statement queries in MVP** (safest approach)
+
+**SQL Statement Categorization:**
+
+| Category | Statements |
+|----------|-----------|
+| **Read-only** | SELECT, WITH ... SELECT (CTEs) |
+| **Write** | INSERT, UPDATE, DELETE, CALL/EXEC (stored procedures) |
+| **DDL** | CREATE, DROP, ALTER, TRUNCATE, RENAME |
+| **Transaction Control** | BEGIN, COMMIT, ROLLBACK (treated as read-only) |
+
+**Edge Case Handling:**
+
+1. **Multi-statement queries** (e.g., `SELECT * FROM users; DROP TABLE users;`)
+   - **MVP approach**: Reject entirely (safest)
+   - **Rationale**: Prevents SQL injection via statement chaining
+   - **Post-MVP**: Could analyze each statement and require highest capability
+
+2. **EXPLAIN queries** (e.g., `EXPLAIN SELECT * FROM users`)
+   - Strip EXPLAIN prefix, categorize underlying statement
+   - `EXPLAIN SELECT` → read-only (no execution)
+   - `EXPLAIN ANALYZE UPDATE` → write (actually executes in PostgreSQL)
+   - Engine-specific handling required
+
+3. **CTEs (Common Table Expressions)** (e.g., `WITH cte AS (...) SELECT ...`)
+   - Match final statement type
+   - `WITH ... SELECT` → read-only
+   - `WITH ... INSERT` → write
+   - `WITH ... CREATE` → DDL
+
+4. **Transaction control** (e.g., `BEGIN; COMMIT; ROLLBACK;`)
+   - Treat as read-only operations
+   - No-ops without write capability
+   - Not dangerous in isolation
+
+5. **Stored procedure calls** (e.g., `CALL my_procedure();`)
+   - Treat as write operations (conservative approach)
+   - Procedures can do anything internally
+   - Cannot inspect procedure body for categorization
+
+6. **Unknown statement types**
+   - Treat as DDL (fail-safe, most restrictive)
+   - Better to deny safe operations than allow dangerous ones
+   - Error messages guide agents to use correct flags
+
+7. **Empty queries**
+   - Return error immediately
+   - No execution allowed
+
+8. **Parsing errors**
+   - Return error immediately
+   - Do not proceed to execution
+
+**Engine-Specific Considerations:**
+
+**PostgreSQL:**
+- Standard SQL categorization
+- EXPLAIN ANALYZE executes query (categorize underlying statement)
+- Support for CTEs with DML (e.g., `WITH ... INSERT ... RETURNING`)
+
+**MySQL:**
+- Maintain explicit list of **implicit commit DDL statements**:
+  - CREATE/ALTER/DROP TABLE/DATABASE/INDEX
+  - TRUNCATE TABLE
+  - RENAME TABLE
+  - LOCK TABLES
+  - SET autocommit = 1
+- These cause implicit commits even within transactions
+- Document in MySQL engine module
+- Surface in error messages if capability violation occurs
+
+**SQLite:**
+- SQLite-specific DDL handling (PRAGMA statements, ATTACH DATABASE)
+- Simpler transaction model
+- No stored procedures (CALL not applicable)
+
+**Test Coverage Requirements:**
+
+Each engine must have comprehensive edge case tests:
+- ✅ Comment variations: `--`, `/* */`, mixed, nested
+- ✅ Whitespace variations: leading, trailing, tabs, newlines
+- ✅ Case sensitivity: lowercase, uppercase, MixedCase
+- ✅ CTE queries: `WITH ... SELECT`, `WITH ... INSERT`, `WITH ... CREATE`
+- ✅ EXPLAIN queries: with and without ANALYZE keyword
+- ✅ Transaction control: BEGIN, COMMIT, ROLLBACK, START TRANSACTION
+- ✅ Multi-statement detection: reject `SELECT ...; DROP ...;`
+- ✅ Unknown statement types: should default to DDL
+- ✅ Empty queries: should return error
+- ✅ Stored procedure calls: CALL (MySQL/PostgreSQL), EXEC (SQL Server - not MVP)
+- ✅ Engine-specific quirks: PostgreSQL CTEs, MySQL implicit commits, SQLite PRAGMAs
+
+**Known Limitations & Accepted Trade-offs:**
+
+1. **Regex can be fooled by complex patterns**
+   - Mitigation: Comprehensive test suite catches edge cases
+   - Mitigation: Fail-safe defaults (unknown → DDL) protect safety
+
+2. **Some edge cases may require iteration**
+   - MVP ships with known limitations documented
+   - Post-MVP iteration based on real-world agent usage
+
+3. **Complex nested queries may be mis-categorized**
+   - Agents receive clear error messages
+   - Error messages guide to correct capability flags
+   - Better to be conservative (deny) than permissive (allow dangerous ops)
+
+**Post-MVP Evolution Criteria:**
+
+Consider migrating to `sqlparser` crate if:
+1. Regex approach proves insufficient after real-world agent usage
+2. Edge cases become too numerous to handle with regex
+3. Agents frequently encounter false positives/negatives
+4. Vendor-specific SQL support in sqlparser improves
+5. Benefits outweigh cost of adding external dependency
+
+**Do NOT migrate to sqlparser if:**
+- It creates cross-engine abstraction layer
+- It normalizes vendor-specific SQL behavior
+- It violates "no shared SQL helpers" principle
+
+**Rationale for Decision:**
+
+✅ **Aligns with Core Principles:**
+- "Simplest explicit implementation" (CLAUDE.md:300)
+- "No shared SQL helpers across engines" (CLAUDE.md:240)
+- "No abstractions without justification" (CLAUDE.md:295)
+
+✅ **Technical Benefits:**
+- No external dependencies (uses stdlib regex)
+- Fast pre-execution validation
+- Engine-specific implementations respect vendor differences
+- Deterministic and testable
+- Fail-safe defaults protect agent safety
+
+✅ **Answers Guiding Question:**
+"Does this make autonomous agents safer, more deterministic, or more constrained?"
+- **Safer**: Fail-safe defaults, multi-statement rejection
+- **More deterministic**: Same query always categorized the same way
+- **More constrained**: Conservative approach (deny when uncertain)
+
+---
+
 ## Explicit Non-Goals
 
 The following features are explicitly OUT OF SCOPE:
