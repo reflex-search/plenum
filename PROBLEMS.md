@@ -339,7 +339,7 @@ The original design included a redundant `--read-only` flag when read-only is al
 
 ---
 
-### 🚨 PROBLEM 6: MCP Research Deferred Too Late
+### ✅ PROBLEM 6: MCP Research Deferred Too Late [RESOLVED]
 
 **Location:** PROJECT_PLAN.md Phase 7.1, lines 354, 526-527
 
@@ -397,9 +397,28 @@ MCP integration constraints must inform the initial architecture, not be retrofi
 3. Document MCP constraints in RESEARCH.md
 4. Ensure Phase 1 trait design is MCP-compatible
 
+**Resolution Status: RESOLVED ✅**
+
+This problem was resolved together with PROBLEM 3. MCP research has been moved from Phase 7.1 to Phase 0.3 in PROJECT_PLAN.md.
+
+**Changes Made to PROJECT_PLAN.md:**
+- Phase 0.3 (lines 46-62): Added "CRITICAL: MCP Architecture Research (moved from Phase 7.1)" section
+- Phase 0.3: Includes rmcp evaluation, stdio transport verification, reflex-search pattern review
+- Phase 0.3: Documents MCP architecture decision (single crate with `plenum mcp` subcommand)
+- Phase 0.3: Selects MCP dependencies (rmcp, tokio, schemars)
+- Phase 7: Complete rewrite to use rmcp SDK pattern instead of custom implementation
+
+**Benefits:**
+- MCP constraints inform initial architecture design
+- Prevents late-stage refactoring of core traits
+- Ensures stateless design is MCP-compatible from the start
+- Dependencies identified before Phase 1 begins
+
+**Date Resolved:** 2026-01-06 (resolved together with PROBLEM 3)
+
 ---
 
-### 🚨 PROBLEM 7: Security Model Confusion
+### ✅ PROBLEM 7: Security Model Confusion [RESOLVED]
 
 **Location:** PROJECT_PLAN.md Phase 8.2, lines 408-411
 
@@ -483,6 +502,37 @@ constraints, not query validation.
 2. Remove "parameterized queries" references
 3. Add security model documentation to RESEARCH.md
 4. Consider adding security model section to CLAUDE.md
+
+**Resolution Status: RESOLVED ✅**
+
+**Changes Made to PROJECT_PLAN.md:**
+- Phase 8.2 (lines 674-681): Renamed from "SQL Injection Prevention" to "Security Model Verification"
+- Phase 8.2: Removed "Verify parameterized queries where applicable" (contradicted raw SQL design)
+- Phase 8.2: Added tasks to verify capability enforcement and document security boundaries
+- Phase 8.2: Explicitly documents that SQL injection prevention is agent's responsibility
+
+**Changes Made to CLAUDE.md:**
+- Added "Security Model" section after "Error Handling Rules" (lines 256-276)
+- Clearly defines Plenum's security boundary as capability enforcement, not SQL validation
+- Documents what Plenum enforces vs. what agents must handle
+- States explicitly: "Plenum assumes SQL passed to it is safe"
+
+**Security Model Summary:**
+
+✅ **Plenum Enforces:**
+- Operation type restrictions (read-only, write, DDL)
+- Row limits and timeouts
+- Credential security (no logging/persistence)
+
+❌ **Plenum Does NOT Enforce:**
+- SQL injection prevention
+- Query semantic correctness
+- Business logic constraints
+
+**Agent Responsibility:**
+Agents must sanitize inputs, validate queries, and implement application-level security controls before passing SQL to Plenum.
+
+**Date Resolved:** 2026-01-06
 
 ---
 
@@ -644,17 +694,17 @@ Before proceeding to implementation, verify all problems are resolved:
 - [x] **PROBLEM 4:** SQLx removed; native drivers mandated ✅ (2026-01-06)
 - [x] **PROBLEM 5:** `--read-only` flag removed; capability hierarchy defined ✅ (2026-01-06)
 - [x] **PROBLEM 6:** MCP research moved to Phase 0 ✅ (resolved with PROBLEM 3, 2026-01-06)
-- [ ] **PROBLEM 7:** Security model clarified in plan
+- [x] **PROBLEM 7:** Security model clarified in plan ✅ (2026-01-06)
 
 ### Moderate Issues
 - [ ] **PROBLEM 8:** Phase 0 updated to reflect repo state
 - [ ] **PROBLEM 9:** SQL parsing strategy explicitly chosen
 
 ### Documentation Updates Required
-- [x] Update PROJECT_PLAN.md with resolutions (Phases 0.3, 1.1, 1.4, 1.5, 2.2, 2.3, 2.4) ✅
+- [x] Update PROJECT_PLAN.md with resolutions (Phases 0.3, 1.1, 1.4, 1.5, 2.2, 2.3, 2.4, 8.2) ✅
 - [x] Update CLAUDE.md with capability hierarchy ✅
+- [x] Update CLAUDE.md with security model (PROBLEM 7) ✅
 - [x] Update RESEARCH.md with architectural decisions (native driver strategy documented) ✅
-- [ ] Document security model clearly (PROBLEM 7)
 
 ---
 

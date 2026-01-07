@@ -253,6 +253,30 @@ Engine quirks stay inside engine modules.
 
 ---
 
+## Security Model
+
+Plenum's security boundary is **capability enforcement**, not SQL validation.
+
+### Plenum Enforces:
+- Operation type restrictions (read-only, write, DDL)
+- Row limits and timeouts
+- Credential security (no logging/persistence in error messages or logs)
+
+### Plenum Does NOT Enforce:
+- SQL injection prevention
+- Query semantic correctness
+- Business logic constraints
+
+### Agent Responsibility:
+The calling agent MUST:
+- Sanitize user inputs before constructing SQL
+- Validate queries for safety before passing to Plenum
+- Implement application-level security controls
+
+**Plenum assumes SQL passed to it is safe.** It provides capability constraints, not query validation.
+
+---
+
 ## Testing Expectations
 
 - Capability enforcement tests

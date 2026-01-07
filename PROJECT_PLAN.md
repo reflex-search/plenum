@@ -671,11 +671,14 @@
 - [ ] Verify write detection across engines
 - [ ] Document capability enforcement guarantees
 
-### 8.2 SQL Injection Prevention
-- [ ] Verify parameterized queries where applicable
-- [ ] Document SQL injection surface area
-- [ ] Note that Plenum passes raw SQL (by design)
-- [ ] Document agent responsibility for SQL safety
+### 8.2 Security Model Verification
+- [ ] Verify capability enforcement prevents unauthorized operations
+- [ ] Verify DDL detection catches all DDL statement types
+- [ ] Verify write detection catches all write operations
+- [ ] Document that SQL injection prevention is the agent's responsibility
+- [ ] Document that Plenum passes SQL verbatim to the database
+- [ ] Verify Plenum does not modify, sanitize, or interpret SQL content
+- [ ] Document security boundaries clearly in README
 
 ### 8.3 Credential Security
 - [ ] Audit credential handling paths
