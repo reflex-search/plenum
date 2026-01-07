@@ -18,9 +18,9 @@
   - [x] PROBLEMS.md (architectural issues tracking)
   - [x] RESEARCH.md (design decisions and rationale)
   - [x] README.md (placeholder - needs expansion)
-- [ ] Initialize Rust project structure
-  - [ ] Run `cargo init --name plenum --lib`
-  - [ ] Configure Cargo.toml with both binary and library targets:
+- [x] Initialize Rust project structure ✅
+  - [x] Run `cargo init --name plenum --lib`
+  - [x] Configure Cargo.toml with both binary and library targets:
     ```toml
     [lib]
     name = "plenum"
@@ -30,64 +30,64 @@
     name = "plenum"
     path = "src/main.rs"
     ```
-  - [ ] Configure Cargo.toml with project metadata (version, authors, edition, license)
-  - [ ] Set up `src/lib.rs` to export internal API
-  - [ ] Set up `src/main.rs` as CLI entry point
-- [ ] Configure `.gitignore` for Rust builds
-  - [ ] Add `/target`
-  - [ ] Add `/.idea` and other IDE-specific directories
-  - [ ] Note: Do NOT add `Cargo.lock` (should be committed for binary projects)
-- [ ] Add LICENSE file (MIT OR Apache-2.0)
-- [ ] Expand README.md with project description and build instructions
+  - [x] Configure Cargo.toml with project metadata (version, authors, edition, license)
+  - [x] Set up `src/lib.rs` to export internal API
+  - [x] Set up `src/main.rs` as CLI entry point
+- [x] Configure `.gitignore` for Rust builds ✅
+  - [x] Add `/target`
+  - [x] Add `/.idea` and other IDE-specific directories
+  - [x] Note: Do NOT add `Cargo.lock` (should be committed for binary projects)
+- [x] Add LICENSE file (MIT OR Apache-2.0) ✅
+- [x] Expand README.md with project description and build instructions ✅
 
 ### 0.2 Development Environment
-- [ ] Define Rust toolchain version (stable/nightly)
-- [ ] Configure rustfmt.toml for code formatting
-- [ ] Configure clippy rules for linting
-- [ ] Set up CI/CD pipeline configuration (GitHub Actions)
-- [ ] Document build/test commands
+- [x] Define Rust toolchain version (stable/nightly) ✅
+- [x] Configure rustfmt.toml for code formatting ✅
+- [x] Configure clippy rules for linting ✅
+- [x] Set up CI/CD pipeline configuration (GitHub Actions) ✅
+- [x] Document build/test commands ✅
 
 ### 0.3 Dependency Assessment
 
 **CRITICAL: MCP Architecture Research (moved from Phase 7.1)**
-- [ ] Research MCP (Model Context Protocol) implementation in Rust
-  - [ ] Evaluate `rmcp` crate (official Rust SDK for MCP)
-  - [ ] Verify stdio transport compatibility with stateless design
-  - [ ] Confirm JSON-RPC protocol handling via `rmcp`
-  - [ ] Test `#[tool]` macro pattern compatibility with our architecture
-  - [ ] Verify async requirements (tokio integration)
-  - [ ] Review reflex-search implementation pattern: https://github.com/reflex-search/reflex
-- [ ] Document MCP architecture decision:
-  - [ ] **Decision:** Single crate with `plenum mcp` subcommand (not workspace)
-  - [ ] **Pattern:** Follow reflex-search implementation pattern
-  - [ ] **Rationale:** Simpler structure, proven pattern, uses standard tooling
-  - [ ] **Key principle:** Both CLI and MCP call same internal library functions
-- [ ] Select MCP dependencies:
-  - [ ] `rmcp` - Official Rust MCP SDK
-  - [ ] `tokio` - Async runtime (required by rmcp)
-  - [ ] `schemars` - JSON schema generation for MCP tool definitions
+- [x] Research MCP (Model Context Protocol) implementation in Rust ✅
+  - [x] Evaluate `rmcp` crate (official Rust SDK for MCP)
+  - [x] Verify stdio transport compatibility with stateless design
+  - [x] Confirm JSON-RPC protocol handling via `rmcp`
+  - [x] Test `#[tool]` macro pattern compatibility with our architecture
+  - [x] Verify async requirements (tokio integration)
+  - [x] Review reflex-search implementation pattern: https://github.com/reflex-search/reflex
+- [x] Document MCP architecture decision: ✅
+  - [x] **Decision:** Single crate with `plenum mcp` subcommand (not workspace)
+  - [x] **Pattern:** Follow reflex-search implementation pattern
+  - [x] **Rationale:** Simpler structure, proven pattern, uses standard tooling
+  - [x] **Key principle:** Both CLI and MCP call same internal library functions
+- [x] Select MCP dependencies: ✅
+  - [x] `rmcp` - Official Rust MCP SDK
+  - [x] `tokio` - Async runtime (required by rmcp)
+  - [x] `schemars` - JSON schema generation for MCP tool definitions
 
 **Database Driver Selection (MUST use native drivers)**
-- [ ] Research and select database driver crates:
-  - [ ] PostgreSQL: `tokio-postgres` (native driver, NOT sqlx)
-  - [ ] MySQL: `mysql_async` (native driver, NOT sqlx)
-  - [ ] SQLite: `rusqlite` (native driver, NOT sqlx)
-- [ ] Document rationale for native drivers:
-  - [ ] Maximum isolation between engines
-  - [ ] Vendor-specific behavior preserved
-  - [ ] No risk of abstraction leakage
-  - [ ] Each engine handles its own quirks independently
-  - [ ] Aligns with "no compatibility layers" principle (CLAUDE.md)
+- [x] Research and select database driver crates: ✅
+  - [x] PostgreSQL: `tokio-postgres` (native driver, NOT sqlx)
+  - [x] MySQL: `mysql_async` (native driver, NOT sqlx)
+  - [x] SQLite: `rusqlite` (native driver, NOT sqlx)
+- [x] Document rationale for native drivers: ✅
+  - [x] Maximum isolation between engines
+  - [x] Vendor-specific behavior preserved
+  - [x] No risk of abstraction leakage
+  - [x] Each engine handles its own quirks independently
+  - [x] Aligns with "no compatibility layers" principle (CLAUDE.md)
 
 **Core Libraries**
-- [ ] Select JSON serialization library: `serde_json`
-- [ ] Select CLI framework: `clap`
-- [ ] Select error handling: `thiserror` and `anyhow`
-- [ ] Select configuration management libraries:
-  - [ ] Interactive prompts: `dialoguer` or `inquire`
-  - [ ] Cross-platform config paths: `dirs`
-  - [ ] Config format: JSON via `serde_json`
-- [ ] Document dependency rationale in RESEARCH.md
+- [x] Select JSON serialization library: `serde_json` ✅
+- [x] Select CLI framework: `clap` ✅
+- [x] Select error handling: `thiserror` and `anyhow` ✅
+- [x] Select configuration management libraries: ✅
+  - [x] Interactive prompts: `dialoguer` or `inquire`
+  - [x] Cross-platform config paths: `dirs`
+  - [x] Config format: JSON via `serde_json`
+- [x] Document dependency rationale in RESEARCH.md ✅
 
 ---
 
@@ -820,30 +820,30 @@
 ## Dependencies Checklist
 
 ### Core Dependencies
-- [ ] `clap` - CLI framework (with derive feature)
-- [ ] `serde` - Serialization framework (with derive feature)
-- [ ] `serde_json` - JSON serialization
-- [ ] `thiserror` - Error handling (structured errors)
-- [ ] `anyhow` - Error context and convenience
-- [ ] `tokio` - Async runtime (required by rmcp and async database drivers)
+- [x] `clap` - CLI framework (with derive feature) ✅
+- [x] `serde` - Serialization framework (with derive feature) ✅
+- [x] `serde_json` - JSON serialization ✅
+- [x] `thiserror` - Error handling (structured errors) ✅
+- [x] `anyhow` - Error context and convenience ✅
+- [x] `tokio` - Async runtime (required by rmcp and async database drivers) ✅
 
 ### MCP Server Dependencies
-- [ ] `rmcp` - Official Rust MCP SDK
-- [ ] `schemars` - JSON schema generation for MCP tool definitions
+- [x] `rmcp` - Official Rust MCP SDK ✅
+- [x] `schemars` - JSON schema generation for MCP tool definitions ✅
 
 ### Database Drivers (native drivers only, NO sqlx)
-- [ ] `tokio-postgres` - PostgreSQL native driver
-- [ ] `mysql_async` - MySQL native driver
-- [ ] `rusqlite` - SQLite native driver
+- [x] `tokio-postgres` - PostgreSQL native driver (optional feature) ✅
+- [x] `mysql_async` - MySQL native driver (optional feature) ✅
+- [x] `rusqlite` - SQLite native driver (optional feature) ✅
 
 ### Configuration Management
-- [ ] `dialoguer` or `inquire` - Interactive prompts for connection setup
-- [ ] `dirs` - Cross-platform configuration directory paths
+- [x] `dialoguer` - Interactive prompts for connection setup ✅
+- [x] `dirs` - Cross-platform configuration directory paths ✅
 
 ### Testing
-- [ ] `criterion` - Benchmarking
-- [ ] `pretty_assertions` - Better test output
-- [ ] `insta` - Snapshot testing for JSON output validation
+- [x] `criterion` - Benchmarking ✅
+- [x] `pretty_assertions` - Better test output ✅
+- [x] `insta` - Snapshot testing for JSON output validation ✅
 
 ---
 
