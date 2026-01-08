@@ -304,6 +304,15 @@ async fn introspect_table(conn: &mut Conn, schema: &str, table_name: &str) -> Re
     })
 }
 
+/// Helper function to safely extract an optional string from a MySQL row
+/// Returns None if the value is NULL, otherwise attempts to convert to String
+fn get_optional_string(row: &Row, idx: usize) -> Option<String> {
+    match row.as_ref(idx)? {
+        Value::NULL => None,
+        _ => row.get(idx),
+    }
+}
+
 /// Introspect table columns
 async fn introspect_columns(conn: &mut Conn, schema: &str, table_name: &str) -> Result<Vec<ColumnInfo>> {
     let query = "SELECT column_name, data_type, is_nullable, column_default
@@ -329,7 +338,7 @@ async fn introspect_columns(conn: &mut Conn, schema: &str, table_name: &str) -> 
         let is_nullable: String = row.get(2).ok_or_else(|| {
             PlenumError::engine_error("mysql", "Failed to extract nullable status".to_string())
         })?;
-        let default: Option<String> = row.get(3);
+        let default: Option<String> = get_optional_string(&row, 3);
 
         columns.push(ColumnInfo {
             name: column_name,
@@ -368,7 +377,7 @@ async fn introspect_primary_key(
 
     let pk_columns: Vec<String> = rows
         .into_iter()
-        .filter_map(|row| row.get(0))
+        .filter_map(|row| get_optional_string(&row, 0))
         .collect();
 
     Ok(Some(pk_columns))
@@ -501,7 +510,7 @@ async fn get_index_columns(
             )
         })?;
 
-    let columns: Vec<String> = rows.into_iter().filter_map(|row| row.get(0)).collect();
+    let columns: Vec<String> = rows.into_iter().filter_map(|row| get_optional_string(&row, 0)).collect();
 
     Ok(columns)
 }
