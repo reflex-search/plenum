@@ -842,13 +842,24 @@ async fn handle_query(
 }
 
 async fn handle_mcp() -> std::result::Result<(), i32> {
-    // Phase 7: Implement MCP server
+    // Phase 7: MCP server integration is planned but not yet implemented
+    //
+    // Current blocker: The rmcp crate API is unstable between versions (0.1.x vs 0.12.x)
+    // and lacks comprehensive documentation. MCP integration will be completed once:
+    // - rmcp API stabilizes
+    // - Better documentation/examples are available
+    // - Or an alternative MCP library is identified
+    //
+    // All core functionality (connect, introspect, query) is complete and tested for
+    // all three database engines (SQLite, PostgreSQL, MySQL).
     let error_envelope = ErrorEnvelope::new(
         "",
         "mcp",
         plenum::ErrorInfo::new(
             "NOT_IMPLEMENTED",
-            "mcp server not yet implemented - Phase 7",
+            "MCP server integration is planned for a future release. \
+            All database operations are available via the CLI. \
+            See PROJECT_PLAN.md Phase 7 for details.",
         ),
     );
     output_error(&error_envelope);

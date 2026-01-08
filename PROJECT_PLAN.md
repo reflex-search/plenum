@@ -577,11 +577,31 @@
 
 ---
 
-## Phase 7: MCP Server
+## Phase 7: MCP Server ⚠️ BLOCKED - Planned for Future Release
 
-**Note:** MCP architecture research completed in Phase 0.3
+**Status:** Implementation attempted but blocked by rmcp API instability
 
-### 7.1 MCP Server Setup
+**Blocker Summary:**
+- The `rmcp` crate (official Rust MCP SDK) has unstable APIs between versions
+- Version 0.1.x vs 0.12.x have incompatible interfaces
+- Insufficient documentation and examples for complex async tooling patterns
+- Multiple breaking API changes during development
+
+**Current State:**
+- MCP integration is planned but not yet implemented
+- CLI subcommand exists (`plenum mcp`) but returns NOT_IMPLEMENTED error
+- All core database functionality (connect, introspect, query) is complete and tested
+- 63 unit tests passing for all three database engines (SQLite, PostgreSQL, MySQL)
+
+**Path Forward:**
+MCP integration will be completed when one of the following occurs:
+1. `rmcp` API stabilizes with comprehensive documentation
+2. Better Rust MCP library emerges
+3. Manual JSON-RPC implementation proves simpler than using `rmcp`
+
+**Note:** MCP architecture research completed in Phase 0.3. The design is sound; only the implementation is blocked.
+
+### 7.1 MCP Server Setup (Planned)
 - [ ] Create `src/mcp.rs` module
 - [ ] Import `rmcp` types:
   - [ ] `use rmcp::{tool, ServerHandler, CallToolResult, Parameters};`

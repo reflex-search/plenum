@@ -34,6 +34,7 @@ pub mod output;      // JSON output envelopes (Phase 1.2)
 pub mod engine;      // Database engine trait and implementations (Phase 1.1, 3-5)
 pub mod capability;  // Capability validation and enforcement (Phase 1.4)
 pub mod config;      // Configuration management (Phase 1.5)
+// pub mod mcp;      // MCP server (Phase 7) - planned for future release
 
 // Re-export commonly used types for convenience
 pub use error::{PlenumError, Result};
