@@ -230,9 +230,10 @@ pub fn list_connections() -> Result<Vec<(String, ConnectionConfig)>> {
     for (name, stored) in registry.connections {
         match stored.resolve() {
             Ok(config) => connections.push((name, config)),
-            Err(e) => {
+            Err(_e) => {
                 // Skip connections that fail to resolve (e.g., missing env vars)
-                eprintln!("Warning: Could not resolve connection '{}': {}", name, e.message());
+                // Note: Error details not logged to prevent credential leakage
+                eprintln!("Warning: Could not resolve connection '{}'", name);
             }
         }
     }

@@ -46,7 +46,10 @@ impl DatabaseEngine for SqliteEngine {
             .ok_or_else(|| PlenumError::invalid_input("SQLite requires 'file' parameter"))?;
 
         // Open connection (read-only for validation)
-        let conn = open_connection(file_path.to_str().unwrap(), true)?;
+        let path_str = file_path
+            .to_str()
+            .ok_or_else(|| PlenumError::invalid_input("SQLite file path contains invalid UTF-8 characters"))?;
+        let conn = open_connection(path_str, true)?;
 
         // Get SQLite version
         let version: String = conn
@@ -86,7 +89,10 @@ impl DatabaseEngine for SqliteEngine {
             .ok_or_else(|| PlenumError::invalid_input("SQLite requires 'file' parameter"))?;
 
         // Open connection (read-only)
-        let conn = open_connection(file_path.to_str().unwrap(), true)?;
+        let path_str = file_path
+            .to_str()
+            .ok_or_else(|| PlenumError::invalid_input("SQLite file path contains invalid UTF-8 characters"))?;
+        let conn = open_connection(path_str, true)?;
 
         // Note: SQLite doesn't have explicit schemas in the same way as PostgreSQL/MySQL
         // The schema_filter parameter is ignored for SQLite
@@ -144,7 +150,10 @@ impl DatabaseEngine for SqliteEngine {
             .ok_or_else(|| PlenumError::invalid_input("SQLite requires 'file' parameter"))?;
 
         // Open connection (read-write for queries)
-        let mut conn = open_connection(file_path.to_str().unwrap(), false)?;
+        let path_str = file_path
+            .to_str()
+            .ok_or_else(|| PlenumError::invalid_input("SQLite file path contains invalid UTF-8 characters"))?;
+        let mut conn = open_connection(path_str, false)?;
 
         // Set busy timeout if specified
         if let Some(timeout_ms) = caps.timeout_ms {
