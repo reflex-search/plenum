@@ -473,10 +473,10 @@ mod tests {
     use super::*;
     use crate::engine::DatabaseType;
 
-    #[test]
-    fn test_validate_connection_memory() {
+    #[tokio::test]
+    async fn test_validate_connection_memory() {
         let config = ConnectionConfig::sqlite(":memory:".into());
-        let result = SqliteEngine::validate_connection(&config);
+        let result = SqliteEngine::validate_connection(&config).await;
         assert!(result.is_ok());
 
         let info = result.unwrap();
@@ -486,12 +486,12 @@ mod tests {
         assert_eq!(info.user, "N/A");
     }
 
-    #[test]
-    fn test_validate_connection_wrong_engine() {
+    #[tokio::test]
+    async fn test_validate_connection_wrong_engine() {
         let mut config = ConnectionConfig::sqlite(":memory:".into());
         config.engine = DatabaseType::Postgres;
 
-        let result = SqliteEngine::validate_connection(&config);
+        let result = SqliteEngine::validate_connection(&config).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -499,8 +499,8 @@ mod tests {
             .contains("Expected SQLite engine"));
     }
 
-    #[test]
-    fn test_validate_connection_missing_file() {
+    #[tokio::test]
+    async fn test_validate_connection_missing_file() {
         let config = ConnectionConfig {
             engine: DatabaseType::SQLite,
             file: None,
@@ -511,7 +511,7 @@ mod tests {
             database: None,
         };
 
-        let result = SqliteEngine::validate_connection(&config);
+        let result = SqliteEngine::validate_connection(&config).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -519,8 +519,8 @@ mod tests {
             .contains("SQLite requires 'file' parameter"));
     }
 
-    #[test]
-    fn test_introspect_schema() {
+    #[tokio::test]
+    async fn test_introspect_schema() {
         // Create a temporary database file
         let temp_file = std::env::temp_dir().join("test_introspect.db");
         let _ = std::fs::remove_file(&temp_file); // Clean up if exists
@@ -539,7 +539,7 @@ mod tests {
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let result = SqliteEngine::introspect(&config, None);
+        let result = SqliteEngine::introspect(&config, None).await;
         assert!(result.is_ok());
 
         let schema = result.unwrap();
@@ -559,8 +559,8 @@ mod tests {
         let _ = std::fs::remove_file(&temp_file);
     }
 
-    #[test]
-    fn test_execute_select_query() {
+    #[tokio::test]
+    async fn test_execute_select_query() {
         // Create temp database
         let temp_file = std::env::temp_dir().join("test_execute_select.db");
         let _ = std::fs::remove_file(&temp_file);
@@ -578,7 +578,7 @@ mod tests {
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::read_only();
-        let result = SqliteEngine::execute(&config, "SELECT * FROM users", &caps);
+        let result = SqliteEngine::execute(&config, "SELECT * FROM users", &caps).await;
         assert!(result.is_ok());
 
         let query_result = result.unwrap();
@@ -590,8 +590,8 @@ mod tests {
         let _ = std::fs::remove_file(&temp_file);
     }
 
-    #[test]
-    fn test_execute_insert_without_capability() {
+    #[tokio::test]
+    async fn test_execute_insert_without_capability() {
         let temp_file = std::env::temp_dir().join("test_execute_insert_no_cap.db");
         let _ = std::fs::remove_file(&temp_file);
 
@@ -606,7 +606,7 @@ mod tests {
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::read_only();
-        let result = SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &caps);
+        let result = SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &caps).await;
 
         assert!(result.is_err());
         assert!(result
@@ -618,8 +618,8 @@ mod tests {
         let _ = std::fs::remove_file(&temp_file);
     }
 
-    #[test]
-    fn test_execute_insert_with_capability() {
+    #[tokio::test]
+    async fn test_execute_insert_with_capability() {
         let temp_file = std::env::temp_dir().join("test_execute_insert.db");
         let _ = std::fs::remove_file(&temp_file);
 
@@ -634,7 +634,7 @@ mod tests {
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::with_write();
-        let result = SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &caps);
+        let result = SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &caps).await;
 
         assert!(result.is_ok());
         let query_result = result.unwrap();
@@ -644,8 +644,8 @@ mod tests {
         let _ = std::fs::remove_file(&temp_file);
     }
 
-    #[test]
-    fn test_execute_ddl_without_capability() {
+    #[tokio::test]
+    async fn test_execute_ddl_without_capability() {
         let temp_file = std::env::temp_dir().join("test_execute_ddl_no_cap.db");
         let _ = std::fs::remove_file(&temp_file);
 
@@ -659,7 +659,7 @@ mod tests {
             &config,
             "CREATE TABLE users (id INTEGER PRIMARY KEY)",
             &caps,
-        );
+        ).await;
 
         assert!(result.is_err());
         assert!(result
@@ -671,8 +671,8 @@ mod tests {
         let _ = std::fs::remove_file(&temp_file);
     }
 
-    #[test]
-    fn test_execute_ddl_with_capability() {
+    #[tokio::test]
+    async fn test_execute_ddl_with_capability() {
         let temp_file = std::env::temp_dir().join("test_execute_ddl.db");
         let _ = std::fs::remove_file(&temp_file);
 
@@ -686,7 +686,7 @@ mod tests {
             &config,
             "CREATE TABLE users (id INTEGER PRIMARY KEY)",
             &caps,
-        );
+        ).await;
 
         assert!(result.is_ok());
 
@@ -694,8 +694,8 @@ mod tests {
         let _ = std::fs::remove_file(&temp_file);
     }
 
-    #[test]
-    fn test_execute_max_rows_limit() {
+    #[tokio::test]
+    async fn test_execute_max_rows_limit() {
         let temp_file = std::env::temp_dir().join("test_max_rows.db");
         let _ = std::fs::remove_file(&temp_file);
 
@@ -721,7 +721,7 @@ mod tests {
             max_rows: Some(5),
             ..Capabilities::read_only()
         };
-        let result = SqliteEngine::execute(&config, "SELECT * FROM users", &caps);
+        let result = SqliteEngine::execute(&config, "SELECT * FROM users", &caps).await;
 
         assert!(result.is_ok());
         let query_result = result.unwrap();
@@ -731,8 +731,8 @@ mod tests {
         let _ = std::fs::remove_file(&temp_file);
     }
 
-    #[test]
-    fn test_execute_all_data_types() {
+    #[tokio::test]
+    async fn test_execute_all_data_types() {
         let temp_file = std::env::temp_dir().join("test_data_types.db");
         let _ = std::fs::remove_file(&temp_file);
 
@@ -759,7 +759,7 @@ mod tests {
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::read_only();
-        let result = SqliteEngine::execute(&config, "SELECT * FROM test_types", &caps);
+        let result = SqliteEngine::execute(&config, "SELECT * FROM test_types", &caps).await;
 
         assert!(result.is_ok());
         let query_result = result.unwrap();
@@ -788,8 +788,8 @@ mod tests {
         let _ = std::fs::remove_file(&temp_file);
     }
 
-    #[test]
-    fn test_introspect_foreign_keys() {
+    #[tokio::test]
+    async fn test_introspect_foreign_keys() {
         let temp_file = std::env::temp_dir().join("test_fk.db");
         let _ = std::fs::remove_file(&temp_file);
 
@@ -814,7 +814,7 @@ mod tests {
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let result = SqliteEngine::introspect(&config, None);
+        let result = SqliteEngine::introspect(&config, None).await;
         assert!(result.is_ok());
 
         let schema = result.unwrap();
@@ -833,8 +833,8 @@ mod tests {
         let _ = std::fs::remove_file(&temp_file);
     }
 
-    #[test]
-    fn test_introspect_indexes() {
+    #[tokio::test]
+    async fn test_introspect_indexes() {
         let temp_file = std::env::temp_dir().join("test_indexes.db");
         let _ = std::fs::remove_file(&temp_file);
 
@@ -855,7 +855,7 @@ mod tests {
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let result = SqliteEngine::introspect(&config, None);
+        let result = SqliteEngine::introspect(&config, None).await;
         assert!(result.is_ok());
 
         let schema = result.unwrap();

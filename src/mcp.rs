@@ -424,7 +424,7 @@ async fn tool_connect(args: &Value) -> Result<Value> {
             .map(|s| s.to_string())
             .unwrap_or_else(|| "default".to_string());
 
-        crate::save_connection(conn_name.clone(), config.clone(), location, true)
+        crate::save_connection(conn_name.clone(), config.clone(), location)
             .map_err(|e| anyhow!("Failed to save connection: {}", e))?;
 
         Ok(serde_json::json!({
@@ -548,7 +548,7 @@ fn build_connection_config_from_args(args: &Value, engine_str: &str) -> Result<C
 fn resolve_connection_from_args(args: &Value) -> Result<ConnectionConfig> {
     // Try named connection first
     if let Some(name) = args.get("name").and_then(|v| v.as_str()) {
-        let mut config = crate::resolve_connection(Some(name))
+        let mut config = crate::resolve_connection(name)
             .map_err(|e| anyhow!("Failed to resolve connection '{}': {}", name, e))?;
 
         // Apply overrides

@@ -668,9 +668,9 @@ mod tests {
     // They are marked with #[ignore] and should be run with:
     // cargo test --features mysql -- --ignored
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running MySQL instance
-    fn test_validate_connection() {
+    async fn test_validate_connection() {
         let config = ConnectionConfig::mysql(
             "localhost".to_string(),
             3306,
@@ -679,7 +679,7 @@ mod tests {
             "test".to_string(),
         );
 
-        let result = MySqlEngine::validate_connection(&config);
+        let result = MySqlEngine::validate_connection(&config).await;
         assert!(
             result.is_ok(),
             "Connection validation failed: {:?}",
@@ -691,8 +691,8 @@ mod tests {
         assert!(info.server_info.contains("MySQL") || info.server_info.contains("MariaDB"));
     }
 
-    #[test]
-    fn test_validate_connection_wrong_engine() {
+    #[tokio::test]
+    async fn test_validate_connection_wrong_engine() {
         let mut config = ConnectionConfig::mysql(
             "localhost".to_string(),
             3306,
@@ -702,7 +702,7 @@ mod tests {
         );
         config.engine = DatabaseType::Postgres;
 
-        let result = MySqlEngine::validate_connection(&config);
+        let result = MySqlEngine::validate_connection(&config).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -710,8 +710,8 @@ mod tests {
             .contains("Expected MySQL engine"));
     }
 
-    #[test]
-    fn test_validate_connection_missing_host() {
+    #[tokio::test]
+    async fn test_validate_connection_missing_host() {
         let config = ConnectionConfig {
             engine: DatabaseType::MySQL,
             host: None,
@@ -722,7 +722,7 @@ mod tests {
             file: None,
         };
 
-        let result = MySqlEngine::validate_connection(&config);
+        let result = MySqlEngine::validate_connection(&config).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()

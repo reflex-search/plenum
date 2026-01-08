@@ -354,7 +354,7 @@ async fn handle_connect(
     match result {
         Ok((conn_name, config, location)) => {
             // Save connection
-            match plenum::save_connection(conn_name.clone(), config.clone(), location, true) {
+            match plenum::save_connection(conn_name.clone(), config.clone(), location) {
                 Ok(()) => {
                     // Build success response
                     let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -894,7 +894,7 @@ where
 /// Build connection config from CLI arguments
 ///
 /// This helper resolves a connection from config or builds one from CLI arguments.
-/// Precedence: Named connection → Current connection → CLI arguments only
+/// Precedence: Named connection → CLI arguments only
 fn build_connection_config(
     connection: Option<String>,
     engine: Option<String>,
@@ -905,7 +905,6 @@ fn build_connection_config(
     database: Option<String>,
     file: Option<PathBuf>,
 ) -> Result<ConnectionConfig> {
-    // Try to resolve from config if connection is provided or if no explicit args
     let has_explicit_args = engine.is_some()
         || host.is_some()
         || port.is_some()
@@ -914,13 +913,19 @@ fn build_connection_config(
         || database.is_some()
         || file.is_some();
 
-    let mut config = if connection.is_some() || !has_explicit_args {
-        // Try to load from config
-        match plenum::resolve_connection(connection.as_deref()) {
+    // Try to resolve from config if connection name is provided
+    let mut config = if let Some(conn_name) = connection {
+        // Named connection provided - load it
+        match plenum::resolve_connection(&conn_name) {
             Ok(cfg) => Some(cfg),
-            Err(_) if has_explicit_args => None, // Ignore error if explicit args provided
+            Err(_) if has_explicit_args => None, // Ignore error if explicit args provided as fallback
             Err(e) => return Err(e),              // Propagate error if no fallback
         }
+    } else if !has_explicit_args {
+        // No connection name and no explicit args - error
+        return Err(PlenumError::invalid_input(
+            "Must provide either --connection <name> or explicit connection parameters (--engine, --host, etc.)"
+        ));
     } else {
         None
     };
