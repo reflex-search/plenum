@@ -500,9 +500,9 @@ async fn interactive_connect_wizard() -> Result<(String, ConnectionConfig, Confi
                 .interact_text()
                 .map_err(|e| PlenumError::invalid_input(format!("Input failed: {}", e)))?;
 
-            let password: String = Input::new()
+            let password: String = dialoguer::Password::new()
                 .with_prompt("Password")
-                .interact_text()
+                .interact()
                 .map_err(|e| PlenumError::invalid_input(format!("Input failed: {}", e)))?;
 
             let database: String = Input::new()

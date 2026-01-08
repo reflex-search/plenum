@@ -51,10 +51,9 @@ impl DatabaseEngine for PostgresEngine {
         })?;
 
         // Spawn connection handler
+        // Note: Connection errors are not logged to prevent credential leakage
         tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("PostgreSQL connection error: {}", e);
-            }
+            let _ = connection.await;
         });
 
         // Get PostgreSQL version
@@ -120,10 +119,9 @@ impl DatabaseEngine for PostgresEngine {
         })?;
 
         // Spawn connection handler
+        // Note: Connection errors are not logged to prevent credential leakage
         tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("PostgreSQL connection error: {}", e);
-            }
+            let _ = connection.await;
         });
 
         // Introspect all tables
@@ -153,10 +151,9 @@ impl DatabaseEngine for PostgresEngine {
         })?;
 
         // Spawn connection handler
+        // Note: Connection errors are not logged to prevent credential leakage
         tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("PostgreSQL connection error: {}", e);
-            }
+            let _ = connection.await;
         });
 
         // Execute with optional timeout

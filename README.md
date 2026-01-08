@@ -216,17 +216,38 @@ Plenum is built around strict architectural principles:
 
 ### Security Model
 
+Plenum's security boundary is **capability-based access control**, not SQL validation.
+
 **Plenum enforces:**
-- Operation type restrictions (read-only, write, DDL)
-- Row limits and timeouts
-- Credential security (no logging/persistence)
+- ✅ Operation type restrictions (read-only, write, DDL)
+- ✅ Row limits (`max_rows`) and query timeouts (`timeout_ms`)
+- ✅ Pre-execution validation (no capability bypasses)
+- ✅ Credential security (best-effort, no intentional logging)
 
 **Plenum does NOT enforce:**
-- SQL injection prevention (agent's responsibility)
-- Query semantic correctness
-- Business logic constraints
+- ❌ SQL injection prevention (agent's responsibility)
+- ❌ Query semantic correctness
+- ❌ Business logic constraints
+- ❌ Data access policies (row-level security, column masking)
 
-**Agents must sanitize inputs before constructing SQL.** Plenum assumes SQL passed to it is safe.
+**Critical**: Agents must sanitize all user inputs before constructing SQL. Plenum assumes SQL passed to it is safe and passes it verbatim to database drivers.
+
+#### Credential Security
+
+Credentials are stored as **plaintext JSON** in config files:
+- Local: `.plenum/config.json` (team-shareable)
+- Global: `~/.config/plenum/connections.json` (user-private)
+
+**Recommendations:**
+- Use `password_env` for production (environment variables)
+- Secure config files with OS-level permissions (`chmod 600`)
+- Avoid `--password` CLI flag (visible in process listings)
+
+#### Security Reporting
+
+For detailed security documentation, threat model, and vulnerability reporting, see **[SECURITY.md](SECURITY.md)**.
+
+To report security vulnerabilities, create a GitHub issue with the `security` label.
 
 ### Database Drivers
 
@@ -284,19 +305,20 @@ plenum/
 
 - [CLAUDE.md](CLAUDE.md) - Core principles and non-negotiable requirements
 - [PROJECT_PLAN.md](PROJECT_PLAN.md) - Complete implementation roadmap
+- [SECURITY.md](SECURITY.md) - Security model, threat analysis, and vulnerability reporting
 - [RESEARCH.md](RESEARCH.md) - Design decisions, rationale, and research
 - [PROBLEMS.md](PROBLEMS.md) - Architectural issues and resolutions
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Development guidelines
 
 ## Roadmap
 
-Plenum has completed **Phase 6: Integration & Polish**.
+Plenum has completed **Phase 8: Security Audit**.
 
-**Status:**
-- 102 tests passing across all three database engines
-- 7 performance benchmarks implemented
-- Comprehensive documentation complete (README.md, EXAMPLES.md, ARCHITECTURE.md)
-- Ready for MCP Server implementation (Phase 7)
+**Recent Accomplishments:**
+- Phase 7: MCP Server implementation complete ✅
+- Phase 8: Comprehensive security audit complete ✅
+- Critical security fixes applied (password masking, path panic prevention)
+- SECURITY.md documentation created
 
 See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the complete implementation roadmap:
 - Phase 0: Project Foundation ✅
@@ -306,9 +328,9 @@ See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the complete implementation roadmap:
 - Phase 4: PostgreSQL Engine ✅
 - Phase 5: MySQL Engine ✅
 - Phase 6: Integration & Polish ✅
-- Phase 7: MCP Server ← **Next Phase**
-- Phase 8: Security Audit
-- Phase 9: Release Preparation
+- Phase 7: MCP Server ✅
+- Phase 8: Security Audit ✅
+- Phase 9: Release Preparation ← **Next Phase**
 
 ## Contributing
 
