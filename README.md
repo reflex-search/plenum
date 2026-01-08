@@ -145,6 +145,37 @@ All commands output structured JSON to stdout:
 }
 ```
 
+### Error Codes
+
+Plenum returns stable, machine-parseable error codes. Agents should check the `error.code` field for programmatic error handling:
+
+| Code | Description | When It Occurs |
+|------|-------------|----------------|
+| `CAPABILITY_VIOLATION` | Operation blocked by capability constraints | Attempting write/DDL operations without appropriate flags |
+| `CONNECTION_FAILED` | Database connection failed | Invalid credentials, unreachable host, or database doesn't exist |
+| `QUERY_FAILED` | Query execution failed | SQL syntax errors, missing tables/columns, constraint violations |
+| `INVALID_INPUT` | Malformed input or missing parameters | Missing required flags, invalid engine type, etc. |
+| `ENGINE_ERROR` | Engine-specific database error | Database-specific errors wrapped for consistency |
+| `CONFIG_ERROR` | Configuration file or connection registry error | Missing config file, invalid JSON, connection name not found |
+
+**Example error handling:**
+```json
+{
+  "ok": false,
+  "engine": "postgres",
+  "command": "query",
+  "error": {
+    "code": "CAPABILITY_VIOLATION",
+    "message": "Write operations require --allow-write flag"
+  }
+}
+```
+
+Agents should:
+1. Check `ok` field first (true = success, false = error)
+2. Match on `error.code` for programmatic handling
+3. Use `error.message` for logging/debugging (agent-appropriate, no sensitive data)
+
 ## MCP Integration
 
 Plenum exposes functionality via MCP (Model Context Protocol) server:
@@ -259,15 +290,23 @@ plenum/
 
 ## Roadmap
 
-Plenum is currently in **Phase 0: Project Foundation**.
+Plenum has completed **Phase 6: Integration & Polish**.
+
+**Status:**
+- 102 tests passing across all three database engines
+- 7 performance benchmarks implemented
+- Comprehensive documentation complete (README.md, EXAMPLES.md, ARCHITECTURE.md)
+- Ready for MCP Server implementation (Phase 7)
 
 See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the complete implementation roadmap:
-- Phase 0: Project Foundation ← **Current Phase**
-- Phase 1: Core Architecture
-- Phase 2: CLI Foundation
-- Phase 3-5: Database Engine Implementations (PostgreSQL, MySQL, SQLite)
-- Phase 6: Integration & Polish
-- Phase 7: MCP Server
+- Phase 0: Project Foundation ✅
+- Phase 1: Core Architecture ✅
+- Phase 2: CLI Foundation ✅
+- Phase 3: SQLite Engine ✅
+- Phase 4: PostgreSQL Engine ✅
+- Phase 5: MySQL Engine ✅
+- Phase 6: Integration & Polish ✅
+- Phase 7: MCP Server ← **Next Phase**
 - Phase 8: Security Audit
 - Phase 9: Release Preparation
 
