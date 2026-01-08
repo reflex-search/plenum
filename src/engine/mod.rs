@@ -331,7 +331,7 @@ pub trait DatabaseEngine {
     /// 4. Returns connection info or error
     ///
     /// No persistent connection is maintained.
-    fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo>;
+    async fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo>;
 
     /// Introspect database schema
     ///
@@ -342,7 +342,7 @@ pub trait DatabaseEngine {
     /// 4. Returns schema info or error
     ///
     /// If `schema_filter` is provided, only tables in that schema are returned.
-    fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo>;
+    async fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo>;
 
     /// Execute a query with capability constraints
     ///
@@ -354,7 +354,7 @@ pub trait DatabaseEngine {
     /// 5. Returns query results or error
     ///
     /// Capability violations MUST fail before query execution.
-    fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult>;
+    async fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult>;
 }
 
 #[cfg(test)]

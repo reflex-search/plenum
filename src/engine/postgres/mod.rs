@@ -33,7 +33,7 @@ use crate::error::{PlenumError, Result};
 pub struct PostgresEngine;
 
 impl DatabaseEngine for PostgresEngine {
-    fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo> {
+    async fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo> {
         // Validate config is for PostgreSQL
         if config.engine != DatabaseType::Postgres {
             return Err(PlenumError::invalid_input(format!(
@@ -45,72 +45,64 @@ impl DatabaseEngine for PostgresEngine {
         // Build connection config
         let pg_config = build_pg_config(config)?;
 
-        // Connect (async operation wrapped in blocking call)
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| PlenumError::connection_failed(format!("Failed to create tokio runtime: {}", e)))?;
-
-        let conn_info = runtime.block_on(async {
-            // Connect to PostgreSQL
-            let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
-            })?;
-
-            // Spawn connection handler
-            tokio::spawn(async move {
-                if let Err(e) = connection.await {
-                    eprintln!("PostgreSQL connection error: {}", e);
-                }
-            });
-
-            // Get PostgreSQL version
-            let version_row = client
-                .query_one("SELECT version()", &[])
-                .await
-                .map_err(|e| {
-                    PlenumError::connection_failed(format!("Failed to query PostgreSQL version: {}", e))
-                })?;
-
-            let version_string: String = version_row.get(0);
-
-            // Extract version number (e.g., "PostgreSQL 15.3 on x86_64..." -> "15.3")
-            let database_version = version_string
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("unknown")
-                .to_string();
-
-            // Get current database name
-            let db_row = client
-                .query_one("SELECT current_database()", &[])
-                .await
-                .map_err(|e| {
-                    PlenumError::connection_failed(format!("Failed to query current database: {}", e))
-                })?;
-
-            let connected_database: String = db_row.get(0);
-
-            // Get current user
-            let user_row = client
-                .query_one("SELECT current_user", &[])
-                .await
-                .map_err(|e| {
-                    PlenumError::connection_failed(format!("Failed to query current user: {}", e))
-                })?;
-
-            let user: String = user_row.get(0);
-
-            Ok(ConnectionInfo {
-                database_version: database_version.clone(),
-                server_info: version_string,
-                connected_database,
-                user,
-            })
+        // Connect to PostgreSQL
+        let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
         })?;
 
-        Ok(conn_info)
+        // Spawn connection handler
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("PostgreSQL connection error: {}", e);
+            }
+        });
+
+        // Get PostgreSQL version
+        let version_row = client
+            .query_one("SELECT version()", &[])
+            .await
+            .map_err(|e| {
+                PlenumError::connection_failed(format!("Failed to query PostgreSQL version: {}", e))
+            })?;
+
+        let version_string: String = version_row.get(0);
+
+        // Extract version number (e.g., "PostgreSQL 15.3 on x86_64..." -> "15.3")
+        let database_version = version_string
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Get current database name
+        let db_row = client
+            .query_one("SELECT current_database()", &[])
+            .await
+            .map_err(|e| {
+                PlenumError::connection_failed(format!("Failed to query current database: {}", e))
+            })?;
+
+        let connected_database: String = db_row.get(0);
+
+        // Get current user
+        let user_row = client
+            .query_one("SELECT current_user", &[])
+            .await
+            .map_err(|e| {
+                PlenumError::connection_failed(format!("Failed to query current user: {}", e))
+            })?;
+
+        let user: String = user_row.get(0);
+
+        Ok(ConnectionInfo {
+            database_version: database_version.clone(),
+            server_info: version_string,
+            connected_database,
+            user,
+        })
     }
 
-    fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo> {
+    async fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo> {
         // Validate config is for PostgreSQL
         if config.engine != DatabaseType::Postgres {
             return Err(PlenumError::invalid_input(format!(
@@ -122,33 +114,25 @@ impl DatabaseEngine for PostgresEngine {
         // Build connection config
         let pg_config = build_pg_config(config)?;
 
-        // Connect and introspect (async operation wrapped in blocking call)
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| PlenumError::engine_error("postgres", format!("Failed to create tokio runtime: {}", e)))?;
-
-        let schema_info = runtime.block_on(async {
-            // Connect to PostgreSQL
-            let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
-            })?;
-
-            // Spawn connection handler
-            tokio::spawn(async move {
-                if let Err(e) = connection.await {
-                    eprintln!("PostgreSQL connection error: {}", e);
-                }
-            });
-
-            // Introspect all tables
-            let tables = introspect_all_tables(&client, schema_filter).await?;
-
-            Ok(SchemaInfo { tables })
+        // Connect to PostgreSQL
+        let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
         })?;
 
-        Ok(schema_info)
+        // Spawn connection handler
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("PostgreSQL connection error: {}", e);
+            }
+        });
+
+        // Introspect all tables
+        let tables = introspect_all_tables(&client, schema_filter).await?;
+
+        Ok(SchemaInfo { tables })
     }
 
-    fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult> {
+    async fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult> {
         // Validate config is for PostgreSQL
         if config.engine != DatabaseType::Postgres {
             return Err(PlenumError::invalid_input(format!(
@@ -163,42 +147,34 @@ impl DatabaseEngine for PostgresEngine {
         // Build connection config
         let pg_config = build_pg_config(config)?;
 
-        // Execute query (async operation wrapped in blocking call)
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| PlenumError::engine_error("postgres", format!("Failed to create tokio runtime: {}", e)))?;
-
-        let result = runtime.block_on(async {
-            // Connect to PostgreSQL
-            let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
-            })?;
-
-            // Spawn connection handler
-            tokio::spawn(async move {
-                if let Err(e) = connection.await {
-                    eprintln!("PostgreSQL connection error: {}", e);
-                }
-            });
-
-            // Execute with optional timeout
-            let start = Instant::now();
-            let query_result = if let Some(timeout_ms) = caps.timeout_ms {
-                let timeout_duration = Duration::from_millis(timeout_ms);
-                tokio::time::timeout(timeout_duration, execute_query(&client, query, caps))
-                    .await
-                    .map_err(|_| {
-                        PlenumError::query_failed(format!("Query exceeded timeout of {}ms", timeout_ms))
-                    })??
-            } else {
-                execute_query(&client, query, caps).await?
-            };
-
-            let _elapsed = start.elapsed();
-
-            Ok(query_result)
+        // Connect to PostgreSQL
+        let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
         })?;
 
-        Ok(result)
+        // Spawn connection handler
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("PostgreSQL connection error: {}", e);
+            }
+        });
+
+        // Execute with optional timeout
+        let start = Instant::now();
+        let query_result = if let Some(timeout_ms) = caps.timeout_ms {
+            let timeout_duration = Duration::from_millis(timeout_ms);
+            tokio::time::timeout(timeout_duration, execute_query(&client, query, caps))
+                .await
+                .map_err(|_| {
+                    PlenumError::query_failed(format!("Query exceeded timeout of {}ms", timeout_ms))
+                })??
+        } else {
+            execute_query(&client, query, caps).await?
+        };
+
+        let _elapsed = start.elapsed();
+
+        Ok(query_result)
     }
 }
 

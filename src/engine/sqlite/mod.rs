@@ -30,7 +30,7 @@ use crate::error::{PlenumError, Result};
 pub struct SqliteEngine;
 
 impl DatabaseEngine for SqliteEngine {
-    fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo> {
+    async fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo> {
         // Validate config is for SQLite
         if config.engine != DatabaseType::SQLite {
             return Err(PlenumError::invalid_input(format!(
@@ -70,7 +70,7 @@ impl DatabaseEngine for SqliteEngine {
         })
     }
 
-    fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo> {
+    async fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo> {
         // Validate config is for SQLite
         if config.engine != DatabaseType::SQLite {
             return Err(PlenumError::invalid_input(format!(
@@ -125,7 +125,7 @@ impl DatabaseEngine for SqliteEngine {
         Ok(SchemaInfo { tables })
     }
 
-    fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult> {
+    async fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult> {
         // Validate config is for SQLite
         if config.engine != DatabaseType::SQLite {
             return Err(PlenumError::invalid_input(format!(

@@ -109,7 +109,7 @@ struct JsonRpcError {
 /// # Errors
 ///
 /// Returns an error if stdio communication fails or if there's a fatal error.
-pub fn serve() -> Result<()> {
+pub async fn serve() -> Result<()> {
     let stdin = io::stdin();
     let reader = stdin.lock();
     let mut stdout = io::stdout();
@@ -145,7 +145,7 @@ pub fn serve() -> Result<()> {
         };
 
         // Handle request
-        let response = handle_request(request);
+        let response = handle_request(request).await;
 
         // Write response
         let response_json = serde_json::to_string(&response)?;
@@ -159,11 +159,11 @@ pub fn serve() -> Result<()> {
 /// Handle a JSON-RPC request
 ///
 /// Routes the request to the appropriate handler based on the method name.
-fn handle_request(request: JsonRpcRequest) -> JsonRpcResponse {
+async fn handle_request(request: JsonRpcRequest) -> JsonRpcResponse {
     let result = match request.method.as_str() {
         "initialize" => handle_initialize(request.params),
         "tools/list" => handle_list_tools(),
-        "tools/call" => handle_call_tool(request.params),
+        "tools/call" => handle_call_tool(request.params).await,
         _ => Err(anyhow!("Unknown method: {}", request.method)),
     };
 
@@ -377,7 +377,7 @@ fn handle_list_tools() -> Result<Value> {
 /// Handle tools/call request
 ///
 /// Routes the tool call to the appropriate tool implementation.
-fn handle_call_tool(params: Option<Value>) -> Result<Value> {
+async fn handle_call_tool(params: Option<Value>) -> Result<Value> {
     let params = params.ok_or_else(|| anyhow!("Missing params"))?;
     let name = params["name"]
         .as_str()
@@ -385,9 +385,9 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
     let arguments = &params["arguments"];
 
     match name {
-        "connect" => tool_connect(arguments),
-        "introspect" => tool_introspect(arguments),
-        "query" => tool_query(arguments),
+        "connect" => tool_connect(arguments).await,
+        "introspect" => tool_introspect(arguments).await,
+        "query" => tool_query(arguments).await,
         _ => Err(anyhow!("Unknown tool: {}", name)),
     }
 }
@@ -399,7 +399,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 /// MCP Tool: connect
 ///
 /// Validates and optionally saves a database connection configuration.
-fn tool_connect(args: &Value) -> Result<Value> {
+async fn tool_connect(args: &Value) -> Result<Value> {
     // Extract engine
     let engine_str = args["engine"]
         .as_str()
@@ -409,7 +409,7 @@ fn tool_connect(args: &Value) -> Result<Value> {
     let config = build_connection_config_from_args(args, engine_str)?;
 
     // Validate connection (opens and immediately closes)
-    let conn_info = validate_connection(&config)?;
+    let conn_info = validate_connection(&config).await?;
 
     // Save if requested
     if let Some(save_str) = args.get("save").and_then(|v| v.as_str()) {
@@ -448,7 +448,7 @@ fn tool_connect(args: &Value) -> Result<Value> {
 /// MCP Tool: introspect
 ///
 /// Introspects database schema and returns table/column information.
-fn tool_introspect(args: &Value) -> Result<Value> {
+async fn tool_introspect(args: &Value) -> Result<Value> {
     // Resolve connection config
     let config = resolve_connection_from_args(args)?;
 
@@ -456,7 +456,7 @@ fn tool_introspect(args: &Value) -> Result<Value> {
     let schema_filter = args.get("schema").and_then(|v| v.as_str());
 
     // Call introspect (opens and closes connection)
-    let schema_info = introspect_schema(&config, schema_filter)?;
+    let schema_info = introspect_schema(&config, schema_filter).await?;
 
     Ok(serde_json::to_value(schema_info)?)
 }
@@ -464,7 +464,7 @@ fn tool_introspect(args: &Value) -> Result<Value> {
 /// MCP Tool: query
 ///
 /// Executes a SQL query with capability constraints.
-fn tool_query(args: &Value) -> Result<Value> {
+async fn tool_query(args: &Value) -> Result<Value> {
     // Extract SQL
     let sql = args["sql"]
         .as_str()
@@ -486,7 +486,7 @@ fn tool_query(args: &Value) -> Result<Value> {
         .map_err(|e| anyhow!("Capability validation failed: {}", e))?;
 
     // Execute query (opens and closes connection)
-    let query_result = execute_query(&config, sql, &capabilities)?;
+    let query_result = execute_query(&config, sql, &capabilities).await?;
 
     Ok(serde_json::to_value(query_result)?)
 }
@@ -594,10 +594,11 @@ fn resolve_connection_from_args(args: &Value) -> Result<ConnectionConfig> {
 ///
 /// Opens a connection, validates it, and immediately closes it.
 /// This function is stateless - no connection persists after it returns.
-fn validate_connection(config: &ConnectionConfig) -> Result<crate::ConnectionInfo> {
+async fn validate_connection(config: &ConnectionConfig) -> Result<crate::ConnectionInfo> {
     match config.engine {
         #[cfg(feature = "sqlite")]
         DatabaseType::SQLite => SqliteEngine::validate_connection(config)
+            .await
             .map_err(|e| anyhow!("SQLite connection failed: {}", e)),
         #[cfg(not(feature = "sqlite"))]
         DatabaseType::SQLite => Err(anyhow!(
@@ -606,6 +607,7 @@ fn validate_connection(config: &ConnectionConfig) -> Result<crate::ConnectionInf
 
         #[cfg(feature = "postgres")]
         DatabaseType::Postgres => PostgresEngine::validate_connection(config)
+            .await
             .map_err(|e| anyhow!("PostgreSQL connection failed: {}", e)),
         #[cfg(not(feature = "postgres"))]
         DatabaseType::Postgres => Err(anyhow!(
@@ -614,6 +616,7 @@ fn validate_connection(config: &ConnectionConfig) -> Result<crate::ConnectionInf
 
         #[cfg(feature = "mysql")]
         DatabaseType::MySQL => MySqlEngine::validate_connection(config)
+            .await
             .map_err(|e| anyhow!("MySQL connection failed: {}", e)),
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => Err(anyhow!(
@@ -626,13 +629,14 @@ fn validate_connection(config: &ConnectionConfig) -> Result<crate::ConnectionInf
 ///
 /// Opens a connection, introspects schema, and immediately closes it.
 /// This function is stateless - no connection persists after it returns.
-fn introspect_schema(
+async fn introspect_schema(
     config: &ConnectionConfig,
     schema_filter: Option<&str>,
 ) -> Result<crate::SchemaInfo> {
     match config.engine {
         #[cfg(feature = "sqlite")]
         DatabaseType::SQLite => SqliteEngine::introspect(config, schema_filter)
+            .await
             .map_err(|e| anyhow!("SQLite introspection failed: {}", e)),
         #[cfg(not(feature = "sqlite"))]
         DatabaseType::SQLite => Err(anyhow!(
@@ -641,6 +645,7 @@ fn introspect_schema(
 
         #[cfg(feature = "postgres")]
         DatabaseType::Postgres => PostgresEngine::introspect(config, schema_filter)
+            .await
             .map_err(|e| anyhow!("PostgreSQL introspection failed: {}", e)),
         #[cfg(not(feature = "postgres"))]
         DatabaseType::Postgres => Err(anyhow!(
@@ -649,6 +654,7 @@ fn introspect_schema(
 
         #[cfg(feature = "mysql")]
         DatabaseType::MySQL => MySqlEngine::introspect(config, schema_filter)
+            .await
             .map_err(|e| anyhow!("MySQL introspection failed: {}", e)),
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => Err(anyhow!(
@@ -661,7 +667,7 @@ fn introspect_schema(
 ///
 /// Opens a connection, executes query, and immediately closes it.
 /// This function is stateless - no connection persists after it returns.
-fn execute_query(
+async fn execute_query(
     config: &ConnectionConfig,
     sql: &str,
     capabilities: &Capabilities,
@@ -669,6 +675,7 @@ fn execute_query(
     match config.engine {
         #[cfg(feature = "sqlite")]
         DatabaseType::SQLite => SqliteEngine::execute(config, sql, capabilities)
+            .await
             .map_err(|e| anyhow!("SQLite query failed: {}", e)),
         #[cfg(not(feature = "sqlite"))]
         DatabaseType::SQLite => Err(anyhow!(
@@ -677,6 +684,7 @@ fn execute_query(
 
         #[cfg(feature = "postgres")]
         DatabaseType::Postgres => PostgresEngine::execute(config, sql, capabilities)
+            .await
             .map_err(|e| anyhow!("PostgreSQL query failed: {}", e)),
         #[cfg(not(feature = "postgres"))]
         DatabaseType::Postgres => Err(anyhow!(
@@ -685,6 +693,7 @@ fn execute_query(
 
         #[cfg(feature = "mysql")]
         DatabaseType::MySQL => MySqlEngine::execute(config, sql, capabilities)
+            .await
             .map_err(|e| anyhow!("MySQL query failed: {}", e)),
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => Err(anyhow!(
