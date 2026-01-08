@@ -42,7 +42,7 @@ enum Commands {
     Connect {
         /// Connection name (optional)
         #[arg(long)]
-        name: Option<String>,
+        connection: Option<String>,
 
         /// Database engine
         #[arg(long, value_parser = ["postgres", "mysql", "sqlite"])]
@@ -85,7 +85,7 @@ enum Commands {
     Introspect {
         /// Named connection
         #[arg(long)]
-        name: Option<String>,
+        connection: Option<String>,
 
         /// Engine override
         #[arg(long, value_parser = ["postgres", "mysql", "sqlite"])]
@@ -124,7 +124,7 @@ enum Commands {
     Query {
         /// Named connection
         #[arg(long)]
-        name: Option<String>,
+        connection: Option<String>,
 
         /// Engine override
         #[arg(long, value_parser = ["postgres", "mysql", "sqlite"])]
@@ -205,7 +205,7 @@ async fn main() {
     // Route to command handlers
     let result = match cli.command {
         Some(Commands::Connect {
-            name,
+            connection,
             engine,
             host,
             port,
@@ -217,7 +217,7 @@ async fn main() {
             save,
         }) => {
             handle_connect(
-                name,
+                connection,
                 engine,
                 host,
                 port,
@@ -231,7 +231,7 @@ async fn main() {
             .await
         }
         Some(Commands::Introspect {
-            name,
+            connection,
             engine,
             host,
             port,
@@ -241,11 +241,11 @@ async fn main() {
             file,
             schema,
         }) => {
-            handle_introspect(name, engine, host, port, user, password, database, file, schema)
+            handle_introspect(connection, engine, host, port, user, password, database, file, schema)
                 .await
         }
         Some(Commands::Query {
-            name,
+            connection,
             engine,
             host,
             port,
@@ -261,7 +261,7 @@ async fn main() {
             timeout_ms,
         }) => {
             handle_query(
-                name,
+                connection,
                 engine,
                 host,
                 port,
@@ -305,7 +305,7 @@ async fn main() {
 // ============================================================================
 
 async fn handle_connect(
-    name: Option<String>,
+    connection: Option<String>,
     engine: Option<String>,
     host: Option<String>,
     port: Option<u16>,
@@ -337,7 +337,7 @@ async fn handle_connect(
     } else {
         // Non-interactive mode: build from args
         non_interactive_connect(
-            name,
+            connection,
             engine,
             host,
             port,
@@ -354,7 +354,7 @@ async fn handle_connect(
     match result {
         Ok((conn_name, config, location)) => {
             // Save connection
-            match plenum::save_connection(conn_name.clone(), config.clone(), location, true) {
+            match plenum::save_connection(conn_name.clone(), config.clone(), location) {
                 Ok(()) => {
                     // Build success response
                     let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -541,7 +541,7 @@ async fn interactive_connect_wizard() -> Result<(String, ConnectionConfig, Confi
 
 /// Non-interactive connect (with CLI args)
 async fn non_interactive_connect(
-    name: Option<String>,
+    connection: Option<String>,
     engine: Option<String>,
     host: Option<String>,
     port: Option<u16>,
@@ -585,7 +585,7 @@ async fn non_interactive_connect(
     };
 
     // Determine connection name
-    let conn_name = name.unwrap_or_else(|| "default".to_string());
+    let conn_name = connection.unwrap_or_else(|| "default".to_string());
 
     // Parse save location
     let location = match save.as_deref() {
@@ -623,7 +623,7 @@ fn prompt_save_location() -> Result<ConfigLocation> {
 }
 
 async fn handle_introspect(
-    name: Option<String>,
+    connection: Option<String>,
     engine: Option<String>,
     host: Option<String>,
     port: Option<u16>,
@@ -638,7 +638,7 @@ async fn handle_introspect(
 
     // Resolve connection config
     let config_result = build_connection_config(
-        name,
+        connection,
         engine,
         host,
         port,
@@ -660,7 +660,7 @@ async fn handle_introspect(
     // Call appropriate database engine for introspection
     let introspect_result = match config.engine {
         #[cfg(feature = "sqlite")]
-        DatabaseType::SQLite => SqliteEngine::introspect(&config, schema.as_deref()),
+        DatabaseType::SQLite => SqliteEngine::introspect(&config, schema.as_deref()).await,
         #[cfg(not(feature = "sqlite"))]
         DatabaseType::SQLite => {
             Err(PlenumError::invalid_input(
@@ -669,7 +669,7 @@ async fn handle_introspect(
         }
 
         #[cfg(feature = "postgres")]
-        DatabaseType::Postgres => PostgresEngine::introspect(&config, schema.as_deref()),
+        DatabaseType::Postgres => PostgresEngine::introspect(&config, schema.as_deref()).await,
         #[cfg(not(feature = "postgres"))]
         DatabaseType::Postgres => {
             Err(PlenumError::invalid_input(
@@ -678,7 +678,7 @@ async fn handle_introspect(
         }
 
         #[cfg(feature = "mysql")]
-        DatabaseType::MySQL => MySqlEngine::introspect(&config, schema.as_deref()),
+        DatabaseType::MySQL => MySqlEngine::introspect(&config, schema.as_deref()).await,
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => {
             Err(PlenumError::invalid_input(
@@ -708,7 +708,7 @@ async fn handle_introspect(
 }
 
 async fn handle_query(
-    name: Option<String>,
+    connection: Option<String>,
     engine: Option<String>,
     host: Option<String>,
     port: Option<u16>,
@@ -766,7 +766,7 @@ async fn handle_query(
     };
 
     // Resolve connection config
-    let config = match build_connection_config(name, engine, host, port, user, password, database, file) {
+    let config = match build_connection_config(connection, engine, host, port, user, password, database, file) {
         Ok(cfg) => cfg,
         Err(e) => {
             let envelope = ErrorEnvelope::from_error("", "query", &e);
@@ -793,7 +793,7 @@ async fn handle_query(
     // Call appropriate database engine for query execution
     let execute_result = match config.engine {
         #[cfg(feature = "sqlite")]
-        DatabaseType::SQLite => SqliteEngine::execute(&config, &sql_text, &capabilities),
+        DatabaseType::SQLite => SqliteEngine::execute(&config, &sql_text, &capabilities).await,
         #[cfg(not(feature = "sqlite"))]
         DatabaseType::SQLite => {
             Err(PlenumError::invalid_input(
@@ -802,7 +802,7 @@ async fn handle_query(
         }
 
         #[cfg(feature = "postgres")]
-        DatabaseType::Postgres => PostgresEngine::execute(&config, &sql_text, &capabilities),
+        DatabaseType::Postgres => PostgresEngine::execute(&config, &sql_text, &capabilities).await,
         #[cfg(not(feature = "postgres"))]
         DatabaseType::Postgres => {
             Err(PlenumError::invalid_input(
@@ -811,7 +811,7 @@ async fn handle_query(
         }
 
         #[cfg(feature = "mysql")]
-        DatabaseType::MySQL => MySqlEngine::execute(&config, &sql_text, &capabilities),
+        DatabaseType::MySQL => MySqlEngine::execute(&config, &sql_text, &capabilities).await,
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => {
             Err(PlenumError::invalid_input(
@@ -842,17 +842,16 @@ async fn handle_query(
 }
 
 async fn handle_mcp() -> std::result::Result<(), i32> {
-    // Phase 7: Implement MCP server
-    let error_envelope = ErrorEnvelope::new(
-        "",
-        "mcp",
-        plenum::ErrorInfo::new(
-            "NOT_IMPLEMENTED",
-            "mcp server not yet implemented - Phase 7",
-        ),
-    );
-    output_error(&error_envelope);
-    Err(1)
+    // Phase 7: MCP server using manual JSON-RPC 2.0 implementation
+    // Follows the proven pattern from reflex-search (no unstable rmcp dependency)
+    match plenum::mcp::serve().await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // MCP server errors go to stderr (not stdout, which is for JSON-RPC)
+            eprintln!("MCP server error: {}", e);
+            Err(1)
+        }
+    }
 }
 
 // ============================================================================
@@ -895,9 +894,9 @@ where
 /// Build connection config from CLI arguments
 ///
 /// This helper resolves a connection from config or builds one from CLI arguments.
-/// Precedence: Named connection → Default connection → CLI arguments only
+/// Precedence: Named connection → CLI arguments only
 fn build_connection_config(
-    name: Option<String>,
+    connection: Option<String>,
     engine: Option<String>,
     host: Option<String>,
     port: Option<u16>,
@@ -906,7 +905,6 @@ fn build_connection_config(
     database: Option<String>,
     file: Option<PathBuf>,
 ) -> Result<ConnectionConfig> {
-    // Try to resolve from config if name is provided or if no explicit args
     let has_explicit_args = engine.is_some()
         || host.is_some()
         || port.is_some()
@@ -915,13 +913,19 @@ fn build_connection_config(
         || database.is_some()
         || file.is_some();
 
-    let mut config = if name.is_some() || !has_explicit_args {
-        // Try to load from config
-        match plenum::resolve_connection(name.as_deref()) {
+    // Try to resolve from config if connection name is provided
+    let mut config = if let Some(conn_name) = connection {
+        // Named connection provided - load it
+        match plenum::resolve_connection(&conn_name) {
             Ok(cfg) => Some(cfg),
-            Err(_) if has_explicit_args => None, // Ignore error if explicit args provided
+            Err(_) if has_explicit_args => None, // Ignore error if explicit args provided as fallback
             Err(e) => return Err(e),              // Propagate error if no fallback
         }
+    } else if !has_explicit_args {
+        // No connection name and no explicit args - error
+        return Err(PlenumError::invalid_input(
+            "Must provide either --connection <name> or explicit connection parameters (--engine, --host, etc.)"
+        ));
     } else {
         None
     };
@@ -956,7 +960,7 @@ fn build_connection_config(
 
     // No config found, build from CLI arguments only
     let engine_type = engine
-        .ok_or_else(|| PlenumError::invalid_input("--engine is required when not using a named connection"))?;
+        .ok_or_else(|| PlenumError::invalid_input("--engine is required when not using --connection"))?;
     let engine = parse_engine(&engine_type)?;
 
     match engine {

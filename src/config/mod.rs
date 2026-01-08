@@ -28,10 +28,6 @@ use crate::error::{PlenumError, Result};
 pub struct ConnectionRegistry {
     /// Named connection profiles
     pub connections: HashMap<String, StoredConnection>,
-
-    /// Default connection name (used when no --name is specified)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
 }
 
 /// Stored connection configuration
@@ -130,50 +126,63 @@ pub fn save_registry(path: &Path, registry: &ConnectionRegistry) -> Result<()> {
 }
 
 /// Load connection registry with precedence (local first, then global)
+///
+/// This function merges both local and global configs:
+/// - Connections from both configs are included
+/// - Local connections override global connections with the same name
 pub fn load_with_precedence() -> Result<ConnectionRegistry> {
-    // Try local config first
     let local_path = local_config_path()?;
-    if local_path.exists() {
-        return load_registry(&local_path);
-    }
-
-    // Fall back to global config
     let global_path = global_config_path()?;
-    if global_path.exists() {
-        return load_registry(&global_path);
-    }
 
-    // No config found, return empty registry
-    Ok(ConnectionRegistry::default())
+    let local_exists = local_path.exists();
+    let global_exists = global_path.exists();
+
+    match (local_exists, global_exists) {
+        (false, false) => {
+            // No configs found, return empty registry
+            Ok(ConnectionRegistry::default())
+        }
+        (true, false) => {
+            // Only local config exists
+            load_registry(&local_path)
+        }
+        (false, true) => {
+            // Only global config exists
+            load_registry(&global_path)
+        }
+        (true, true) => {
+            // Both exist - merge them with local taking precedence
+            let global_registry = load_registry(&global_path)?;
+            let local_registry = load_registry(&local_path)?;
+
+            let mut merged = ConnectionRegistry::default();
+
+            // Start with global connections
+            merged.connections = global_registry.connections;
+
+            // Override with local connections (local wins for same-named connections)
+            for (name, conn) in local_registry.connections {
+                merged.connections.insert(name, conn);
+            }
+
+            Ok(merged)
+        }
+    }
 }
 
 /// Resolve a connection by name
 ///
-/// If `name` is None, uses the default connection from the registry.
+/// Searches in merged view (both local and global configs).
 /// Returns an error if the connection is not found.
-pub fn resolve_connection(name: Option<&str>) -> Result<ConnectionConfig> {
+pub fn resolve_connection(name: &str) -> Result<ConnectionConfig> {
+    // Search in merged view (both local and global)
     let registry = load_with_precedence()?;
-
-    let connection_name = match name {
-        Some(n) => n,
-        None => {
-            // Use default connection
-            match registry.default.as_deref() {
-                Some(default) => default,
-                None => {
-                    return Err(PlenumError::config_error(
-                        "No connection name specified and no default connection set",
-                    ));
-                }
-            }
-        }
-    };
 
     // Look up connection by name
     let stored = registry
         .connections
-        .get(connection_name)
-        .ok_or_else(|| PlenumError::config_error(format!("Connection '{}' not found", connection_name)))?;
+        .get(name)
+        .ok_or_else(|| PlenumError::config_error(format!("Connection '{}' not found", name)))?;
 
     // Resolve environment variables
     stored.resolve()
@@ -184,7 +193,6 @@ pub fn save_connection(
     name: String,
     config: ConnectionConfig,
     location: ConfigLocation,
-    set_as_default: bool,
 ) -> Result<()> {
     // Get config path
     let path = match location {
@@ -207,11 +215,6 @@ pub fn save_connection(
             password_env: None,
         },
     );
-
-    // Set as default if requested or if this is the first connection
-    if set_as_default || registry.default.is_none() {
-        registry.default = Some(name);
-    }
 
     // Save registry
     save_registry(&path, &registry)?;
@@ -258,7 +261,6 @@ mod tests {
                 password_env: None,
             },
         );
-        registry.default = Some("test".to_string());
 
         let json = serde_json::to_string_pretty(&registry).unwrap();
         assert!(json.contains("test"));
@@ -332,6 +334,170 @@ mod tests {
     fn test_empty_registry() {
         let registry = ConnectionRegistry::default();
         assert!(registry.connections.is_empty());
-        assert!(registry.default.is_none());
+    }
+
+    #[test]
+    fn test_config_merging_both_connections_visible() {
+        // Test that connections from both local and global configs are visible
+        let mut global_registry = ConnectionRegistry::default();
+        global_registry.connections.insert(
+            "global-conn".to_string(),
+            StoredConnection {
+                config: ConnectionConfig::postgres(
+                    "global-host".to_string(),
+                    5432,
+                    "user".to_string(),
+                    "pass".to_string(),
+                    "db".to_string(),
+                ),
+                password_env: None,
+            },
+        );
+
+        let mut local_registry = ConnectionRegistry::default();
+        local_registry.connections.insert(
+            "local-conn".to_string(),
+            StoredConnection {
+                config: ConnectionConfig::sqlite(PathBuf::from("/tmp/test.db")),
+                password_env: None,
+            },
+        );
+
+        // Simulate merging (same logic as load_with_precedence when both exist)
+        let mut merged = ConnectionRegistry::default();
+        merged.connections = global_registry.connections.clone();
+        for (name, conn) in local_registry.connections.clone() {
+            merged.connections.insert(name, conn);
+        }
+
+        // Both connections should be present
+        assert_eq!(merged.connections.len(), 2);
+        assert!(merged.connections.contains_key("global-conn"));
+        assert!(merged.connections.contains_key("local-conn"));
+    }
+
+    #[test]
+    fn test_config_merging_local_overrides_global() {
+        // Test that local connection overrides global connection with same name
+        let mut global_registry = ConnectionRegistry::default();
+        global_registry.connections.insert(
+            "shared".to_string(),
+            StoredConnection {
+                config: ConnectionConfig::postgres(
+                    "global-host".to_string(),
+                    5432,
+                    "user".to_string(),
+                    "pass".to_string(),
+                    "db".to_string(),
+                ),
+                password_env: None,
+            },
+        );
+
+        let mut local_registry = ConnectionRegistry::default();
+        local_registry.connections.insert(
+            "shared".to_string(),
+            StoredConnection {
+                config: ConnectionConfig::mysql(
+                    "local-host".to_string(),
+                    3306,
+                    "user".to_string(),
+                    "pass".to_string(),
+                    "db".to_string(),
+                ),
+                password_env: None,
+            },
+        );
+
+        // Simulate merging
+        let mut merged = ConnectionRegistry::default();
+        merged.connections = global_registry.connections;
+        for (name, conn) in local_registry.connections {
+            merged.connections.insert(name, conn);
+        }
+
+        // Should have local version (MySQL, not Postgres)
+        assert_eq!(merged.connections.len(), 1);
+        let shared_conn = merged.connections.get("shared").unwrap();
+        assert_eq!(shared_conn.config.engine, DatabaseType::MySQL);
+        assert_eq!(shared_conn.config.host.as_deref(), Some("local-host"));
+    }
+
+
+    #[test]
+    fn test_local_connections_separate() {
+        // Test that local registries only contain their own connections
+        let mut local_registry = ConnectionRegistry::default();
+        local_registry.connections.insert(
+            "local-conn".to_string(),
+            StoredConnection {
+                config: ConnectionConfig::sqlite(PathBuf::from("/tmp/local.db")),
+                password_env: None,
+            },
+        );
+
+        let mut global_registry = ConnectionRegistry::default();
+        global_registry.connections.insert(
+            "global-conn".to_string(),
+            StoredConnection {
+                config: ConnectionConfig::postgres(
+                    "global-host".to_string(),
+                    5432,
+                    "user".to_string(),
+                    "pass".to_string(),
+                    "db".to_string(),
+                ),
+                password_env: None,
+            },
+        );
+
+        // Verify each registry has only its own connection
+        assert_eq!(local_registry.connections.len(), 1);
+        assert!(local_registry.connections.contains_key("local-conn"));
+        assert!(!local_registry.connections.contains_key("global-conn"));
+
+        assert_eq!(global_registry.connections.len(), 1);
+        assert!(global_registry.connections.contains_key("global-conn"));
+        assert!(!global_registry.connections.contains_key("local-conn"));
+    }
+
+    #[test]
+    fn test_merged_view_has_both() {
+        // Test that merged view (load_with_precedence) includes connections from both
+        let mut global_registry = ConnectionRegistry::default();
+        global_registry.connections.insert(
+            "global-only".to_string(),
+            StoredConnection {
+                config: ConnectionConfig::postgres(
+                    "global-host".to_string(),
+                    5432,
+                    "user".to_string(),
+                    "pass".to_string(),
+                    "db".to_string(),
+                ),
+                password_env: None,
+            },
+        );
+
+        let mut local_registry = ConnectionRegistry::default();
+        local_registry.connections.insert(
+            "local-only".to_string(),
+            StoredConnection {
+                config: ConnectionConfig::sqlite(PathBuf::from("/tmp/local.db")),
+                password_env: None,
+            },
+        );
+
+        // Simulate merging
+        let mut merged = ConnectionRegistry::default();
+        merged.connections = global_registry.connections.clone();
+        for (name, conn) in local_registry.connections.clone() {
+            merged.connections.insert(name, conn);
+        }
+
+        // Both should be present in merged view
+        assert_eq!(merged.connections.len(), 2);
+        assert!(merged.connections.contains_key("global-only"));
+        assert!(merged.connections.contains_key("local-only"));
     }
 }

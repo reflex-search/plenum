@@ -34,7 +34,7 @@ use crate::error::{PlenumError, Result};
 pub struct MySqlEngine;
 
 impl DatabaseEngine for MySqlEngine {
-    fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo> {
+    async fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo> {
         // Validate config is for MySQL
         if config.engine != DatabaseType::MySQL {
             return Err(PlenumError::invalid_input(format!(
@@ -46,129 +46,113 @@ impl DatabaseEngine for MySqlEngine {
         // Build connection options
         let opts = build_mysql_opts(config)?;
 
-        // Connect (async operation wrapped in blocking call)
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| PlenumError::connection_failed(format!("Failed to create tokio runtime: {}", e)))?;
+        // Connect to MySQL
+        let mut conn = Conn::new(opts).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to connect to MySQL: {}", e))
+        })?;
 
-        let conn_info = runtime.block_on(async {
-            // Connect to MySQL
-            let mut conn = Conn::new(opts).await.map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to connect to MySQL: {}", e))
-            })?;
+        // Get MySQL version
+        let version_row: Row = conn
+            .query_first("SELECT VERSION()")
+            .await
+            .map_err(|e| {
+                PlenumError::connection_failed(format!("Failed to query MySQL version: {}", e))
+            })?
+            .ok_or_else(|| PlenumError::connection_failed("No version returned".to_string()))?;
 
-            // Get MySQL version
-            let version_row: Row = conn
-                .query_first("SELECT VERSION()")
-                .await
-                .map_err(|e| {
-                    PlenumError::connection_failed(format!("Failed to query MySQL version: {}", e))
-                })?
-                .ok_or_else(|| PlenumError::connection_failed("No version returned".to_string()))?;
+        let version_string: String = version_row.get(0).ok_or_else(|| {
+            PlenumError::connection_failed("Failed to extract version string".to_string())
+        })?;
 
-            let version_string: String = version_row.get(0).ok_or_else(|| {
-                PlenumError::connection_failed("Failed to extract version string".to_string())
-            })?;
+        // Detect MySQL vs MariaDB
+        let (database_version, server_info) = parse_mysql_version(&version_string);
 
-            // Detect MySQL vs MariaDB
-            let (database_version, server_info) = parse_mysql_version(&version_string);
+        // Get current database name
+        let db_row: Row = conn
+            .query_first("SELECT DATABASE()")
+            .await
+            .map_err(|e| {
+                PlenumError::connection_failed(format!("Failed to query current database: {}", e))
+            })?
+            .ok_or_else(|| PlenumError::connection_failed("No database returned".to_string()))?;
 
-            // Get current database name
+        let connected_database: String = db_row.get(0).ok_or_else(|| {
+            PlenumError::connection_failed("Failed to extract database name".to_string())
+        })?;
+
+        // Get current user
+        let user_row: Row = conn
+            .query_first("SELECT CURRENT_USER()")
+            .await
+            .map_err(|e| {
+                PlenumError::connection_failed(format!("Failed to query current user: {}", e))
+            })?
+            .ok_or_else(|| PlenumError::connection_failed("No user returned".to_string()))?;
+
+        let user: String = user_row.get(0).ok_or_else(|| {
+            PlenumError::connection_failed("Failed to extract user".to_string())
+        })?;
+
+        // Close connection
+        conn.disconnect().await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to disconnect: {}", e))
+        })?;
+
+        Ok(ConnectionInfo {
+            database_version,
+            server_info,
+            connected_database,
+            user,
+        })
+    }
+
+    async fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo> {
+        // Validate config is for MySQL
+        if config.engine != DatabaseType::MySQL {
+            return Err(PlenumError::invalid_input(format!(
+                "Expected MySQL engine, got {}",
+                config.engine
+            )));
+        }
+
+        // Build connection options
+        let opts = build_mysql_opts(config)?;
+
+        // Connect to MySQL
+        let mut conn = Conn::new(opts).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to connect to MySQL: {}", e))
+        })?;
+
+        // Get current database if no schema filter provided
+        let target_schema = if let Some(schema) = schema_filter {
+            schema.to_string()
+        } else {
+            // Use current database
             let db_row: Row = conn
                 .query_first("SELECT DATABASE()")
                 .await
                 .map_err(|e| {
-                    PlenumError::connection_failed(format!("Failed to query current database: {}", e))
+                    PlenumError::engine_error("mysql", format!("Failed to query current database: {}", e))
                 })?
-                .ok_or_else(|| PlenumError::connection_failed("No database returned".to_string()))?;
+                .ok_or_else(|| PlenumError::engine_error("mysql", "No database selected".to_string()))?;
 
-            let connected_database: String = db_row.get(0).ok_or_else(|| {
-                PlenumError::connection_failed("Failed to extract database name".to_string())
-            })?;
+            db_row.get(0).ok_or_else(|| {
+                PlenumError::engine_error("mysql", "Failed to extract database name".to_string())
+            })?
+        };
 
-            // Get current user
-            let user_row: Row = conn
-                .query_first("SELECT CURRENT_USER()")
-                .await
-                .map_err(|e| {
-                    PlenumError::connection_failed(format!("Failed to query current user: {}", e))
-                })?
-                .ok_or_else(|| PlenumError::connection_failed("No user returned".to_string()))?;
+        // Introspect all tables in the schema
+        let tables = introspect_all_tables(&mut conn, &target_schema).await?;
 
-            let user: String = user_row.get(0).ok_or_else(|| {
-                PlenumError::connection_failed("Failed to extract user".to_string())
-            })?;
-
-            // Close connection
-            conn.disconnect().await.map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to disconnect: {}", e))
-            })?;
-
-            Ok(ConnectionInfo {
-                database_version,
-                server_info,
-                connected_database,
-                user,
-            })
+        // Close connection
+        conn.disconnect().await.map_err(|e| {
+            PlenumError::engine_error("mysql", format!("Failed to disconnect: {}", e))
         })?;
 
-        Ok(conn_info)
+        Ok(SchemaInfo { tables })
     }
 
-    fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo> {
-        // Validate config is for MySQL
-        if config.engine != DatabaseType::MySQL {
-            return Err(PlenumError::invalid_input(format!(
-                "Expected MySQL engine, got {}",
-                config.engine
-            )));
-        }
-
-        // Build connection options
-        let opts = build_mysql_opts(config)?;
-
-        // Connect and introspect (async operation wrapped in blocking call)
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| PlenumError::engine_error("mysql", format!("Failed to create tokio runtime: {}", e)))?;
-
-        let schema_info = runtime.block_on(async {
-            // Connect to MySQL
-            let mut conn = Conn::new(opts).await.map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to connect to MySQL: {}", e))
-            })?;
-
-            // Get current database if no schema filter provided
-            let target_schema = if let Some(schema) = schema_filter {
-                schema.to_string()
-            } else {
-                // Use current database
-                let db_row: Row = conn
-                    .query_first("SELECT DATABASE()")
-                    .await
-                    .map_err(|e| {
-                        PlenumError::engine_error("mysql", format!("Failed to query current database: {}", e))
-                    })?
-                    .ok_or_else(|| PlenumError::engine_error("mysql", "No database selected".to_string()))?;
-
-                db_row.get(0).ok_or_else(|| {
-                    PlenumError::engine_error("mysql", "Failed to extract database name".to_string())
-                })?
-            };
-
-            // Introspect all tables in the schema
-            let tables = introspect_all_tables(&mut conn, &target_schema).await?;
-
-            // Close connection
-            conn.disconnect().await.map_err(|e| {
-                PlenumError::engine_error("mysql", format!("Failed to disconnect: {}", e))
-            })?;
-
-            Ok(SchemaInfo { tables })
-        })?;
-
-        Ok(schema_info)
-    }
-
-    fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult> {
+    async fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult> {
         // Validate config is for MySQL
         if config.engine != DatabaseType::MySQL {
             return Err(PlenumError::invalid_input(format!(
@@ -183,40 +167,32 @@ impl DatabaseEngine for MySqlEngine {
         // Build connection options
         let opts = build_mysql_opts(config)?;
 
-        // Execute query (async operation wrapped in blocking call)
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| PlenumError::engine_error("mysql", format!("Failed to create tokio runtime: {}", e)))?;
-
-        let result = runtime.block_on(async {
-            // Connect to MySQL
-            let mut conn = Conn::new(opts).await.map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to connect to MySQL: {}", e))
-            })?;
-
-            // Execute with optional timeout
-            let start = Instant::now();
-            let query_result = if let Some(timeout_ms) = caps.timeout_ms {
-                let timeout_duration = Duration::from_millis(timeout_ms);
-                tokio::time::timeout(timeout_duration, execute_query(&mut conn, query, caps))
-                    .await
-                    .map_err(|_| {
-                        PlenumError::query_failed(format!("Query exceeded timeout of {}ms", timeout_ms))
-                    })??
-            } else {
-                execute_query(&mut conn, query, caps).await?
-            };
-
-            let _elapsed = start.elapsed();
-
-            // Close connection
-            conn.disconnect().await.map_err(|e| {
-                PlenumError::engine_error("mysql", format!("Failed to disconnect: {}", e))
-            })?;
-
-            Ok(query_result)
+        // Connect to MySQL
+        let mut conn = Conn::new(opts).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to connect to MySQL: {}", e))
         })?;
 
-        Ok(result)
+        // Execute with optional timeout
+        let start = Instant::now();
+        let query_result = if let Some(timeout_ms) = caps.timeout_ms {
+            let timeout_duration = Duration::from_millis(timeout_ms);
+            tokio::time::timeout(timeout_duration, execute_query(&mut conn, query, caps))
+                .await
+                .map_err(|_| {
+                    PlenumError::query_failed(format!("Query exceeded timeout of {}ms", timeout_ms))
+                })??
+        } else {
+            execute_query(&mut conn, query, caps).await?
+        };
+
+        let _elapsed = start.elapsed();
+
+        // Close connection
+        conn.disconnect().await.map_err(|e| {
+            PlenumError::engine_error("mysql", format!("Failed to disconnect: {}", e))
+        })?;
+
+        Ok(query_result)
     }
 }
 
@@ -328,6 +304,15 @@ async fn introspect_table(conn: &mut Conn, schema: &str, table_name: &str) -> Re
     })
 }
 
+/// Helper function to safely extract an optional string from a MySQL row
+/// Returns None if the value is NULL, otherwise attempts to convert to String
+fn get_optional_string(row: &Row, idx: usize) -> Option<String> {
+    match row.as_ref(idx)? {
+        Value::NULL => None,
+        _ => row.get(idx),
+    }
+}
+
 /// Introspect table columns
 async fn introspect_columns(conn: &mut Conn, schema: &str, table_name: &str) -> Result<Vec<ColumnInfo>> {
     let query = "SELECT column_name, data_type, is_nullable, column_default
@@ -353,7 +338,7 @@ async fn introspect_columns(conn: &mut Conn, schema: &str, table_name: &str) -> 
         let is_nullable: String = row.get(2).ok_or_else(|| {
             PlenumError::engine_error("mysql", "Failed to extract nullable status".to_string())
         })?;
-        let default: Option<String> = row.get(3);
+        let default: Option<String> = get_optional_string(&row, 3);
 
         columns.push(ColumnInfo {
             name: column_name,
@@ -392,7 +377,7 @@ async fn introspect_primary_key(
 
     let pk_columns: Vec<String> = rows
         .into_iter()
-        .filter_map(|row| row.get(0))
+        .filter_map(|row| get_optional_string(&row, 0))
         .collect();
 
     Ok(Some(pk_columns))
@@ -525,7 +510,7 @@ async fn get_index_columns(
             )
         })?;
 
-    let columns: Vec<String> = rows.into_iter().filter_map(|row| row.get(0)).collect();
+    let columns: Vec<String> = rows.into_iter().filter_map(|row| get_optional_string(&row, 0)).collect();
 
     Ok(columns)
 }
@@ -692,9 +677,9 @@ mod tests {
     // They are marked with #[ignore] and should be run with:
     // cargo test --features mysql -- --ignored
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running MySQL instance
-    fn test_validate_connection() {
+    async fn test_validate_connection() {
         let config = ConnectionConfig::mysql(
             "localhost".to_string(),
             3306,
@@ -703,7 +688,7 @@ mod tests {
             "test".to_string(),
         );
 
-        let result = MySqlEngine::validate_connection(&config);
+        let result = MySqlEngine::validate_connection(&config).await;
         assert!(
             result.is_ok(),
             "Connection validation failed: {:?}",
@@ -715,8 +700,8 @@ mod tests {
         assert!(info.server_info.contains("MySQL") || info.server_info.contains("MariaDB"));
     }
 
-    #[test]
-    fn test_validate_connection_wrong_engine() {
+    #[tokio::test]
+    async fn test_validate_connection_wrong_engine() {
         let mut config = ConnectionConfig::mysql(
             "localhost".to_string(),
             3306,
@@ -726,7 +711,7 @@ mod tests {
         );
         config.engine = DatabaseType::Postgres;
 
-        let result = MySqlEngine::validate_connection(&config);
+        let result = MySqlEngine::validate_connection(&config).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -734,8 +719,8 @@ mod tests {
             .contains("Expected MySQL engine"));
     }
 
-    #[test]
-    fn test_validate_connection_missing_host() {
+    #[tokio::test]
+    async fn test_validate_connection_missing_host() {
         let config = ConnectionConfig {
             engine: DatabaseType::MySQL,
             host: None,
@@ -746,7 +731,7 @@ mod tests {
             file: None,
         };
 
-        let result = MySqlEngine::validate_connection(&config);
+        let result = MySqlEngine::validate_connection(&config).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()

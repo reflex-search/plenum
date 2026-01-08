@@ -33,7 +33,7 @@ use crate::error::{PlenumError, Result};
 pub struct PostgresEngine;
 
 impl DatabaseEngine for PostgresEngine {
-    fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo> {
+    async fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo> {
         // Validate config is for PostgreSQL
         if config.engine != DatabaseType::Postgres {
             return Err(PlenumError::invalid_input(format!(
@@ -45,72 +45,64 @@ impl DatabaseEngine for PostgresEngine {
         // Build connection config
         let pg_config = build_pg_config(config)?;
 
-        // Connect (async operation wrapped in blocking call)
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| PlenumError::connection_failed(format!("Failed to create tokio runtime: {}", e)))?;
-
-        let conn_info = runtime.block_on(async {
-            // Connect to PostgreSQL
-            let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
-            })?;
-
-            // Spawn connection handler
-            tokio::spawn(async move {
-                if let Err(e) = connection.await {
-                    eprintln!("PostgreSQL connection error: {}", e);
-                }
-            });
-
-            // Get PostgreSQL version
-            let version_row = client
-                .query_one("SELECT version()", &[])
-                .await
-                .map_err(|e| {
-                    PlenumError::connection_failed(format!("Failed to query PostgreSQL version: {}", e))
-                })?;
-
-            let version_string: String = version_row.get(0);
-
-            // Extract version number (e.g., "PostgreSQL 15.3 on x86_64..." -> "15.3")
-            let database_version = version_string
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("unknown")
-                .to_string();
-
-            // Get current database name
-            let db_row = client
-                .query_one("SELECT current_database()", &[])
-                .await
-                .map_err(|e| {
-                    PlenumError::connection_failed(format!("Failed to query current database: {}", e))
-                })?;
-
-            let connected_database: String = db_row.get(0);
-
-            // Get current user
-            let user_row = client
-                .query_one("SELECT current_user", &[])
-                .await
-                .map_err(|e| {
-                    PlenumError::connection_failed(format!("Failed to query current user: {}", e))
-                })?;
-
-            let user: String = user_row.get(0);
-
-            Ok(ConnectionInfo {
-                database_version: database_version.clone(),
-                server_info: version_string,
-                connected_database,
-                user,
-            })
+        // Connect to PostgreSQL
+        let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
         })?;
 
-        Ok(conn_info)
+        // Spawn connection handler
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("PostgreSQL connection error: {}", e);
+            }
+        });
+
+        // Get PostgreSQL version
+        let version_row = client
+            .query_one("SELECT version()", &[])
+            .await
+            .map_err(|e| {
+                PlenumError::connection_failed(format!("Failed to query PostgreSQL version: {}", e))
+            })?;
+
+        let version_string: String = version_row.get(0);
+
+        // Extract version number (e.g., "PostgreSQL 15.3 on x86_64..." -> "15.3")
+        let database_version = version_string
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Get current database name
+        let db_row = client
+            .query_one("SELECT current_database()", &[])
+            .await
+            .map_err(|e| {
+                PlenumError::connection_failed(format!("Failed to query current database: {}", e))
+            })?;
+
+        let connected_database: String = db_row.get(0);
+
+        // Get current user
+        let user_row = client
+            .query_one("SELECT current_user", &[])
+            .await
+            .map_err(|e| {
+                PlenumError::connection_failed(format!("Failed to query current user: {}", e))
+            })?;
+
+        let user: String = user_row.get(0);
+
+        Ok(ConnectionInfo {
+            database_version: database_version.clone(),
+            server_info: version_string,
+            connected_database,
+            user,
+        })
     }
 
-    fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo> {
+    async fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo> {
         // Validate config is for PostgreSQL
         if config.engine != DatabaseType::Postgres {
             return Err(PlenumError::invalid_input(format!(
@@ -122,33 +114,25 @@ impl DatabaseEngine for PostgresEngine {
         // Build connection config
         let pg_config = build_pg_config(config)?;
 
-        // Connect and introspect (async operation wrapped in blocking call)
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| PlenumError::engine_error("postgres", format!("Failed to create tokio runtime: {}", e)))?;
-
-        let schema_info = runtime.block_on(async {
-            // Connect to PostgreSQL
-            let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
-            })?;
-
-            // Spawn connection handler
-            tokio::spawn(async move {
-                if let Err(e) = connection.await {
-                    eprintln!("PostgreSQL connection error: {}", e);
-                }
-            });
-
-            // Introspect all tables
-            let tables = introspect_all_tables(&client, schema_filter).await?;
-
-            Ok(SchemaInfo { tables })
+        // Connect to PostgreSQL
+        let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
         })?;
 
-        Ok(schema_info)
+        // Spawn connection handler
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("PostgreSQL connection error: {}", e);
+            }
+        });
+
+        // Introspect all tables
+        let tables = introspect_all_tables(&client, schema_filter).await?;
+
+        Ok(SchemaInfo { tables })
     }
 
-    fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult> {
+    async fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult> {
         // Validate config is for PostgreSQL
         if config.engine != DatabaseType::Postgres {
             return Err(PlenumError::invalid_input(format!(
@@ -163,42 +147,34 @@ impl DatabaseEngine for PostgresEngine {
         // Build connection config
         let pg_config = build_pg_config(config)?;
 
-        // Execute query (async operation wrapped in blocking call)
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| PlenumError::engine_error("postgres", format!("Failed to create tokio runtime: {}", e)))?;
-
-        let result = runtime.block_on(async {
-            // Connect to PostgreSQL
-            let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
-            })?;
-
-            // Spawn connection handler
-            tokio::spawn(async move {
-                if let Err(e) = connection.await {
-                    eprintln!("PostgreSQL connection error: {}", e);
-                }
-            });
-
-            // Execute with optional timeout
-            let start = Instant::now();
-            let query_result = if let Some(timeout_ms) = caps.timeout_ms {
-                let timeout_duration = Duration::from_millis(timeout_ms);
-                tokio::time::timeout(timeout_duration, execute_query(&client, query, caps))
-                    .await
-                    .map_err(|_| {
-                        PlenumError::query_failed(format!("Query exceeded timeout of {}ms", timeout_ms))
-                    })??
-            } else {
-                execute_query(&client, query, caps).await?
-            };
-
-            let _elapsed = start.elapsed();
-
-            Ok(query_result)
+        // Connect to PostgreSQL
+        let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
         })?;
 
-        Ok(result)
+        // Spawn connection handler
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("PostgreSQL connection error: {}", e);
+            }
+        });
+
+        // Execute with optional timeout
+        let start = Instant::now();
+        let query_result = if let Some(timeout_ms) = caps.timeout_ms {
+            let timeout_duration = Duration::from_millis(timeout_ms);
+            tokio::time::timeout(timeout_duration, execute_query(&client, query, caps))
+                .await
+                .map_err(|_| {
+                    PlenumError::query_failed(format!("Query exceeded timeout of {}ms", timeout_ms))
+                })??
+        } else {
+            execute_query(&client, query, caps).await?
+        };
+
+        let _elapsed = start.elapsed();
+
+        Ok(query_result)
     }
 }
 
@@ -728,9 +704,9 @@ mod tests {
     // They are integration tests that should be run with:
     // cargo test --features postgres -- --ignored
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running PostgreSQL instance
-    fn test_validate_connection() {
+    async fn test_validate_connection() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
             5432,
@@ -739,7 +715,7 @@ mod tests {
             "postgres".to_string(),
         );
 
-        let result = PostgresEngine::validate_connection(&config);
+        let result = PostgresEngine::validate_connection(&config).await;
         assert!(result.is_ok(), "Connection validation failed: {:?}", result.err());
 
         let info = result.unwrap();
@@ -749,8 +725,8 @@ mod tests {
         assert_eq!(info.user, "postgres");
     }
 
-    #[test]
-    fn test_validate_connection_wrong_engine() {
+    #[tokio::test]
+    async fn test_validate_connection_wrong_engine() {
         let mut config = ConnectionConfig::postgres(
             "localhost".to_string(),
             5432,
@@ -760,7 +736,7 @@ mod tests {
         );
         config.engine = DatabaseType::SQLite;
 
-        let result = PostgresEngine::validate_connection(&config);
+        let result = PostgresEngine::validate_connection(&config).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -768,8 +744,8 @@ mod tests {
             .contains("Expected PostgreSQL engine"));
     }
 
-    #[test]
-    fn test_validate_connection_missing_host() {
+    #[tokio::test]
+    async fn test_validate_connection_missing_host() {
         let config = ConnectionConfig {
             engine: DatabaseType::Postgres,
             host: None,
@@ -780,7 +756,7 @@ mod tests {
             file: None,
         };
 
-        let result = PostgresEngine::validate_connection(&config);
+        let result = PostgresEngine::validate_connection(&config).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -788,9 +764,9 @@ mod tests {
             .contains("PostgreSQL requires 'host' parameter"));
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running PostgreSQL instance
-    fn test_introspect_schema() {
+    async fn test_introspect_schema() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
             5432,
@@ -805,7 +781,7 @@ mod tests {
             &config,
             "DROP TABLE IF EXISTS test_users",
             &create_caps,
-        );
+        ).await;
         let _ = PostgresEngine::execute(
             &config,
             "CREATE TABLE test_users (
@@ -814,10 +790,10 @@ mod tests {
                 email VARCHAR(255)
             )",
             &create_caps,
-        );
+        ).await;
 
         // Introspect
-        let result = PostgresEngine::introspect(&config, Some("public"));
+        let result = PostgresEngine::introspect(&config, Some("public")).await;
         assert!(result.is_ok(), "Introspection failed: {:?}", result.err());
 
         let schema = result.unwrap();
@@ -835,12 +811,12 @@ mod tests {
         assert_eq!(pk[0], "id");
 
         // Cleanup
-        let _ = PostgresEngine::execute(&config, "DROP TABLE test_users", &create_caps);
+        let _ = PostgresEngine::execute(&config, "DROP TABLE test_users", &create_caps).await;
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running PostgreSQL instance
-    fn test_execute_select_query() {
+    async fn test_execute_select_query() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
             5432,
@@ -850,7 +826,7 @@ mod tests {
         );
 
         let caps = Capabilities::read_only();
-        let result = PostgresEngine::execute(&config, "SELECT 1 AS num, 'test' AS str", &caps);
+        let result = PostgresEngine::execute(&config, "SELECT 1 AS num, 'test' AS str", &caps).await;
         assert!(result.is_ok(), "Query execution failed: {:?}", result.err());
 
         let query_result = result.unwrap();
@@ -863,9 +839,9 @@ mod tests {
         assert_eq!(row.get("str").unwrap(), &serde_json::json!("test"));
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running PostgreSQL instance
-    fn test_execute_insert_without_capability() {
+    async fn test_execute_insert_without_capability() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
             5432,
@@ -876,12 +852,12 @@ mod tests {
 
         // Create test table
         let ddl_caps = Capabilities::with_ddl();
-        let _ = PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_insert", &ddl_caps);
+        let _ = PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_insert", &ddl_caps).await;
         let _ = PostgresEngine::execute(
             &config,
             "CREATE TABLE test_insert (id SERIAL PRIMARY KEY, name TEXT)",
             &ddl_caps,
-        );
+        ).await;
 
         // Try to insert without write capability
         let caps = Capabilities::read_only();
@@ -889,7 +865,7 @@ mod tests {
             &config,
             "INSERT INTO test_insert (name) VALUES ('test')",
             &caps,
-        );
+        ).await;
 
         assert!(result.is_err());
         assert!(result
@@ -898,12 +874,12 @@ mod tests {
             .contains("Write operations require --allow-write"));
 
         // Cleanup
-        let _ = PostgresEngine::execute(&config, "DROP TABLE test_insert", &ddl_caps);
+        let _ = PostgresEngine::execute(&config, "DROP TABLE test_insert", &ddl_caps).await;
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running PostgreSQL instance
-    fn test_execute_insert_with_capability() {
+    async fn test_execute_insert_with_capability() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
             5432,
@@ -914,12 +890,12 @@ mod tests {
 
         // Create test table
         let ddl_caps = Capabilities::with_ddl();
-        let _ = PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_insert2", &ddl_caps);
+        let _ = PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_insert2", &ddl_caps).await;
         let _ = PostgresEngine::execute(
             &config,
             "CREATE TABLE test_insert2 (id SERIAL PRIMARY KEY, name TEXT)",
             &ddl_caps,
-        );
+        ).await;
 
         // Insert with write capability
         let write_caps = Capabilities::with_write();
@@ -927,19 +903,19 @@ mod tests {
             &config,
             "INSERT INTO test_insert2 (name) VALUES ('test')",
             &write_caps,
-        );
+        ).await;
 
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
         let query_result = result.unwrap();
         assert_eq!(query_result.rows_affected, Some(1));
 
         // Cleanup
-        let _ = PostgresEngine::execute(&config, "DROP TABLE test_insert2", &ddl_caps);
+        let _ = PostgresEngine::execute(&config, "DROP TABLE test_insert2", &ddl_caps).await;
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running PostgreSQL instance
-    fn test_execute_ddl_without_capability() {
+    async fn test_execute_ddl_without_capability() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
             5432,
@@ -953,7 +929,7 @@ mod tests {
             &config,
             "CREATE TABLE test_ddl (id SERIAL PRIMARY KEY)",
             &caps,
-        );
+        ).await;
 
         assert!(result.is_err());
         assert!(result
@@ -962,9 +938,9 @@ mod tests {
             .contains("DDL operations require --allow-ddl"));
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running PostgreSQL instance
-    fn test_execute_ddl_with_capability() {
+    async fn test_execute_ddl_with_capability() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
             5432,
@@ -974,22 +950,22 @@ mod tests {
         );
 
         let caps = Capabilities::with_ddl();
-        let _ = PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_ddl2", &caps);
+        let _ = PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_ddl2", &caps).await;
         let result = PostgresEngine::execute(
             &config,
             "CREATE TABLE test_ddl2 (id SERIAL PRIMARY KEY)",
             &caps,
-        );
+        ).await;
 
         assert!(result.is_ok(), "DDL execution failed: {:?}", result.err());
 
         // Cleanup
-        let _ = PostgresEngine::execute(&config, "DROP TABLE test_ddl2", &caps);
+        let _ = PostgresEngine::execute(&config, "DROP TABLE test_ddl2", &caps).await;
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running PostgreSQL instance
-    fn test_execute_max_rows_limit() {
+    async fn test_execute_max_rows_limit() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
             5432,
@@ -1000,12 +976,12 @@ mod tests {
 
         // Create and populate test table
         let ddl_caps = Capabilities::with_ddl();
-        let _ = PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_limit", &ddl_caps);
+        let _ = PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_limit", &ddl_caps).await;
         let _ = PostgresEngine::execute(
             &config,
             "CREATE TABLE test_limit (id SERIAL PRIMARY KEY, name TEXT)",
             &ddl_caps,
-        );
+        ).await;
 
         let write_caps = Capabilities::with_write();
         for i in 1..=10 {
@@ -1013,7 +989,7 @@ mod tests {
                 &config,
                 &format!("INSERT INTO test_limit (name) VALUES ('User {}')", i),
                 &write_caps,
-            );
+            ).await;
         }
 
         // Query with row limit
@@ -1021,14 +997,14 @@ mod tests {
             max_rows: Some(5),
             ..Capabilities::read_only()
         };
-        let result = PostgresEngine::execute(&config, "SELECT * FROM test_limit", &caps);
+        let result = PostgresEngine::execute(&config, "SELECT * FROM test_limit", &caps).await;
 
         assert!(result.is_ok(), "Query failed: {:?}", result.err());
         let query_result = result.unwrap();
         assert_eq!(query_result.rows.len(), 5); // Limited to 5 rows
 
         // Cleanup
-        let _ = PostgresEngine::execute(&config, "DROP TABLE test_limit", &ddl_caps);
+        let _ = PostgresEngine::execute(&config, "DROP TABLE test_limit", &ddl_caps).await;
     }
 
     #[test]
