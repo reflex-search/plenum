@@ -215,7 +215,7 @@ fn handle_list_tools() -> Result<Value> {
         "tools": [
             {
                 "name": "connect",
-                "description": "Validate and save database connection configuration. Supports PostgreSQL, MySQL, and SQLite.",
+                "description": "Validate and save database connection configuration. Use this tool to: (1) Test that connection parameters are valid, (2) Save connection details for later use by name, (3) Validate existing saved connections. The connection is opened, validated, and immediately closed - no persistent connection is maintained. Supports PostgreSQL, MySQL, and SQLite. Save locations: 'local' (.plenum/config.json, team-shareable), 'global' (~/.config/plenum/connections.json, user-private). Common pattern: save connection once with a name, then reference it by name in introspect/query tools.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -255,7 +255,7 @@ fn handle_list_tools() -> Result<Value> {
                         "save": {
                             "type": "string",
                             "enum": ["local", "global"],
-                            "description": "Save location: local (.plenum/config.json) or global (~/.config/plenum/connections.json)"
+                            "description": "Optional: Where to save the connection. 'local' saves to .plenum/config.json (team-shareable, project-specific), 'global' saves to ~/.config/plenum/connections.json (user-private, cross-project). If omitted, connection is validated but not saved."
                         }
                     },
                     "required": ["engine"]
@@ -263,108 +263,108 @@ fn handle_list_tools() -> Result<Value> {
             },
             {
                 "name": "introspect",
-                "description": "Introspect database schema and return table/column information.",
+                "description": "Introspect database schema and return structured information about tables, columns, data types, primary keys, foreign keys, and indexes. Use this tool before executing queries to understand the database structure. Connection resolution: (1) Use 'name' to reference a saved connection, (2) Provide explicit connection parameters (engine, host, port, etc.), (3) Mix both - use 'name' and override specific fields. The connection is opened, schema is introspected, and connection is immediately closed (stateless). Optional 'schema' filter limits results to a specific schema (PostgreSQL/MySQL only; SQLite ignores this). Returns JSON with complete schema information suitable for query generation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "Named connection to use"
+                            "description": "Name of saved connection to use. Connection must exist in local (.plenum/config.json) or global (~/.config/plenum/connections.json) config. Cannot be used alone with 'engine' - choose one or mix name with overrides."
                         },
                         "engine": {
                             "type": "string",
                             "enum": ["postgres", "mysql", "sqlite"],
-                            "description": "Database engine (if not using named connection)"
+                            "description": "Database engine type. Required if not using 'name'. Valid values: 'postgres', 'mysql', 'sqlite'."
                         },
                         "host": {
                             "type": "string",
-                            "description": "Host override"
+                            "description": "Database host (for postgres/mysql). Required for explicit connections or use as override. Example: 'localhost', 'db.example.com'."
                         },
                         "port": {
                             "type": "number",
-                            "description": "Port override"
+                            "description": "Database port (for postgres/mysql). Required for explicit connections or use as override. Defaults: postgres=5432, mysql=3306."
                         },
                         "user": {
                             "type": "string",
-                            "description": "Username override"
+                            "description": "Database username (for postgres/mysql). Required for explicit connections or use as override."
                         },
                         "password": {
                             "type": "string",
-                            "description": "Password override"
+                            "description": "Database password (for postgres/mysql). Required for explicit connections or use as override. Passed directly - agent responsible for security."
                         },
                         "database": {
                             "type": "string",
-                            "description": "Database override"
+                            "description": "Database name (for postgres/mysql). Required for explicit connections or use as override. The specific database to introspect."
                         },
                         "file": {
                             "type": "string",
-                            "description": "File path override (for sqlite)"
+                            "description": "File path to SQLite database file. Required for sqlite engine. Can be relative or absolute path. Example: './app.db', '/var/lib/data.db'."
                         },
                         "schema": {
                             "type": "string",
-                            "description": "Schema filter (optional)"
+                            "description": "Optional: Filter introspection to specific schema. PostgreSQL/MySQL only (SQLite ignores this). Example: 'public', 'analytics'. If omitted, all schemas are introspected."
                         }
                     }
                 }
             },
             {
                 "name": "query",
-                "description": "Execute SQL query with capability constraints. Read-only by default; write and DDL require explicit flags.",
+                "description": "Execute SQL query with explicit capability constraints. CAPABILITY HIERARCHY (must request appropriate level): (1) READ-ONLY (default, no flags): SELECT queries only, (2) WRITE (requires allow_write=true): enables INSERT, UPDATE, DELETE but NOT DDL, (3) DDL (requires allow_ddl=true): enables CREATE, DROP, ALTER, TRUNCATE; DDL implicitly grants write permissions. IMPORTANT SECURITY: You (the AI agent) are responsible for sanitizing all user inputs before constructing SQL - Plenum does NOT validate SQL safety, only enforces capability constraints. Connection resolution works like introspect: use 'name' for saved connections, explicit parameters, or mix both with overrides. Recommended safety practices: (1) Use max_rows to limit result sets for unknown queries, (2) Use timeout_ms to prevent long-running operations, (3) Start with read-only and only add write/DDL when necessary. Returns JSON with either query results (rows/columns) or rows_affected count. The connection is opened, query is executed, and connection is immediately closed (stateless). Possible error codes: CAPABILITY_VIOLATION (operation not permitted), QUERY_FAILED (SQL error), CONNECTION_FAILED (connection error).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "sql": {
                             "type": "string",
-                            "description": "SQL query to execute (required)"
+                            "description": "SQL query to execute. REQUIRED. Must be valid, vendor-specific SQL (PostgreSQL SQL ≠ MySQL SQL ≠ SQLite SQL). You (the agent) are responsible for sanitizing user inputs before constructing SQL - Plenum does not validate SQL safety."
                         },
                         "name": {
                             "type": "string",
-                            "description": "Named connection to use"
+                            "description": "Name of saved connection to use. Connection must exist in local (.plenum/config.json) or global (~/.config/plenum/connections.json) config. Cannot be used alone with 'engine' - choose one or mix name with overrides."
                         },
                         "engine": {
                             "type": "string",
                             "enum": ["postgres", "mysql", "sqlite"],
-                            "description": "Database engine (if not using named connection)"
+                            "description": "Database engine type. Required if not using 'name'. Valid values: 'postgres', 'mysql', 'sqlite'."
                         },
                         "host": {
                             "type": "string",
-                            "description": "Host override"
+                            "description": "Database host (for postgres/mysql). Required for explicit connections or use as override. Example: 'localhost', 'db.example.com'."
                         },
                         "port": {
                             "type": "number",
-                            "description": "Port override"
+                            "description": "Database port (for postgres/mysql). Required for explicit connections or use as override. Defaults: postgres=5432, mysql=3306."
                         },
                         "user": {
                             "type": "string",
-                            "description": "Username override"
+                            "description": "Database username (for postgres/mysql). Required for explicit connections or use as override."
                         },
                         "password": {
                             "type": "string",
-                            "description": "Password override"
+                            "description": "Database password (for postgres/mysql). Required for explicit connections or use as override. Passed directly - agent responsible for security."
                         },
                         "database": {
                             "type": "string",
-                            "description": "Database override"
+                            "description": "Database name (for postgres/mysql). Required for explicit connections or use as override. The specific database to query."
                         },
                         "file": {
                             "type": "string",
-                            "description": "File path override (for sqlite)"
+                            "description": "File path to SQLite database file. Required for sqlite engine. Can be relative or absolute path. Example: './app.db', '/var/lib/data.db'."
                         },
                         "allow_write": {
                             "type": "boolean",
-                            "description": "Enable write operations (INSERT, UPDATE, DELETE). Default: false"
+                            "description": "Enable write operations (INSERT, UPDATE, DELETE) but NOT DDL. Default: false (read-only). Set to true for data modifications. DDL operations (CREATE, DROP, ALTER) still blocked - use allow_ddl for those."
                         },
                         "allow_ddl": {
                             "type": "boolean",
-                            "description": "Enable DDL operations (CREATE, DROP, ALTER). Default: false"
+                            "description": "Enable DDL operations (CREATE, DROP, ALTER, TRUNCATE). Default: false. DDL capability implicitly grants write permissions - no need to also set allow_write=true. Use this for schema changes."
                         },
                         "max_rows": {
                             "type": "number",
-                            "description": "Maximum number of rows to return"
+                            "description": "Optional: Maximum number of rows to return from SELECT queries. Recommended for queries against unknown tables to prevent excessive memory usage. Example: 1000. No limit if omitted."
                         },
                         "timeout_ms": {
                             "type": "number",
-                            "description": "Query timeout in milliseconds"
+                            "description": "Optional: Query execution timeout in milliseconds. Recommended for potentially expensive queries to prevent long-running operations. Example: 5000 (5 seconds). No timeout if omitted."
                         }
                     },
                     "required": ["sql"]
