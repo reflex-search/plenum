@@ -1,6 +1,6 @@
 //! Cross-Engine Integration Tests
 //!
-//! This module tests that all three database engines (SQLite, PostgreSQL, MySQL)
+//! This module tests that all three database engines (`SQLite`, `PostgreSQL`, `MySQL`)
 //! behave consistently for the same types of operations. It validates:
 //! - Identical queries produce similar structured results
 //! - JSON output schemas are consistent
@@ -15,10 +15,6 @@
 
 use plenum::{Capabilities, ConnectionConfig, DatabaseEngine};
 
-#[cfg(feature = "mysql")]
-use plenum::engine::mysql::MySqlEngine;
-#[cfg(feature = "postgres")]
-use plenum::engine::postgres::PostgresEngine;
 #[cfg(feature = "sqlite")]
 use plenum::engine::sqlite::SqliteEngine;
 
@@ -26,20 +22,20 @@ use plenum::engine::sqlite::SqliteEngine;
 // Test Helpers
 // ============================================================================
 
-/// Create a test SQLite database with sample data
+/// Create a test `SQLite` database with sample data
 fn create_test_sqlite_db() -> std::path::PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let temp_file = std::env::temp_dir().join(format!("test_integration_{}.db", timestamp));
+    let temp_file = std::env::temp_dir().join(format!("test_integration_{timestamp}.db"));
     let _ = std::fs::remove_file(&temp_file); // Clean up if exists
 
     {
         use rusqlite::Connection;
         let conn = Connection::open(&temp_file).expect("Failed to create temp database");
 
-        // Create test table
+        // Create test table (use IF NOT EXISTS to handle edge cases)
         conn.execute(
-            "CREATE TABLE users (
+            "CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 email TEXT,
@@ -336,8 +332,7 @@ async fn test_cross_engine_malformed_sql_error() {
         error_msg.contains("column")
             || error_msg.contains("nonexistent")
             || error_msg.contains("no such column"),
-        "Error message should mention SQL problem. Got: {}",
-        error_msg
+        "Error message should mention SQL problem. Got: {error_msg}"
     );
 
     cleanup_sqlite_db(&temp_file);

@@ -51,7 +51,7 @@ fn test_success_envelope_structure() {
 
     // Verify no extra fields (should match schema exactly)
     let top_level_keys: Vec<&str> =
-        json_value.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+        json_value.as_object().unwrap().keys().map(std::string::String::as_str).collect();
     assert_eq!(top_level_keys.len(), 5, "Should have exactly 5 top-level fields");
     assert!(top_level_keys.contains(&"ok"));
     assert!(top_level_keys.contains(&"engine"));
@@ -88,7 +88,7 @@ fn test_error_envelope_structure() {
 
     // Verify no extra fields
     let top_level_keys: Vec<&str> =
-        json_value.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+        json_value.as_object().unwrap().keys().map(std::string::String::as_str).collect();
     assert_eq!(top_level_keys.len(), 4, "Should have exactly 4 top-level fields");
     assert!(top_level_keys.contains(&"ok"));
     assert!(top_level_keys.contains(&"engine"));
@@ -96,7 +96,7 @@ fn test_error_envelope_structure() {
     assert!(top_level_keys.contains(&"error"));
 
     let error_keys: Vec<&str> =
-        json_value["error"].as_object().unwrap().keys().map(|s| s.as_str()).collect();
+        json_value["error"].as_object().unwrap().keys().map(std::string::String::as_str).collect();
     assert_eq!(error_keys.len(), 2, "Should have exactly 2 error fields");
     assert!(error_keys.contains(&"code"));
     assert!(error_keys.contains(&"message"));
@@ -194,14 +194,12 @@ fn test_all_error_codes_are_consistent() {
     use plenum::PlenumError;
 
     // Verify all error codes match the schema's enum
-    let valid_codes = vec![
-        "CAPABILITY_VIOLATION",
+    let valid_codes = ["CAPABILITY_VIOLATION",
         "CONNECTION_FAILED",
         "QUERY_FAILED",
         "INVALID_INPUT",
         "ENGINE_ERROR",
-        "CONFIG_ERROR",
-    ];
+        "CONFIG_ERROR"];
 
     // Test each error type
     assert!(valid_codes.contains(&PlenumError::capability_violation("test").error_code()));
@@ -256,11 +254,11 @@ fn test_error_envelope_snapshot() {
 // Real-World Output Tests
 // ============================================================================
 
-/// Helper to create a test SQLite database
+/// Helper to create a test `SQLite` database
 fn create_test_db() -> PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let temp_file = std::env::temp_dir().join(format!("test_output_{}.db", timestamp));
+    let temp_file = std::env::temp_dir().join(format!("test_output_{timestamp}.db"));
     let _ = std::fs::remove_file(&temp_file);
 
     {

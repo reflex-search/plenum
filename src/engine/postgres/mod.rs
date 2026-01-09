@@ -1,10 +1,10 @@
-//! PostgreSQL Database Engine Implementation
+//! `PostgreSQL` Database Engine Implementation
 //!
-//! This module implements the `DatabaseEngine` trait for PostgreSQL databases.
+//! This module implements the `DatabaseEngine` trait for `PostgreSQL` databases.
 //!
 //! # Features
 //! - Client-server connections via TCP
-//! - Schema introspection via information_schema
+//! - Schema introspection via `information_schema`
 //! - Capability-enforced query execution
 //! - Rich type system support (arrays, JSON/JSONB, timestamps, etc.)
 //!
@@ -14,9 +14,9 @@
 //! - Arrays converted to JSON arrays
 //! - JSON/JSONB preserved as nested JSON
 //! - BYTEA data is Base64-encoded for JSON safety
-//! - Timeouts enforced via tokio::time::timeout
+//! - Timeouts enforced via `tokio::time::timeout`
 //! - Row limits enforced in application code
-//! - Schema filtering supported (PostgreSQL has explicit schemas)
+//! - Schema filtering supported (`PostgreSQL` has explicit schemas)
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -29,7 +29,7 @@ use crate::engine::{
 };
 use crate::error::{PlenumError, Result};
 
-/// PostgreSQL database engine implementation
+/// `PostgreSQL` database engine implementation
 pub struct PostgresEngine;
 
 impl DatabaseEngine for PostgresEngine {
@@ -47,7 +47,7 @@ impl DatabaseEngine for PostgresEngine {
 
         // Connect to PostgreSQL
         let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
-            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
+            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {e}"))
         })?;
 
         // Spawn connection handler
@@ -58,7 +58,7 @@ impl DatabaseEngine for PostgresEngine {
 
         // Get PostgreSQL version
         let version_row = client.query_one("SELECT version()", &[]).await.map_err(|e| {
-            PlenumError::connection_failed(format!("Failed to query PostgreSQL version: {}", e))
+            PlenumError::connection_failed(format!("Failed to query PostgreSQL version: {e}"))
         })?;
 
         let version_string: String = version_row.get(0);
@@ -69,14 +69,14 @@ impl DatabaseEngine for PostgresEngine {
 
         // Get current database name
         let db_row = client.query_one("SELECT current_database()", &[]).await.map_err(|e| {
-            PlenumError::connection_failed(format!("Failed to query current database: {}", e))
+            PlenumError::connection_failed(format!("Failed to query current database: {e}"))
         })?;
 
         let connected_database: String = db_row.get(0);
 
         // Get current user
         let user_row = client.query_one("SELECT current_user", &[]).await.map_err(|e| {
-            PlenumError::connection_failed(format!("Failed to query current user: {}", e))
+            PlenumError::connection_failed(format!("Failed to query current user: {e}"))
         })?;
 
         let user: String = user_row.get(0);
@@ -106,7 +106,7 @@ impl DatabaseEngine for PostgresEngine {
 
         // Connect to PostgreSQL
         let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
-            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
+            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {e}"))
         })?;
 
         // Spawn connection handler
@@ -142,7 +142,7 @@ impl DatabaseEngine for PostgresEngine {
 
         // Connect to PostgreSQL
         let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
-            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {}", e))
+            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {e}"))
         })?;
 
         // Spawn connection handler
@@ -158,7 +158,7 @@ impl DatabaseEngine for PostgresEngine {
             tokio::time::timeout(timeout_duration, execute_query(&client, query, caps))
                 .await
                 .map_err(|_| {
-                    PlenumError::query_failed(format!("Query exceeded timeout of {}ms", timeout_ms))
+                    PlenumError::query_failed(format!("Query exceeded timeout of {timeout_ms}ms"))
                 })??
         } else {
             execute_query(&client, query, caps).await?
@@ -170,7 +170,7 @@ impl DatabaseEngine for PostgresEngine {
     }
 }
 
-/// Build PostgreSQL connection config from ConnectionConfig
+/// Build `PostgreSQL` connection config from `ConnectionConfig`
 fn build_pg_config(config: &ConnectionConfig) -> Result<Config> {
     let host = config
         .host
@@ -213,10 +213,9 @@ async fn introspect_all_tables(
         format!(
             "SELECT table_schema, table_name
              FROM information_schema.tables
-             WHERE table_schema = '{}'
+             WHERE table_schema = '{schema}'
              AND table_type = 'BASE TABLE'
-             ORDER BY table_schema, table_name",
-            schema
+             ORDER BY table_schema, table_name"
         )
     } else {
         "SELECT table_schema, table_name
@@ -228,7 +227,7 @@ async fn introspect_all_tables(
     };
 
     let rows = client.query(&query, &[]).await.map_err(|e| {
-        PlenumError::engine_error("postgres", format!("Failed to query tables: {}", e))
+        PlenumError::engine_error("postgres", format!("Failed to query tables: {e}"))
     })?;
 
     let mut tables = Vec::new();
@@ -280,7 +279,7 @@ async fn introspect_columns(
     let rows = client.query(query, &[&schema, &table_name]).await.map_err(|e| {
         PlenumError::engine_error(
             "postgres",
-            format!("Failed to query columns for {}.{}: {}", schema, table_name, e),
+            format!("Failed to query columns for {schema}.{table_name}: {e}"),
         )
     })?;
 
@@ -322,7 +321,7 @@ async fn introspect_primary_key(
     let rows = client.query(query, &[&schema, &table_name]).await.map_err(|e| {
         PlenumError::engine_error(
             "postgres",
-            format!("Failed to query primary key for {}.{}: {}", schema, table_name, e),
+            format!("Failed to query primary key for {schema}.{table_name}: {e}"),
         )
     })?;
 
@@ -361,7 +360,7 @@ async fn introspect_foreign_keys(
     let rows = client.query(query, &[&schema, &table_name]).await.map_err(|e| {
         PlenumError::engine_error(
             "postgres",
-            format!("Failed to query foreign keys for {}.{}: {}", schema, table_name, e),
+            format!("Failed to query foreign keys for {schema}.{table_name}: {e}"),
         )
     })?;
 
@@ -414,7 +413,7 @@ async fn introspect_indexes(
     let rows = client.query(query, &[&schema, &table_name]).await.map_err(|e| {
         PlenumError::engine_error(
             "postgres",
-            format!("Failed to query indexes for {}.{}: {}", schema, table_name, e),
+            format!("Failed to query indexes for {schema}.{table_name}: {e}"),
         )
     })?;
 
@@ -441,7 +440,7 @@ async fn introspect_indexes(
     Ok(indexes)
 }
 
-/// Extract column names from PostgreSQL index definition
+/// Extract column names from `PostgreSQL` index definition
 fn extract_index_columns(index_def: &str) -> Vec<String> {
     // Find the column list between parentheses
     if let Some(start) = index_def.rfind('(') {
@@ -453,13 +452,13 @@ fn extract_index_columns(index_def: &str) -> Vec<String> {
     Vec::new()
 }
 
-/// Execute query and return QueryResult
+/// Execute query and return `QueryResult`
 async fn execute_query(client: &Client, query: &str, caps: &Capabilities) -> Result<QueryResult> {
     // Execute query
     let stmt = client
         .prepare(query)
         .await
-        .map_err(|e| PlenumError::query_failed(format!("Failed to prepare query: {}", e)))?;
+        .map_err(|e| PlenumError::query_failed(format!("Failed to prepare query: {e}")))?;
 
     // Check if this is a SELECT query (returns rows)
     let is_select = !stmt.columns().is_empty();
@@ -469,7 +468,7 @@ async fn execute_query(client: &Client, query: &str, caps: &Capabilities) -> Res
         let rows = client
             .query(&stmt, &[])
             .await
-            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {}", e)))?;
+            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {e}")))?;
 
         // Get column names
         let column_names: Vec<String> =
@@ -494,7 +493,7 @@ async fn execute_query(client: &Client, query: &str, caps: &Capabilities) -> Res
         let rows_affected = client
             .execute(&stmt, &[])
             .await
-            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {}", e)))?;
+            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {e}")))?;
 
         Ok(QueryResult {
             columns: Vec::new(),
@@ -504,7 +503,7 @@ async fn execute_query(client: &Client, query: &str, caps: &Capabilities) -> Res
     }
 }
 
-/// Convert a PostgreSQL row to a JSON-safe HashMap
+/// Convert a `PostgreSQL` row to a JSON-safe `HashMap`
 fn row_to_json(column_names: &[String], row: &Row) -> Result<HashMap<String, serde_json::Value>> {
     let mut map = HashMap::new();
 
@@ -516,7 +515,7 @@ fn row_to_json(column_names: &[String], row: &Row) -> Result<HashMap<String, ser
     Ok(map)
 }
 
-/// Convert PostgreSQL value to JSON value
+/// Convert `PostgreSQL` value to JSON value
 fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
     use tokio_postgres::types::Type;
 
@@ -524,7 +523,7 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
     let col_type = column.type_();
 
     // Handle NULL first
-    if let Ok(None) = row.try_get::<_, Option<String>>(idx) {
+    if matches!(row.try_get::<_, Option<String>>(idx), Ok(None)) {
         return Ok(serde_json::Value::Null);
     }
 
@@ -533,7 +532,7 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
         // Boolean
         Type::BOOL => {
             let v: bool = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get boolean value: {}", e))
+                PlenumError::query_failed(format!("Failed to get boolean value: {e}"))
             })?;
             serde_json::Value::Bool(v)
         }
@@ -541,19 +540,19 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
         // Integers
         Type::INT2 => {
             let v: i16 = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get i16 value: {}", e))
+                PlenumError::query_failed(format!("Failed to get i16 value: {e}"))
             })?;
             serde_json::Value::Number(v.into())
         }
         Type::INT4 => {
             let v: i32 = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get i32 value: {}", e))
+                PlenumError::query_failed(format!("Failed to get i32 value: {e}"))
             })?;
             serde_json::Value::Number(v.into())
         }
         Type::INT8 => {
             let v: i64 = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get i64 value: {}", e))
+                PlenumError::query_failed(format!("Failed to get i64 value: {e}"))
             })?;
             serde_json::Value::Number(v.into())
         }
@@ -561,25 +560,23 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
         // Floats
         Type::FLOAT4 => {
             let v: f32 = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get f32 value: {}", e))
+                PlenumError::query_failed(format!("Failed to get f32 value: {e}"))
             })?;
-            serde_json::Number::from_f64(v as f64)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null) // Handle NaN/Infinity as null
+            serde_json::Number::from_f64(f64::from(v))
+                .map_or(serde_json::Value::Null, serde_json::Value::Number) // Handle NaN/Infinity as null
         }
         Type::FLOAT8 => {
             let v: f64 = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get f64 value: {}", e))
+                PlenumError::query_failed(format!("Failed to get f64 value: {e}"))
             })?;
             serde_json::Number::from_f64(v)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null) // Handle NaN/Infinity as null
+                .map_or(serde_json::Value::Null, serde_json::Value::Number) // Handle NaN/Infinity as null
         }
 
         // Text types (VARCHAR, TEXT, CHAR, etc.)
         Type::VARCHAR | Type::TEXT | Type::BPCHAR | Type::NAME => {
             let v: String = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get string value: {}", e))
+                PlenumError::query_failed(format!("Failed to get string value: {e}"))
             })?;
             serde_json::Value::String(v)
         }
@@ -587,7 +584,7 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
         // JSON types
         Type::JSON | Type::JSONB => {
             let v: serde_json::Value = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get JSON value: {}", e))
+                PlenumError::query_failed(format!("Failed to get JSON value: {e}"))
             })?;
             v
         }
@@ -595,7 +592,7 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
         // BYTEA (binary data) - encode as Base64
         Type::BYTEA => {
             let v: Vec<u8> = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get bytea value: {}", e))
+                PlenumError::query_failed(format!("Failed to get bytea value: {e}"))
             })?;
             use base64::Engine;
             let encoded = base64::engine::general_purpose::STANDARD.encode(&v);
@@ -606,14 +603,14 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
         Type::TIMESTAMP => {
             use chrono::NaiveDateTime;
             let v: NaiveDateTime = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get timestamp value: {}", e))
+                PlenumError::query_failed(format!("Failed to get timestamp value: {e}"))
             })?;
             serde_json::Value::String(v.format("%Y-%m-%dT%H:%M:%S").to_string())
         }
         Type::TIMESTAMPTZ => {
             use chrono::{DateTime, Utc};
             let v: DateTime<Utc> = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get timestamptz value: {}", e))
+                PlenumError::query_failed(format!("Failed to get timestamptz value: {e}"))
             })?;
             serde_json::Value::String(v.to_rfc3339())
         }
@@ -622,7 +619,7 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
         Type::DATE => {
             use chrono::NaiveDate;
             let v: NaiveDate = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get date value: {}", e))
+                PlenumError::query_failed(format!("Failed to get date value: {e}"))
             })?;
             serde_json::Value::String(v.format("%Y-%m-%d").to_string())
         }
@@ -631,7 +628,7 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
         Type::TIME => {
             use chrono::NaiveTime;
             let v: NaiveTime = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get time value: {}", e))
+                PlenumError::query_failed(format!("Failed to get time value: {e}"))
             })?;
             serde_json::Value::String(v.format("%H:%M:%S").to_string())
         }
@@ -640,7 +637,7 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
         Type::UUID => {
             use uuid::Uuid;
             let v: Uuid = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get UUID value: {}", e))
+                PlenumError::query_failed(format!("Failed to get UUID value: {e}"))
             })?;
             serde_json::Value::String(v.to_string())
         }
@@ -651,7 +648,7 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
             // For arrays, we'll use a simple string representation for MVP
             // Full array support would require recursive type handling
             let v: String = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get array value: {}", e))
+                PlenumError::query_failed(format!("Failed to get array value: {e}"))
             })?;
             serde_json::Value::String(v)
         }
@@ -960,7 +957,7 @@ mod tests {
         for i in 1..=10 {
             let _ = PostgresEngine::execute(
                 &config,
-                &format!("INSERT INTO test_limit (name) VALUES ('User {}')", i),
+                &format!("INSERT INTO test_limit (name) VALUES ('User {i}')"),
                 &write_caps,
             )
             .await;

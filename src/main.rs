@@ -72,7 +72,7 @@ enum Commands {
         #[arg(long)]
         database: Option<String>,
 
-        /// SQLite file path
+        /// `SQLite` file path
         #[arg(long)]
         file: Option<PathBuf>,
 
@@ -111,7 +111,7 @@ enum Commands {
         #[arg(long)]
         database: Option<String>,
 
-        /// SQLite file override
+        /// `SQLite` file override
         #[arg(long)]
         file: Option<PathBuf>,
 
@@ -150,7 +150,7 @@ enum Commands {
         #[arg(long)]
         database: Option<String>,
 
-        /// SQLite file override
+        /// `SQLite` file override
         #[arg(long)]
         file: Option<PathBuf>,
 
@@ -194,7 +194,7 @@ async fn main() {
         let error_envelope = ErrorEnvelope::new(
             "",
             "unknown",
-            plenum::ErrorInfo::new("INTERNAL_ERROR", format!("Internal error: {}", panic_info)),
+            plenum::ErrorInfo::new("INTERNAL_ERROR", format!("Internal error: {panic_info}")),
         );
         output_error(&error_envelope);
     }));
@@ -329,10 +329,7 @@ async fn handle_connect(
         || file.is_some()
         || save.is_some();
 
-    let result: Result<(String, ConnectionConfig, ConfigLocation)> = if !has_args {
-        // Interactive mode: show picker
-        interactive_connect_picker().await
-    } else {
+    let result: Result<(String, ConnectionConfig, ConfigLocation)> = if has_args {
         // Non-interactive mode: build from args
         non_interactive_connect(
             connection,
@@ -347,6 +344,9 @@ async fn handle_connect(
             save,
         )
         .await
+    } else {
+        // Interactive mode: show picker
+        interactive_connect_picker().await
     };
 
     match result {
@@ -421,7 +421,7 @@ async fn interactive_connect_picker() -> Result<(String, ConnectionConfig, Confi
                         )
                     }
                     DatabaseType::SQLite => {
-                        format!("{}", config.file.as_ref().and_then(|f| f.to_str()).unwrap_or("?"))
+                        config.file.as_ref().and_then(|f| f.to_str()).unwrap_or("?").to_string()
                     }
                 }
             )
@@ -433,7 +433,7 @@ async fn interactive_connect_picker() -> Result<(String, ConnectionConfig, Confi
         .with_prompt("Select a connection")
         .items(&items)
         .interact()
-        .map_err(|e| PlenumError::invalid_input(format!("Selection failed: {}", e)))?;
+        .map_err(|e| PlenumError::invalid_input(format!("Selection failed: {e}")))?;
 
     if selection == connections.len() {
         // User selected "Create New"
@@ -443,7 +443,7 @@ async fn interactive_connect_picker() -> Result<(String, ConnectionConfig, Confi
         let (name, config) = &connections[selection];
 
         // Ask if they want to update it
-        eprintln!("Connection '{}' already exists. Re-validating configuration.", name);
+        eprintln!("Connection '{name}' already exists. Re-validating configuration.");
 
         // Ask for save location
         let location = prompt_save_location()?;
@@ -464,7 +464,7 @@ async fn interactive_connect_wizard() -> Result<(String, ConnectionConfig, Confi
         .with_prompt("Select database engine")
         .items(&engine_choices)
         .interact()
-        .map_err(|e| PlenumError::invalid_input(format!("Selection failed: {}", e)))?;
+        .map_err(|e| PlenumError::invalid_input(format!("Selection failed: {e}")))?;
     let engine = parse_engine(engine_choices[engine_idx])?;
 
     // Build config based on engine type
@@ -474,28 +474,28 @@ async fn interactive_connect_wizard() -> Result<(String, ConnectionConfig, Confi
                 .with_prompt("Host")
                 .default("localhost".to_string())
                 .interact_text()
-                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {}", e)))?;
+                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
 
             let port: u16 = Input::new()
                 .with_prompt("Port")
                 .default(if engine == DatabaseType::Postgres { 5432 } else { 3306 })
                 .interact_text()
-                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {}", e)))?;
+                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
 
             let user: String = Input::new()
                 .with_prompt("Username")
                 .interact_text()
-                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {}", e)))?;
+                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
 
             let password: String = dialoguer::Password::new()
                 .with_prompt("Password")
                 .interact()
-                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {}", e)))?;
+                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
 
             let database: String = Input::new()
                 .with_prompt("Database name")
                 .interact_text()
-                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {}", e)))?;
+                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
 
             if engine == DatabaseType::Postgres {
                 ConnectionConfig::postgres(host, port, user, password, database)
@@ -507,7 +507,7 @@ async fn interactive_connect_wizard() -> Result<(String, ConnectionConfig, Confi
             let file: String = Input::new()
                 .with_prompt("Database file path")
                 .interact_text()
-                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {}", e)))?;
+                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
 
             ConnectionConfig::sqlite(PathBuf::from(file))
         }
@@ -518,7 +518,7 @@ async fn interactive_connect_wizard() -> Result<(String, ConnectionConfig, Confi
         .with_prompt("Connection name")
         .default("default".to_string())
         .interact_text()
-        .map_err(|e| PlenumError::invalid_input(format!("Input failed: {}", e)))?;
+        .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
 
     // Prompt for save location
     let location = prompt_save_location()?;
@@ -582,15 +582,13 @@ async fn non_interactive_connect(
 
     // Parse save location
     let location = match save.as_deref() {
-        Some("local") => ConfigLocation::Local,
+        Some("local") | None => ConfigLocation::Local, // Default to local
         Some("global") => ConfigLocation::Global,
         Some(other) => {
             return Err(PlenumError::invalid_input(format!(
-                "Invalid save location '{}'. Must be 'local' or 'global'",
-                other
+                "Invalid save location '{other}'. Must be 'local' or 'global'"
             )))
         }
-        None => ConfigLocation::Local, // Default to local
     };
 
     Ok((conn_name, config, location))
@@ -606,7 +604,7 @@ fn prompt_save_location() -> Result<ConfigLocation> {
         .items(&choices)
         .default(0)
         .interact()
-        .map_err(|e| PlenumError::invalid_input(format!("Selection failed: {}", e)))?;
+        .map_err(|e| PlenumError::invalid_input(format!("Selection failed: {e}")))?;
 
     Ok(if selection == 0 { ConfigLocation::Local } else { ConfigLocation::Global })
 }
@@ -718,7 +716,7 @@ async fn handle_query(
                     "query",
                     plenum::ErrorInfo::new(
                         "INVALID_INPUT",
-                        format!("Could not read SQL file: {}", e),
+                        format!("Could not read SQL file: {e}"),
                     ),
                 );
                 output_error(&envelope);
@@ -824,6 +822,7 @@ async fn handle_query(
     }
 }
 
+#[allow(clippy::future_not_send)]
 async fn handle_mcp() -> std::result::Result<(), i32> {
     // Phase 7: MCP server using manual JSON-RPC 2.0 implementation
     // Follows the proven pattern from reflex-search (no unstable rmcp dependency)
@@ -831,7 +830,7 @@ async fn handle_mcp() -> std::result::Result<(), i32> {
         Ok(()) => Ok(()),
         Err(e) => {
             // MCP server errors go to stderr (not stdout, which is for JSON-RPC)
-            eprintln!("MCP server error: {}", e);
+            eprintln!("MCP server error: {e}");
             Err(1)
         }
     }
@@ -844,9 +843,9 @@ async fn handle_mcp() -> std::result::Result<(), i32> {
 /// Output a success envelope as JSON to stdout
 fn output_success<T: serde::Serialize>(envelope: &SuccessEnvelope<T>) {
     match serde_json::to_string(envelope) {
-        Ok(json) => println!("{}", json),
+        Ok(json) => println!("{json}"),
         Err(e) => {
-            eprintln!("FATAL: Failed to serialize success envelope: {}", e);
+            eprintln!("FATAL: Failed to serialize success envelope: {e}");
             std::process::exit(2);
         }
     }
@@ -855,9 +854,9 @@ fn output_success<T: serde::Serialize>(envelope: &SuccessEnvelope<T>) {
 /// Output an error envelope as JSON to stdout
 fn output_error(envelope: &ErrorEnvelope) {
     match serde_json::to_string(envelope) {
-        Ok(json) => println!("{}", json),
+        Ok(json) => println!("{json}"),
         Err(e) => {
-            eprintln!("FATAL: Failed to serialize error envelope: {}", e);
+            eprintln!("FATAL: Failed to serialize error envelope: {e}");
             std::process::exit(2);
         }
     }
@@ -979,21 +978,20 @@ fn build_connection_config(
     }
 }
 
-/// Parse engine string to DatabaseType
+/// Parse engine string to `DatabaseType`
 fn parse_engine(engine: &str) -> Result<DatabaseType> {
     match engine {
         "postgres" => Ok(DatabaseType::Postgres),
         "mysql" => Ok(DatabaseType::MySQL),
         "sqlite" => Ok(DatabaseType::SQLite),
         _ => Err(PlenumError::invalid_input(format!(
-            "Invalid engine '{}'. Must be postgres, mysql, or sqlite",
-            engine
+            "Invalid engine '{engine}'. Must be postgres, mysql, or sqlite"
         ))),
     }
 }
 
 /// Build capabilities from CLI flags
-fn build_capabilities(
+const fn build_capabilities(
     allow_write: bool,
     allow_ddl: bool,
     max_rows: Option<usize>,

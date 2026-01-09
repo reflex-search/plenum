@@ -1,7 +1,7 @@
 //! JSON Output Envelope Types
 //!
 //! This module defines the structured JSON output format for all Plenum operations.
-//! All operations return either a SuccessEnvelope or an ErrorEnvelope.
+//! All operations return either a `SuccessEnvelope` or an `ErrorEnvelope`.
 //!
 //! # Output Contract
 //! - Success: `{"ok": true, "engine": "...", "command": "...", "data": {...}, "meta": {...}}`
@@ -68,7 +68,7 @@ impl ErrorEnvelope {
         Self { ok: false, engine: engine.into(), command: command.into(), error }
     }
 
-    /// Create error envelope from PlenumError
+    /// Create error envelope from `PlenumError`
     pub fn from_error(
         engine: impl Into<String>,
         command: impl Into<String>,
@@ -85,7 +85,7 @@ impl ErrorEnvelope {
 /// Error information structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorInfo {
-    /// Stable error code (e.g., "CAPABILITY_VIOLATION", "CONNECTION_FAILED")
+    /// Stable error code (e.g., "`CAPABILITY_VIOLATION`", "`CONNECTION_FAILED`")
     pub code: String,
 
     /// Human-readable error message (agent-appropriate, no sensitive data)
@@ -112,12 +112,12 @@ pub struct Metadata {
 
 impl Metadata {
     /// Create new metadata with just execution time
-    pub fn new(execution_ms: u64) -> Self {
+    #[must_use] pub const fn new(execution_ms: u64) -> Self {
         Self { execution_ms, rows_returned: None }
     }
 
     /// Create new metadata with execution time and row count
-    pub fn with_rows(execution_ms: u64, rows_returned: usize) -> Self {
+    #[must_use] pub const fn with_rows(execution_ms: u64, rows_returned: usize) -> Self {
         Self { execution_ms, rows_returned: Some(rows_returned) }
     }
 }

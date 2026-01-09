@@ -28,7 +28,7 @@ use std::path::PathBuf;
 fn create_test_db() -> PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let temp_file = std::env::temp_dir().join(format!("test_edge_{}.db", timestamp));
+    let temp_file = std::env::temp_dir().join(format!("test_edge_{timestamp}.db"));
     let _ = std::fs::remove_file(&temp_file);
     temp_file
 }
@@ -55,7 +55,7 @@ async fn test_large_result_set_with_max_rows() {
 
         // Insert 1000 rows
         for i in 1..=1000 {
-            conn.execute("INSERT INTO large_table (value) VALUES (?)", [format!("Value {}", i)])
+            conn.execute("INSERT INTO large_table (value) VALUES (?)", [format!("Value {i}")])
                 .expect("Failed to insert");
         }
     }
@@ -363,7 +363,7 @@ async fn test_very_long_query() {
             .expect("Failed to create table");
 
         for i in 1..=10 {
-            conn.execute("INSERT INTO test (value) VALUES (?)", [format!("Value {}", i)])
+            conn.execute("INSERT INTO test (value) VALUES (?)", [format!("Value {i}")])
                 .expect("Failed to insert");
         }
     }

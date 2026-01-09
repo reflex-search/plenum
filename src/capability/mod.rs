@@ -232,13 +232,13 @@ fn strip_explain_prefix(sql: &str) -> String {
     let sql = sql.trim();
 
     // Handle EXPLAIN ANALYZE
-    if sql.starts_with("EXPLAIN ANALYZE") {
-        return sql[15..].trim().to_string();
+    if let Some(stripped) = sql.strip_prefix("EXPLAIN ANALYZE") {
+        return stripped.trim().to_string();
     }
 
     // Handle EXPLAIN
-    if sql.starts_with("EXPLAIN") {
-        return sql[7..].trim().to_string();
+    if let Some(stripped) = sql.strip_prefix("EXPLAIN") {
+        return stripped.trim().to_string();
     }
 
     sql.to_string()
