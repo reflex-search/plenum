@@ -42,7 +42,8 @@ pub enum DatabaseType {
 
 impl DatabaseType {
     /// Get the engine name as a string
-    #[must_use] pub const fn as_str(&self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Postgres => "postgres",
             Self::MySQL => "mysql",
@@ -94,7 +95,8 @@ pub struct ConnectionConfig {
 
 impl ConnectionConfig {
     /// Create a new `PostgreSQL` connection config
-    #[must_use] pub const fn postgres(
+    #[must_use]
+    pub const fn postgres(
         host: String,
         port: u16,
         user: String,
@@ -113,7 +115,8 @@ impl ConnectionConfig {
     }
 
     /// Create a new `MySQL` connection config
-    #[must_use] pub const fn mysql(
+    #[must_use]
+    pub const fn mysql(
         host: String,
         port: u16,
         user: String,
@@ -132,7 +135,8 @@ impl ConnectionConfig {
     }
 
     /// Create a new `SQLite` connection config
-    #[must_use] pub const fn sqlite(file: PathBuf) -> Self {
+    #[must_use]
+    pub const fn sqlite(file: PathBuf) -> Self {
         Self {
             engine: DatabaseType::SQLite,
             host: None,
@@ -191,17 +195,20 @@ pub struct Capabilities {
 
 impl Capabilities {
     /// Create read-only capabilities (default)
-    #[must_use] pub fn read_only() -> Self {
+    #[must_use]
+    pub fn read_only() -> Self {
         Self::default()
     }
 
     /// Create write-enabled capabilities
-    #[must_use] pub fn with_write() -> Self {
+    #[must_use]
+    pub fn with_write() -> Self {
         Self { allow_write: true, ..Default::default() }
     }
 
     /// Create DDL-enabled capabilities (DDL implies write)
-    #[must_use] pub fn with_ddl() -> Self {
+    #[must_use]
+    pub fn with_ddl() -> Self {
         Self {
             allow_write: true, // DDL implies write
             allow_ddl: true,
@@ -211,12 +218,14 @@ impl Capabilities {
 
     /// Check if write operations are allowed
     /// Returns true if either `allow_write` or `allow_ddl` is true
-    #[must_use] pub const fn can_write(&self) -> bool {
+    #[must_use]
+    pub const fn can_write(&self) -> bool {
         self.allow_write || self.allow_ddl
     }
 
     /// Check if DDL operations are allowed
-    #[must_use] pub const fn can_ddl(&self) -> bool {
+    #[must_use]
+    pub const fn can_ddl(&self) -> bool {
         self.allow_ddl
     }
 }
@@ -328,7 +337,9 @@ pub trait DatabaseEngine {
     /// 4. Returns connection info or error
     ///
     /// No persistent connection is maintained.
-    fn validate_connection(config: &ConnectionConfig) -> impl std::future::Future<Output = Result<ConnectionInfo>> + Send;
+    fn validate_connection(
+        config: &ConnectionConfig,
+    ) -> impl std::future::Future<Output = Result<ConnectionInfo>> + Send;
 
     /// Introspect database schema
     ///

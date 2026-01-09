@@ -45,7 +45,8 @@ impl PlenumError {
     /// Convert error to error code string for JSON output
     ///
     /// Error codes are stable and suitable for programmatic handling by agents.
-    #[must_use] pub const fn error_code(&self) -> &'static str {
+    #[must_use]
+    pub const fn error_code(&self) -> &'static str {
         match self {
             Self::CapabilityViolation(_) => "CAPABILITY_VIOLATION",
             Self::ConnectionFailed(_) => "CONNECTION_FAILED",
@@ -60,7 +61,8 @@ impl PlenumError {
     ///
     /// This message is safe to include in JSON output.
     /// It does not contain credentials, file paths, or other sensitive information.
-    #[must_use] pub fn message(&self) -> String {
+    #[must_use]
+    pub fn message(&self) -> String {
         // Use Display implementation from thiserror
         self.to_string()
     }

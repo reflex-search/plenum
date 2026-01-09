@@ -185,9 +185,8 @@ fn open_connection(path: &str, read_only: bool) -> Result<Connection> {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
     };
 
-    Connection::open_with_flags(path, flags).map_err(|e| {
-        PlenumError::connection_failed(format!("Failed to open SQLite database: {e}"))
-    })
+    Connection::open_with_flags(path, flags)
+        .map_err(|e| PlenumError::connection_failed(format!("Failed to open SQLite database: {e}")))
 }
 
 /// Introspect a single table and return `TableInfo`
@@ -295,13 +294,12 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
         .collect();
 
     // Get indexes via PRAGMA index_list
-    let mut idx_stmt =
-        conn.prepare(&format!("PRAGMA index_list({table_name})")).map_err(|e| {
-            PlenumError::engine_error(
-                "sqlite",
-                format!("Failed to prepare index_list for {table_name}: {e}"),
-            )
-        })?;
+    let mut idx_stmt = conn.prepare(&format!("PRAGMA index_list({table_name})")).map_err(|e| {
+        PlenumError::engine_error(
+            "sqlite",
+            format!("Failed to prepare index_list for {table_name}: {e}"),
+        )
+    })?;
 
     let index_list: Vec<(String, bool)> = idx_stmt
         .query_map([], |row| {
@@ -705,7 +703,13 @@ mod tests {
 
             conn.execute(
                 "INSERT INTO test_types VALUES (?, ?, ?, ?, ?)",
-                rusqlite::params![42, std::f64::consts::PI, "hello", vec![1u8, 2u8, 3u8], Option::<String>::None],
+                rusqlite::params![
+                    42,
+                    std::f64::consts::PI,
+                    "hello",
+                    vec![1u8, 2u8, 3u8],
+                    Option::<String>::None
+                ],
             )
             .expect("Failed to insert");
         }

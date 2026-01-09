@@ -539,36 +539,36 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
 
         // Integers
         Type::INT2 => {
-            let v: i16 = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get i16 value: {e}"))
-            })?;
+            let v: i16 = row
+                .try_get(idx)
+                .map_err(|e| PlenumError::query_failed(format!("Failed to get i16 value: {e}")))?;
             serde_json::Value::Number(v.into())
         }
         Type::INT4 => {
-            let v: i32 = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get i32 value: {e}"))
-            })?;
+            let v: i32 = row
+                .try_get(idx)
+                .map_err(|e| PlenumError::query_failed(format!("Failed to get i32 value: {e}")))?;
             serde_json::Value::Number(v.into())
         }
         Type::INT8 => {
-            let v: i64 = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get i64 value: {e}"))
-            })?;
+            let v: i64 = row
+                .try_get(idx)
+                .map_err(|e| PlenumError::query_failed(format!("Failed to get i64 value: {e}")))?;
             serde_json::Value::Number(v.into())
         }
 
         // Floats
         Type::FLOAT4 => {
-            let v: f32 = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get f32 value: {e}"))
-            })?;
+            let v: f32 = row
+                .try_get(idx)
+                .map_err(|e| PlenumError::query_failed(format!("Failed to get f32 value: {e}")))?;
             serde_json::Number::from_f64(f64::from(v))
                 .map_or(serde_json::Value::Null, serde_json::Value::Number) // Handle NaN/Infinity as null
         }
         Type::FLOAT8 => {
-            let v: f64 = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get f64 value: {e}"))
-            })?;
+            let v: f64 = row
+                .try_get(idx)
+                .map_err(|e| PlenumError::query_failed(format!("Failed to get f64 value: {e}")))?;
             serde_json::Number::from_f64(v)
                 .map_or(serde_json::Value::Null, serde_json::Value::Number) // Handle NaN/Infinity as null
         }
@@ -583,9 +583,9 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
 
         // JSON types
         Type::JSON | Type::JSONB => {
-            let v: serde_json::Value = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get JSON value: {e}"))
-            })?;
+            let v: serde_json::Value = row
+                .try_get(idx)
+                .map_err(|e| PlenumError::query_failed(format!("Failed to get JSON value: {e}")))?;
             v
         }
 
@@ -618,27 +618,27 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
         // Date
         Type::DATE => {
             use chrono::NaiveDate;
-            let v: NaiveDate = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get date value: {e}"))
-            })?;
+            let v: NaiveDate = row
+                .try_get(idx)
+                .map_err(|e| PlenumError::query_failed(format!("Failed to get date value: {e}")))?;
             serde_json::Value::String(v.format("%Y-%m-%d").to_string())
         }
 
         // Time
         Type::TIME => {
             use chrono::NaiveTime;
-            let v: NaiveTime = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get time value: {e}"))
-            })?;
+            let v: NaiveTime = row
+                .try_get(idx)
+                .map_err(|e| PlenumError::query_failed(format!("Failed to get time value: {e}")))?;
             serde_json::Value::String(v.format("%H:%M:%S").to_string())
         }
 
         // UUID
         Type::UUID => {
             use uuid::Uuid;
-            let v: Uuid = row.try_get(idx).map_err(|e| {
-                PlenumError::query_failed(format!("Failed to get UUID value: {e}"))
-            })?;
+            let v: Uuid = row
+                .try_get(idx)
+                .map_err(|e| PlenumError::query_failed(format!("Failed to get UUID value: {e}")))?;
             serde_json::Value::String(v.to_string())
         }
 

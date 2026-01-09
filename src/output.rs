@@ -112,12 +112,14 @@ pub struct Metadata {
 
 impl Metadata {
     /// Create new metadata with just execution time
-    #[must_use] pub const fn new(execution_ms: u64) -> Self {
+    #[must_use]
+    pub const fn new(execution_ms: u64) -> Self {
         Self { execution_ms, rows_returned: None }
     }
 
     /// Create new metadata with execution time and row count
-    #[must_use] pub const fn with_rows(execution_ms: u64, rows_returned: usize) -> Self {
+    #[must_use]
+    pub const fn with_rows(execution_ms: u64, rows_returned: usize) -> Self {
         Self { execution_ms, rows_returned: Some(rows_returned) }
     }
 }

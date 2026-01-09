@@ -264,9 +264,10 @@ async fn introspect_all_tables(conn: &mut Conn, schema: &str) -> Result<Vec<Tabl
                  AND table_type = 'BASE TABLE'
                  ORDER BY table_name";
 
-    let rows: Vec<Row> = conn.exec(query, (schema,)).await.map_err(|e| {
-        PlenumError::engine_error("mysql", format!("Failed to query tables: {e}"))
-    })?;
+    let rows: Vec<Row> = conn
+        .exec(query, (schema,))
+        .await
+        .map_err(|e| PlenumError::engine_error("mysql", format!("Failed to query tables: {e}")))?;
 
     let mut tables = Vec::new();
     for row in rows {
@@ -501,9 +502,7 @@ async fn get_index_columns(
     let rows: Vec<Row> = conn.exec(query, (schema, table_name, index_name)).await.map_err(|e| {
         PlenumError::engine_error(
             "mysql",
-            format!(
-                "Failed to query columns for index {schema}.{table_name}.{index_name}: {e}"
-            ),
+            format!("Failed to query columns for index {schema}.{table_name}.{index_name}: {e}"),
         )
     })?;
 
@@ -591,9 +590,9 @@ fn row_to_json(row: &Row) -> Result<HashMap<String, serde_json::Value>> {
 
 /// Convert `MySQL` value to JSON value
 fn mysql_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
-    let value = row.as_ref(idx).ok_or_else(|| {
-        PlenumError::query_failed(format!("Failed to get value at index {idx}"))
-    })?;
+    let value = row
+        .as_ref(idx)
+        .ok_or_else(|| PlenumError::query_failed(format!("Failed to get value at index {idx}")))?;
 
     let json_value = match value {
         Value::NULL => serde_json::Value::Null,
@@ -632,9 +631,8 @@ fn mysql_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
             // Format as time duration string
             let sign = if *is_negative { "-" } else { "" };
             let total_hours = days * 24 + u32::from(*hours);
-            let time_str = format!(
-                "{sign}{total_hours}:{minutes:02}:{seconds:02}.{microseconds:06}"
-            );
+            let time_str =
+                format!("{sign}{total_hours}:{minutes:02}:{seconds:02}.{microseconds:06}");
             serde_json::Value::String(time_str)
         }
     };

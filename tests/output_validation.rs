@@ -194,12 +194,14 @@ fn test_all_error_codes_are_consistent() {
     use plenum::PlenumError;
 
     // Verify all error codes match the schema's enum
-    let valid_codes = ["CAPABILITY_VIOLATION",
+    let valid_codes = [
+        "CAPABILITY_VIOLATION",
         "CONNECTION_FAILED",
         "QUERY_FAILED",
         "INVALID_INPUT",
         "ENGINE_ERROR",
-        "CONFIG_ERROR"];
+        "CONFIG_ERROR",
+    ];
 
     // Test each error type
     assert!(valid_codes.contains(&PlenumError::capability_violation("test").error_code()));

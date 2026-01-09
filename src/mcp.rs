@@ -415,8 +415,9 @@ async fn tool_connect(args: &Value) -> Result<Value> {
             _ => return Err(anyhow!("Invalid save location. Must be 'local' or 'global'")),
         };
 
-        let conn_name =
-            args["name"].as_str().map_or_else(|| "default".to_string(), std::string::ToString::to_string);
+        let conn_name = args["name"]
+            .as_str()
+            .map_or_else(|| "default".to_string(), std::string::ToString::to_string);
 
         crate::save_connection(conn_name.clone(), config.clone(), location)
             .map_err(|e| anyhow!("Failed to save connection: {e}"))?;
