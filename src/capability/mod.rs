@@ -64,9 +64,7 @@ pub fn validate_query(
             if caps.can_ddl() {
                 Ok(category)
             } else {
-                Err(PlenumError::capability_violation(
-                    "DDL operations require --allow-ddl flag",
-                ))
+                Err(PlenumError::capability_violation("DDL operations require --allow-ddl flag"))
             }
         }
     }
@@ -96,9 +94,7 @@ fn preprocess_sql(sql: &str) -> Result<String> {
     // (except trailing semicolon)
     let trimmed_for_check = processed.trim_end_matches(';').trim();
     if trimmed_for_check.contains(';') {
-        return Err(PlenumError::invalid_input(
-            "Multi-statement queries are not supported in MVP",
-        ));
+        return Err(PlenumError::invalid_input("Multi-statement queries are not supported in MVP"));
     }
 
     // Normalize to uppercase for pattern matching
@@ -372,10 +368,7 @@ mod tests {
     fn test_preprocess_empty_query() {
         let result = preprocess_sql("");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message()
-            .contains("Query cannot be empty"));
+        assert!(result.unwrap_err().message().contains("Query cannot be empty"));
     }
 
     #[test]
@@ -387,7 +380,8 @@ mod tests {
 
     #[test]
     fn test_preprocess_line_comments() {
-        let result = preprocess_sql("SELECT * FROM users -- this is a comment\nWHERE id = 1").unwrap();
+        let result =
+            preprocess_sql("SELECT * FROM users -- this is a comment\nWHERE id = 1").unwrap();
         assert!(result.contains("SELECT"));
         assert!(result.contains("WHERE"));
         assert!(!result.contains("this is a comment"));
@@ -437,18 +431,23 @@ mod tests {
     #[test]
     fn test_postgres_insert_without_write_capability() {
         let caps = Capabilities::read_only();
-        let result = validate_query("INSERT INTO users (name) VALUES ('test')", &caps, DatabaseType::Postgres);
+        let result = validate_query(
+            "INSERT INTO users (name) VALUES ('test')",
+            &caps,
+            DatabaseType::Postgres,
+        );
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message()
-            .contains("Write operations require --allow-write"));
+        assert!(result.unwrap_err().message().contains("Write operations require --allow-write"));
     }
 
     #[test]
     fn test_postgres_insert_with_write_capability() {
         let caps = Capabilities::with_write();
-        let result = validate_query("INSERT INTO users (name) VALUES ('test')", &caps, DatabaseType::Postgres);
+        let result = validate_query(
+            "INSERT INTO users (name) VALUES ('test')",
+            &caps,
+            DatabaseType::Postgres,
+        );
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), QueryCategory::Write);
     }
@@ -458,10 +457,7 @@ mod tests {
         let caps = Capabilities::with_write();
         let result = validate_query("CREATE TABLE test (id INT)", &caps, DatabaseType::Postgres);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message()
-            .contains("DDL operations require --allow-ddl"));
+        assert!(result.unwrap_err().message().contains("DDL operations require --allow-ddl"));
     }
 
     #[test]
@@ -483,7 +479,8 @@ mod tests {
     #[test]
     fn test_postgres_explain_analyze() {
         let caps = Capabilities::read_only();
-        let result = validate_query("EXPLAIN ANALYZE SELECT * FROM users", &caps, DatabaseType::Postgres);
+        let result =
+            validate_query("EXPLAIN ANALYZE SELECT * FROM users", &caps, DatabaseType::Postgres);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), QueryCategory::ReadOnly);
     }
@@ -499,7 +496,11 @@ mod tests {
     #[test]
     fn test_postgres_cte_read_only() {
         let caps = Capabilities::read_only();
-        let result = validate_query("WITH cte AS (SELECT * FROM users) SELECT * FROM cte", &caps, DatabaseType::Postgres);
+        let result = validate_query(
+            "WITH cte AS (SELECT * FROM users) SELECT * FROM cte",
+            &caps,
+            DatabaseType::Postgres,
+        );
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), QueryCategory::ReadOnly);
     }
@@ -517,7 +518,11 @@ mod tests {
     #[test]
     fn test_mysql_replace() {
         let caps = Capabilities::with_write();
-        let result = validate_query("REPLACE INTO users (id, name) VALUES (1, 'test')", &caps, DatabaseType::MySQL);
+        let result = validate_query(
+            "REPLACE INTO users (id, name) VALUES (1, 'test')",
+            &caps,
+            DatabaseType::MySQL,
+        );
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), QueryCategory::Write);
     }
@@ -568,7 +573,11 @@ mod tests {
     fn test_ddl_implies_write() {
         let caps = Capabilities::with_ddl();
         // DDL capability should allow write operations
-        let result = validate_query("INSERT INTO users (name) VALUES ('test')", &caps, DatabaseType::Postgres);
+        let result = validate_query(
+            "INSERT INTO users (name) VALUES ('test')",
+            &caps,
+            DatabaseType::Postgres,
+        );
         assert!(result.is_ok());
     }
 
@@ -596,7 +605,7 @@ mod tests {
         let result = validate_query(
             "-- Query users\nSeLeCt * FrOm UsErS -- get all",
             &caps,
-            DatabaseType::Postgres
+            DatabaseType::Postgres,
         );
         assert!(result.is_ok());
     }

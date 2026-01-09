@@ -89,24 +89,22 @@ impl DatabaseEngine for MySqlEngine {
             })?
             .ok_or_else(|| PlenumError::connection_failed("No user returned".to_string()))?;
 
-        let user: String = user_row.get(0).ok_or_else(|| {
-            PlenumError::connection_failed("Failed to extract user".to_string())
-        })?;
+        let user: String = user_row
+            .get(0)
+            .ok_or_else(|| PlenumError::connection_failed("Failed to extract user".to_string()))?;
 
         // Close connection
-        conn.disconnect().await.map_err(|e| {
-            PlenumError::connection_failed(format!("Failed to disconnect: {}", e))
-        })?;
+        conn.disconnect()
+            .await
+            .map_err(|e| PlenumError::connection_failed(format!("Failed to disconnect: {}", e)))?;
 
-        Ok(ConnectionInfo {
-            database_version,
-            server_info,
-            connected_database,
-            user,
-        })
+        Ok(ConnectionInfo { database_version, server_info, connected_database, user })
     }
 
-    async fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo> {
+    async fn introspect(
+        config: &ConnectionConfig,
+        schema_filter: Option<&str>,
+    ) -> Result<SchemaInfo> {
         // Validate config is for MySQL
         if config.engine != DatabaseType::MySQL {
             return Err(PlenumError::invalid_input(format!(
@@ -132,9 +130,14 @@ impl DatabaseEngine for MySqlEngine {
                 .query_first("SELECT DATABASE()")
                 .await
                 .map_err(|e| {
-                    PlenumError::engine_error("mysql", format!("Failed to query current database: {}", e))
+                    PlenumError::engine_error(
+                        "mysql",
+                        format!("Failed to query current database: {}", e),
+                    )
                 })?
-                .ok_or_else(|| PlenumError::engine_error("mysql", "No database selected".to_string()))?;
+                .ok_or_else(|| {
+                    PlenumError::engine_error("mysql", "No database selected".to_string())
+                })?;
 
             db_row.get(0).ok_or_else(|| {
                 PlenumError::engine_error("mysql", "Failed to extract database name".to_string())
@@ -152,7 +155,11 @@ impl DatabaseEngine for MySqlEngine {
         Ok(SchemaInfo { tables })
     }
 
-    async fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult> {
+    async fn execute(
+        config: &ConnectionConfig,
+        query: &str,
+        caps: &Capabilities,
+    ) -> Result<QueryResult> {
         // Validate config is for MySQL
         if config.engine != DatabaseType::MySQL {
             return Err(PlenumError::invalid_input(format!(
@@ -179,8 +186,8 @@ impl DatabaseEngine for MySqlEngine {
             tokio::time::timeout(timeout_duration, execute_query(&mut conn, query, caps))
                 .await
                 .map_err(|_| {
-                    PlenumError::query_failed(format!("Query exceeded timeout of {}ms", timeout_ms))
-                })??
+                PlenumError::query_failed(format!("Query exceeded timeout of {}ms", timeout_ms))
+            })??
         } else {
             execute_query(&mut conn, query, caps).await?
         };
@@ -203,9 +210,8 @@ fn build_mysql_opts(config: &ConnectionConfig) -> Result<OptsBuilder> {
         .as_ref()
         .ok_or_else(|| PlenumError::invalid_input("MySQL requires 'host' parameter"))?;
 
-    let port = config
-        .port
-        .ok_or_else(|| PlenumError::invalid_input("MySQL requires 'port' parameter"))?;
+    let port =
+        config.port.ok_or_else(|| PlenumError::invalid_input("MySQL requires 'port' parameter"))?;
 
     let user = config
         .user
@@ -239,19 +245,12 @@ fn parse_mysql_version(version_string: &str) -> (String, String) {
 
     if version_string.to_uppercase().contains("MARIADB") {
         // MariaDB
-        let version = version_string
-            .split('-')
-            .next()
-            .unwrap_or("unknown")
-            .to_string();
+        let version = version_string.split('-').next().unwrap_or("unknown").to_string();
         (version.clone(), format!("MariaDB {}", version))
     } else {
         // MySQL
-        let version = version_string
-            .split_whitespace()
-            .next()
-            .unwrap_or(version_string)
-            .to_string();
+        let version =
+            version_string.split_whitespace().next().unwrap_or(version_string).to_string();
         (version.clone(), format!("MySQL {}", version))
     }
 }
@@ -314,7 +313,11 @@ fn get_optional_string(row: &Row, idx: usize) -> Option<String> {
 }
 
 /// Introspect table columns
-async fn introspect_columns(conn: &mut Conn, schema: &str, table_name: &str) -> Result<Vec<ColumnInfo>> {
+async fn introspect_columns(
+    conn: &mut Conn,
+    schema: &str,
+    table_name: &str,
+) -> Result<Vec<ColumnInfo>> {
     let query = "SELECT column_name, data_type, is_nullable, column_default
                  FROM information_schema.columns
                  WHERE table_schema = ? AND table_name = ?
@@ -375,10 +378,8 @@ async fn introspect_primary_key(
         return Ok(None);
     }
 
-    let pk_columns: Vec<String> = rows
-        .into_iter()
-        .filter_map(|row| get_optional_string(&row, 0))
-        .collect();
+    let pk_columns: Vec<String> =
+        rows.into_iter().filter_map(|row| get_optional_string(&row, 0)).collect();
 
     Ok(Some(pk_columns))
 }
@@ -447,7 +448,11 @@ async fn introspect_foreign_keys(
 }
 
 /// Introspect indexes
-async fn introspect_indexes(conn: &mut Conn, schema: &str, table_name: &str) -> Result<Vec<IndexInfo>> {
+async fn introspect_indexes(
+    conn: &mut Conn,
+    schema: &str,
+    table_name: &str,
+) -> Result<Vec<IndexInfo>> {
     let query = "SELECT DISTINCT
                     index_name,
                     non_unique
@@ -475,11 +480,7 @@ async fn introspect_indexes(conn: &mut Conn, schema: &str, table_name: &str) -> 
         // Get columns for this index
         let columns = get_index_columns(conn, schema, table_name, &index_name).await?;
 
-        indexes.push(IndexInfo {
-            name: index_name,
-            columns,
-            unique: non_unique == 0,
-        });
+        indexes.push(IndexInfo { name: index_name, columns, unique: non_unique == 0 });
     }
 
     Ok(indexes)
@@ -497,20 +498,18 @@ async fn get_index_columns(
                  WHERE table_schema = ? AND table_name = ? AND index_name = ?
                  ORDER BY seq_in_index";
 
-    let rows: Vec<Row> = conn
-        .exec(query, (schema, table_name, index_name))
-        .await
-        .map_err(|e| {
-            PlenumError::engine_error(
-                "mysql",
-                format!(
-                    "Failed to query columns for index {}.{}.{}: {}",
-                    schema, table_name, index_name, e
-                ),
-            )
-        })?;
+    let rows: Vec<Row> = conn.exec(query, (schema, table_name, index_name)).await.map_err(|e| {
+        PlenumError::engine_error(
+            "mysql",
+            format!(
+                "Failed to query columns for index {}.{}.{}: {}",
+                schema, table_name, index_name, e
+            ),
+        )
+    })?;
 
-    let columns: Vec<String> = rows.into_iter().filter_map(|row| get_optional_string(&row, 0)).collect();
+    let columns: Vec<String> =
+        rows.into_iter().filter_map(|row| get_optional_string(&row, 0)).collect();
 
     Ok(columns)
 }
@@ -530,17 +529,14 @@ async fn execute_query(conn: &mut Conn, query: &str, caps: &Capabilities) -> Res
 
     if is_select {
         // Query returns rows
-        let rows: Vec<Row> = conn.query(query).await.map_err(|e| {
-            PlenumError::query_failed(format!("Failed to execute query: {}", e))
-        })?;
+        let rows: Vec<Row> = conn
+            .query(query)
+            .await
+            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {}", e)))?;
 
         // Get column names from first row (if any)
         let column_names: Vec<String> = if let Some(first_row) = rows.first() {
-            first_row
-                .columns_ref()
-                .iter()
-                .map(|col| col.name_str().to_string())
-                .collect()
+            first_row.columns_ref().iter().map(|col| col.name_str().to_string()).collect()
         } else {
             // No rows, try to get column names from a LIMIT 0 query
             // For empty result sets, we may not have column info
@@ -560,16 +556,13 @@ async fn execute_query(conn: &mut Conn, query: &str, caps: &Capabilities) -> Res
             }
         }
 
-        Ok(QueryResult {
-            columns: column_names,
-            rows: rows_data,
-            rows_affected: None,
-        })
+        Ok(QueryResult { columns: column_names, rows: rows_data, rows_affected: None })
     } else {
         // Query does not return rows (INSERT, UPDATE, DELETE, DDL)
-        let result = conn.query_iter(query).await.map_err(|e| {
-            PlenumError::query_failed(format!("Failed to execute query: {}", e))
-        })?;
+        let result = conn
+            .query_iter(query)
+            .await
+            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {}", e)))?;
 
         let rows_affected = result.affected_rows();
 
@@ -645,11 +638,7 @@ fn mysql_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
             let total_hours = days * 24 + (*hours as u32);
             let time_str = format!(
                 "{}{}:{:02}:{:02}.{:06}",
-                sign,
-                total_hours,
-                minutes,
-                seconds,
-                microseconds
+                sign, total_hours, minutes, seconds, microseconds
             );
             serde_json::Value::String(time_str)
         }
@@ -678,7 +667,7 @@ mod tests {
     // cargo test --features mysql -- --ignored
 
     #[tokio::test]
-    #[ignore] // Requires running MySQL instance
+    #[ignore = "Requires running MySQL instance"]
     async fn test_validate_connection() {
         let config = ConnectionConfig::mysql(
             "localhost".to_string(),
@@ -689,11 +678,7 @@ mod tests {
         );
 
         let result = MySqlEngine::validate_connection(&config).await;
-        assert!(
-            result.is_ok(),
-            "Connection validation failed: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "Connection validation failed: {:?}", result.err());
 
         let info = result.unwrap();
         assert!(!info.database_version.is_empty());
@@ -713,10 +698,7 @@ mod tests {
 
         let result = MySqlEngine::validate_connection(&config).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message()
-            .contains("Expected MySQL engine"));
+        assert!(result.unwrap_err().message().contains("Expected MySQL engine"));
     }
 
     #[tokio::test]
@@ -733,10 +715,7 @@ mod tests {
 
         let result = MySqlEngine::validate_connection(&config).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message()
-            .contains("MySQL requires 'host' parameter"));
+        assert!(result.unwrap_err().message().contains("MySQL requires 'host' parameter"));
     }
 
     // Additional integration tests would follow the pattern from postgres/mod.rs

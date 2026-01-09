@@ -13,16 +13,14 @@
 
 #![cfg(feature = "sqlite")]
 
-use plenum::{
-    Capabilities, ConnectionConfig, DatabaseEngine,
-};
+use plenum::{Capabilities, ConnectionConfig, DatabaseEngine};
 
-#[cfg(feature = "sqlite")]
-use plenum::engine::sqlite::SqliteEngine;
-#[cfg(feature = "postgres")]
-use plenum::engine::postgres::PostgresEngine;
 #[cfg(feature = "mysql")]
 use plenum::engine::mysql::MySqlEngine;
+#[cfg(feature = "postgres")]
+use plenum::engine::postgres::PostgresEngine;
+#[cfg(feature = "sqlite")]
+use plenum::engine::sqlite::SqliteEngine;
 
 // ============================================================================
 // Test Helpers
@@ -31,10 +29,7 @@ use plenum::engine::mysql::MySqlEngine;
 /// Create a test SQLite database with sample data
 fn create_test_sqlite_db() -> std::path::PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let temp_file = std::env::temp_dir().join(format!("test_integration_{}.db", timestamp));
     let _ = std::fs::remove_file(&temp_file); // Clean up if exists
 
@@ -55,10 +50,16 @@ fn create_test_sqlite_db() -> std::path::PathBuf {
         .expect("Failed to create table");
 
         // Insert sample data
-        conn.execute("INSERT INTO users (name, email, age) VALUES ('Alice', 'alice@example.com', 30)", [])
-            .expect("Failed to insert");
-        conn.execute("INSERT INTO users (name, email, age) VALUES ('Bob', 'bob@example.com', 25)", [])
-            .expect("Failed to insert");
+        conn.execute(
+            "INSERT INTO users (name, email, age) VALUES ('Alice', 'alice@example.com', 30)",
+            [],
+        )
+        .expect("Failed to insert");
+        conn.execute(
+            "INSERT INTO users (name, email, age) VALUES ('Bob', 'bob@example.com', 25)",
+            [],
+        )
+        .expect("Failed to insert");
         conn.execute("INSERT INTO users (name, email, age) VALUES ('Charlie', NULL, 35)", [])
             .expect("Failed to insert");
     }
@@ -83,7 +84,8 @@ fn test_cross_engine_select_query_structure() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
-    let result = SqliteEngine::execute(&config, "SELECT name, email FROM users WHERE id = 1", &caps);
+    let result =
+        SqliteEngine::execute(&config, "SELECT name, email FROM users WHERE id = 1", &caps);
     assert!(result.is_ok(), "SQLite SELECT query should succeed");
 
     let query_result = result.unwrap();
@@ -164,11 +166,8 @@ fn test_cross_engine_capability_violation_ddl() {
     let caps = Capabilities::with_write(); // Has write but NOT ddl
 
     // Try to CREATE TABLE without DDL capability
-    let result = SqliteEngine::execute(
-        &config,
-        "CREATE TABLE test (id INTEGER PRIMARY KEY)",
-        &caps,
-    );
+    let result =
+        SqliteEngine::execute(&config, "CREATE TABLE test (id INTEGER PRIMARY KEY)", &caps);
 
     assert!(result.is_err(), "Should reject DDL without --allow-ddl capability");
     let err = result.unwrap_err();
@@ -188,14 +187,22 @@ fn test_cross_engine_null_handling() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
-    let result = SqliteEngine::execute(&config, "SELECT name, email FROM users WHERE name = 'Charlie'", &caps);
+    let result = SqliteEngine::execute(
+        &config,
+        "SELECT name, email FROM users WHERE name = 'Charlie'",
+        &caps,
+    );
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
     assert_eq!(query_result.rows.len(), 1);
 
     let row = &query_result.rows[0];
-    assert_eq!(row.get("email").unwrap(), &serde_json::Value::Null, "NULL should be represented as JSON null");
+    assert_eq!(
+        row.get("email").unwrap(),
+        &serde_json::Value::Null,
+        "NULL should be represented as JSON null"
+    );
 
     cleanup_sqlite_db(&temp_file);
 }
@@ -206,12 +213,8 @@ fn test_cross_engine_max_rows_enforcement() {
     // Test that max_rows is enforced uniformly across engines
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities {
-        allow_write: false,
-        allow_ddl: false,
-        max_rows: Some(2),
-        timeout_ms: None,
-    };
+    let caps =
+        Capabilities { allow_write: false, allow_ddl: false, max_rows: Some(2), timeout_ms: None };
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id", &caps);
     assert!(result.is_ok());
@@ -274,10 +277,12 @@ fn test_cross_engine_schema_introspection_structure() {
     // This is SQLite-specific behavior. The important check is that the primary_key field
     // correctly identifies this column.
 
-    let name_col = table.columns.iter().find(|c| c.name == "name").expect("Should have name column");
+    let name_col =
+        table.columns.iter().find(|c| c.name == "name").expect("Should have name column");
     assert!(!name_col.nullable, "NOT NULL column should report as not nullable");
 
-    let email_col = table.columns.iter().find(|c| c.name == "email").expect("Should have email column");
+    let email_col =
+        table.columns.iter().find(|c| c.name == "email").expect("Should have email column");
     assert!(email_col.nullable, "Nullable column should report as nullable");
 
     cleanup_sqlite_db(&temp_file);
@@ -324,8 +329,11 @@ fn test_cross_engine_malformed_sql_error() {
     let err = result.unwrap_err();
     let error_msg = err.message();
     assert!(
-        error_msg.contains("column") || error_msg.contains("nonexistent") || error_msg.contains("no such column"),
-        "Error message should mention SQL problem. Got: {}", error_msg
+        error_msg.contains("column")
+            || error_msg.contains("nonexistent")
+            || error_msg.contains("no such column"),
+        "Error message should mention SQL problem. Got: {}",
+        error_msg
     );
 
     cleanup_sqlite_db(&temp_file);
@@ -361,10 +369,7 @@ fn test_cross_engine_connection_failure() {
     assert!(result.is_err(), "Invalid path should fail connection");
 
     let err = result.unwrap_err();
-    assert!(
-        err.error_code() == "CONNECTION_FAILED",
-        "Should be a connection failure error"
-    );
+    assert!(err.error_code() == "CONNECTION_FAILED", "Should be a connection failure error");
 }
 
 // ============================================================================

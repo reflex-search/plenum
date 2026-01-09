@@ -46,15 +46,14 @@ impl DatabaseEngine for SqliteEngine {
             .ok_or_else(|| PlenumError::invalid_input("SQLite requires 'file' parameter"))?;
 
         // Open connection (read-only for validation)
-        let path_str = file_path
-            .to_str()
-            .ok_or_else(|| PlenumError::invalid_input("SQLite file path contains invalid UTF-8 characters"))?;
+        let path_str = file_path.to_str().ok_or_else(|| {
+            PlenumError::invalid_input("SQLite file path contains invalid UTF-8 characters")
+        })?;
         let conn = open_connection(path_str, true)?;
 
         // Get SQLite version
-        let version: String = conn
-            .query_row("SELECT sqlite_version()", [], |row| row.get(0))
-            .map_err(|e| {
+        let version: String =
+            conn.query_row("SELECT sqlite_version()", [], |row| row.get(0)).map_err(|e| {
                 PlenumError::connection_failed(format!("Failed to query SQLite version: {}", e))
             })?;
 
@@ -73,7 +72,10 @@ impl DatabaseEngine for SqliteEngine {
         })
     }
 
-    async fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo> {
+    async fn introspect(
+        config: &ConnectionConfig,
+        schema_filter: Option<&str>,
+    ) -> Result<SchemaInfo> {
         // Validate config is for SQLite
         if config.engine != DatabaseType::SQLite {
             return Err(PlenumError::invalid_input(format!(
@@ -89,9 +91,9 @@ impl DatabaseEngine for SqliteEngine {
             .ok_or_else(|| PlenumError::invalid_input("SQLite requires 'file' parameter"))?;
 
         // Open connection (read-only)
-        let path_str = file_path
-            .to_str()
-            .ok_or_else(|| PlenumError::invalid_input("SQLite file path contains invalid UTF-8 characters"))?;
+        let path_str = file_path.to_str().ok_or_else(|| {
+            PlenumError::invalid_input("SQLite file path contains invalid UTF-8 characters")
+        })?;
         let conn = open_connection(path_str, true)?;
 
         // Note: SQLite doesn't have explicit schemas in the same way as PostgreSQL/MySQL
@@ -131,7 +133,11 @@ impl DatabaseEngine for SqliteEngine {
         Ok(SchemaInfo { tables })
     }
 
-    async fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult> {
+    async fn execute(
+        config: &ConnectionConfig,
+        query: &str,
+        caps: &Capabilities,
+    ) -> Result<QueryResult> {
         // Validate config is for SQLite
         if config.engine != DatabaseType::SQLite {
             return Err(PlenumError::invalid_input(format!(
@@ -150,17 +156,16 @@ impl DatabaseEngine for SqliteEngine {
             .ok_or_else(|| PlenumError::invalid_input("SQLite requires 'file' parameter"))?;
 
         // Open connection (read-write for queries)
-        let path_str = file_path
-            .to_str()
-            .ok_or_else(|| PlenumError::invalid_input("SQLite file path contains invalid UTF-8 characters"))?;
+        let path_str = file_path.to_str().ok_or_else(|| {
+            PlenumError::invalid_input("SQLite file path contains invalid UTF-8 characters")
+        })?;
         let mut conn = open_connection(path_str, false)?;
 
         // Set busy timeout if specified
         if let Some(timeout_ms) = caps.timeout_ms {
-            conn.busy_timeout(std::time::Duration::from_millis(timeout_ms))
-                .map_err(|e| {
-                    PlenumError::engine_error("sqlite", format!("Failed to set timeout: {}", e))
-                })?;
+            conn.busy_timeout(std::time::Duration::from_millis(timeout_ms)).map_err(|e| {
+                PlenumError::engine_error("sqlite", format!("Failed to set timeout: {}", e))
+            })?;
         }
 
         // Execute query
@@ -188,14 +193,12 @@ fn open_connection(path: &str, read_only: bool) -> Result<Connection> {
 /// Introspect a single table and return TableInfo
 fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
     // Get column information via PRAGMA table_info
-    let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info({})", table_name))
-        .map_err(|e| {
-            PlenumError::engine_error(
-                "sqlite",
-                format!("Failed to prepare table_info for {}: {}", table_name, e),
-            )
-        })?;
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table_name)).map_err(|e| {
+        PlenumError::engine_error(
+            "sqlite",
+            format!("Failed to prepare table_info for {}: {}", table_name, e),
+        )
+    })?;
 
     let columns: Vec<ColumnInfo> = stmt
         .query_map([], |row| {
@@ -221,14 +224,12 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
         })?;
 
     // Detect primary key columns
-    let mut pk_stmt = conn
-        .prepare(&format!("PRAGMA table_info({})", table_name))
-        .map_err(|e| {
-            PlenumError::engine_error(
-                "sqlite",
-                format!("Failed to prepare pk query for {}: {}", table_name, e),
-            )
-        })?;
+    let mut pk_stmt = conn.prepare(&format!("PRAGMA table_info({})", table_name)).map_err(|e| {
+        PlenumError::engine_error(
+            "sqlite",
+            format!("Failed to prepare pk query for {}: {}", table_name, e),
+        )
+    })?;
 
     let primary_key_columns: Vec<String> = pk_stmt
         .query_map([], |row| {
@@ -247,16 +248,11 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
         .map(|(_, name)| name)
         .collect();
 
-    let primary_key = if primary_key_columns.is_empty() {
-        None
-    } else {
-        Some(primary_key_columns)
-    };
+    let primary_key = if primary_key_columns.is_empty() { None } else { Some(primary_key_columns) };
 
     // Get foreign keys via PRAGMA foreign_key_list
-    let mut fk_stmt = conn
-        .prepare(&format!("PRAGMA foreign_key_list({})", table_name))
-        .map_err(|e| {
+    let mut fk_stmt =
+        conn.prepare(&format!("PRAGMA foreign_key_list({})", table_name)).map_err(|e| {
             PlenumError::engine_error(
                 "sqlite",
                 format!("Failed to prepare foreign_key_list for {}: {}", table_name, e),
@@ -282,9 +278,7 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
         })?
         .for_each(|r| {
             if let Ok((id, ref_table, from_col, to_col)) = r {
-                fk_map
-                    .entry(id)
-                    .or_insert_with(|| (ref_table.clone(), Vec::new(), Vec::new()));
+                fk_map.entry(id).or_insert_with(|| (ref_table.clone(), Vec::new(), Vec::new()));
                 fk_map.get_mut(&id).unwrap().1.push(from_col);
                 fk_map.get_mut(&id).unwrap().2.push(to_col);
             }
@@ -301,9 +295,8 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
         .collect();
 
     // Get indexes via PRAGMA index_list
-    let mut idx_stmt = conn
-        .prepare(&format!("PRAGMA index_list({})", table_name))
-        .map_err(|e| {
+    let mut idx_stmt =
+        conn.prepare(&format!("PRAGMA index_list({})", table_name)).map_err(|e| {
             PlenumError::engine_error(
                 "sqlite",
                 format!("Failed to prepare index_list for {}: {}", table_name, e),
@@ -333,9 +326,8 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
         }
 
         // Get columns in this index via PRAGMA index_info
-        let mut idx_info_stmt = conn
-            .prepare(&format!("PRAGMA index_info({})", index_name))
-            .map_err(|e| {
+        let mut idx_info_stmt =
+            conn.prepare(&format!("PRAGMA index_info({})", index_name)).map_err(|e| {
                 PlenumError::engine_error(
                     "sqlite",
                     format!("Failed to prepare index_info for {}: {}", index_name, e),
@@ -353,11 +345,7 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
             .filter_map(|r| r.ok())
             .collect();
 
-        indexes.push(IndexInfo {
-            name: index_name,
-            columns: index_columns,
-            unique,
-        });
+        indexes.push(IndexInfo { name: index_name, columns: index_columns, unique });
     }
 
     Ok(TableInfo {
@@ -373,16 +361,12 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
 /// Execute query and return QueryResult
 fn execute_query(conn: &mut Connection, query: &str, caps: &Capabilities) -> Result<QueryResult> {
     // Prepare statement
-    let mut stmt = conn.prepare(query).map_err(|e| {
-        PlenumError::query_failed(format!("Failed to prepare query: {}", e))
-    })?;
+    let mut stmt = conn
+        .prepare(query)
+        .map_err(|e| PlenumError::query_failed(format!("Failed to prepare query: {}", e)))?;
 
     // Get column names
-    let column_names: Vec<String> = stmt
-        .column_names()
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
 
     // Execute query and collect rows
     let mut rows_data = Vec::new();
@@ -391,18 +375,15 @@ fn execute_query(conn: &mut Connection, query: &str, caps: &Capabilities) -> Res
     // Check if this is a SELECT query (has columns)
     if !column_names.is_empty() {
         // SELECT query - collect result set
-        let rows = stmt.query([]).map_err(|e| {
-            PlenumError::query_failed(format!("Failed to execute query: {}", e))
-        })?;
+        let rows = stmt
+            .query([])
+            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {}", e)))?;
 
-        let mapped_rows = rows
-            .mapped(|row| row_to_json(&column_names, row))
-            .collect::<Vec<_>>();
+        let mapped_rows = rows.mapped(|row| row_to_json(&column_names, row)).collect::<Vec<_>>();
 
         for row_result in mapped_rows {
-            let row = row_result.map_err(|e| {
-                PlenumError::query_failed(format!("Failed to fetch row: {}", e))
-            })?;
+            let row = row_result
+                .map_err(|e| PlenumError::query_failed(format!("Failed to fetch row: {}", e)))?;
             rows_data.push(row);
 
             // Enforce max_rows limit
@@ -414,19 +395,14 @@ fn execute_query(conn: &mut Connection, query: &str, caps: &Capabilities) -> Res
         }
     } else {
         // Non-SELECT query (INSERT, UPDATE, DELETE, DDL)
-        stmt.execute([]).map_err(|e| {
-            PlenumError::query_failed(format!("Failed to execute query: {}", e))
-        })?;
+        stmt.execute([])
+            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {}", e)))?;
 
         // Get rows affected (only for DML statements)
         rows_affected = Some(conn.changes());
     }
 
-    Ok(QueryResult {
-        columns: column_names,
-        rows: rows_data,
-        rows_affected,
-    })
+    Ok(QueryResult { columns: column_names, rows: rows_data, rows_affected })
 }
 
 /// Convert a SQLite row to a JSON-safe HashMap
@@ -460,12 +436,13 @@ fn sqlite_value_to_json(
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null), // Handle NaN/Infinity as null
         ValueRef::Text(s) => {
-            let text = std::str::from_utf8(s)
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+            let text = std::str::from_utf8(s).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
                     idx,
                     rusqlite::types::Type::Text,
                     Box::new(e),
-                ))?;
+                )
+            })?;
             serde_json::Value::String(text.to_string())
         }
         ValueRef::Blob(b) => {
@@ -502,10 +479,7 @@ mod tests {
 
         let result = SqliteEngine::validate_connection(&config).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message()
-            .contains("Expected SQLite engine"));
+        assert!(result.unwrap_err().message().contains("Expected SQLite engine"));
     }
 
     #[tokio::test]
@@ -522,10 +496,7 @@ mod tests {
 
         let result = SqliteEngine::validate_connection(&config).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message()
-            .contains("SQLite requires 'file' parameter"));
+        assert!(result.unwrap_err().message().contains("SQLite requires 'file' parameter"));
     }
 
     #[tokio::test]
@@ -576,11 +547,8 @@ mod tests {
 
         {
             let conn = Connection::open(&temp_file).expect("Failed to create temp database");
-            conn.execute(
-                "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
-                [],
-            )
-            .expect("Failed to create table");
+            conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", [])
+                .expect("Failed to create table");
             conn.execute("INSERT INTO users (name) VALUES ('Alice')", [])
                 .expect("Failed to insert");
         }
@@ -606,22 +574,17 @@ mod tests {
 
         {
             let conn = Connection::open(&temp_file).expect("Failed to create temp database");
-            conn.execute(
-                "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
-                [],
-            )
-            .expect("Failed to create table");
+            conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", [])
+                .expect("Failed to create table");
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::read_only();
-        let result = SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &caps).await;
+        let result =
+            SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &caps).await;
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message()
-            .contains("Write operations require --allow-write"));
+        assert!(result.unwrap_err().message().contains("Write operations require --allow-write"));
 
         // Clean up
         let _ = std::fs::remove_file(&temp_file);
@@ -634,16 +597,14 @@ mod tests {
 
         {
             let conn = Connection::open(&temp_file).expect("Failed to create temp database");
-            conn.execute(
-                "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
-                [],
-            )
-            .expect("Failed to create table");
+            conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", [])
+                .expect("Failed to create table");
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::with_write();
-        let result = SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &caps).await;
+        let result =
+            SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &caps).await;
 
         assert!(result.is_ok());
         let query_result = result.unwrap();
@@ -664,17 +625,12 @@ mod tests {
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::with_write();
-        let result = SqliteEngine::execute(
-            &config,
-            "CREATE TABLE users (id INTEGER PRIMARY KEY)",
-            &caps,
-        ).await;
+        let result =
+            SqliteEngine::execute(&config, "CREATE TABLE users (id INTEGER PRIMARY KEY)", &caps)
+                .await;
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message()
-            .contains("DDL operations require --allow-ddl"));
+        assert!(result.unwrap_err().message().contains("DDL operations require --allow-ddl"));
 
         // Clean up
         let _ = std::fs::remove_file(&temp_file);
@@ -691,11 +647,9 @@ mod tests {
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::with_ddl();
-        let result = SqliteEngine::execute(
-            &config,
-            "CREATE TABLE users (id INTEGER PRIMARY KEY)",
-            &caps,
-        ).await;
+        let result =
+            SqliteEngine::execute(&config, "CREATE TABLE users (id INTEGER PRIMARY KEY)", &caps)
+                .await;
 
         assert!(result.is_ok());
 
@@ -710,26 +664,17 @@ mod tests {
 
         {
             let conn = Connection::open(&temp_file).expect("Failed to create temp database");
-            conn.execute(
-                "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
-                [],
-            )
-            .expect("Failed to create table");
+            conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", [])
+                .expect("Failed to create table");
 
             for i in 1..=10 {
-                conn.execute(
-                    "INSERT INTO users (name) VALUES (?)",
-                    [format!("User {}", i)],
-                )
-                .expect("Failed to insert");
+                conn.execute("INSERT INTO users (name) VALUES (?)", [format!("User {}", i)])
+                    .expect("Failed to insert");
             }
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let caps = Capabilities {
-            max_rows: Some(5),
-            ..Capabilities::read_only()
-        };
+        let caps = Capabilities { max_rows: Some(5), ..Capabilities::read_only() };
         let result = SqliteEngine::execute(&config, "SELECT * FROM users", &caps).await;
 
         assert!(result.is_ok());
@@ -804,13 +749,9 @@ mod tests {
 
         {
             let conn = Connection::open(&temp_file).expect("Failed to create temp database");
-            conn.execute("PRAGMA foreign_keys = ON", [])
-                .expect("Failed to enable FKs");
-            conn.execute(
-                "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
-                [],
-            )
-            .expect("Failed to create users table");
+            conn.execute("PRAGMA foreign_keys = ON", []).expect("Failed to enable FKs");
+            conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", [])
+                .expect("Failed to create users table");
             conn.execute(
                 "CREATE TABLE posts (
                     id INTEGER PRIMARY KEY,
@@ -827,11 +768,8 @@ mod tests {
         assert!(result.is_ok());
 
         let schema = result.unwrap();
-        let posts_table = schema
-            .tables
-            .iter()
-            .find(|t| t.name == "posts")
-            .expect("posts table not found");
+        let posts_table =
+            schema.tables.iter().find(|t| t.name == "posts").expect("posts table not found");
 
         assert!(posts_table.foreign_keys.len() > 0);
         let fk = &posts_table.foreign_keys[0];
@@ -849,18 +787,12 @@ mod tests {
 
         {
             let conn = Connection::open(&temp_file).expect("Failed to create temp database");
-            conn.execute(
-                "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)",
-                [],
-            )
-            .expect("Failed to create table");
+            conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)", [])
+                .expect("Failed to create table");
             conn.execute("CREATE INDEX idx_email ON users(email)", [])
                 .expect("Failed to create index");
-            conn.execute(
-                "CREATE UNIQUE INDEX idx_email_unique ON users(email)",
-                [],
-            )
-            .expect("Failed to create unique index");
+            conn.execute("CREATE UNIQUE INDEX idx_email_unique ON users(email)", [])
+                .expect("Failed to create unique index");
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
@@ -868,11 +800,8 @@ mod tests {
         assert!(result.is_ok());
 
         let schema = result.unwrap();
-        let users_table = schema
-            .tables
-            .iter()
-            .find(|t| t.name == "users")
-            .expect("users table not found");
+        let users_table =
+            schema.tables.iter().find(|t| t.name == "users").expect("users table not found");
 
         // Should have at least 2 indexes (excluding auto-created primary key index)
         assert!(users_table.indexes.len() >= 2);

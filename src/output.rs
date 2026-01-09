@@ -36,14 +36,13 @@ pub struct SuccessEnvelope<T> {
 
 impl<T> SuccessEnvelope<T> {
     /// Create a new success envelope
-    pub fn new(engine: impl Into<String>, command: impl Into<String>, data: T, meta: Metadata) -> Self {
-        Self {
-            ok: true,
-            engine: engine.into(),
-            command: command.into(),
-            data,
-            meta,
-        }
+    pub fn new(
+        engine: impl Into<String>,
+        command: impl Into<String>,
+        data: T,
+        meta: Metadata,
+    ) -> Self {
+        Self { ok: true, engine: engine.into(), command: command.into(), data, meta }
     }
 }
 
@@ -65,17 +64,8 @@ pub struct ErrorEnvelope {
 
 impl ErrorEnvelope {
     /// Create a new error envelope
-    pub fn new(
-        engine: impl Into<String>,
-        command: impl Into<String>,
-        error: ErrorInfo,
-    ) -> Self {
-        Self {
-            ok: false,
-            engine: engine.into(),
-            command: command.into(),
-            error,
-        }
+    pub fn new(engine: impl Into<String>, command: impl Into<String>, error: ErrorInfo) -> Self {
+        Self { ok: false, engine: engine.into(), command: command.into(), error }
     }
 
     /// Create error envelope from PlenumError
@@ -87,10 +77,7 @@ impl ErrorEnvelope {
         Self::new(
             engine,
             command,
-            ErrorInfo {
-                code: err.error_code().to_string(),
-                message: err.message(),
-            },
+            ErrorInfo { code: err.error_code().to_string(), message: err.message() },
         )
     }
 }
@@ -108,10 +95,7 @@ pub struct ErrorInfo {
 impl ErrorInfo {
     /// Create a new error info
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            code: code.into(),
-            message: message.into(),
-        }
+        Self { code: code.into(), message: message.into() }
     }
 }
 
@@ -129,18 +113,12 @@ pub struct Metadata {
 impl Metadata {
     /// Create new metadata with just execution time
     pub fn new(execution_ms: u64) -> Self {
-        Self {
-            execution_ms,
-            rows_returned: None,
-        }
+        Self { execution_ms, rows_returned: None }
     }
 
     /// Create new metadata with execution time and row count
     pub fn with_rows(execution_ms: u64, rows_returned: usize) -> Self {
-        Self {
-            execution_ms,
-            rows_returned: Some(rows_returned),
-        }
+        Self { execution_ms, rows_returned: Some(rows_returned) }
     }
 }
 
@@ -226,11 +204,8 @@ mod tests {
 
     #[test]
     fn test_error_envelope_ok_always_false() {
-        let envelope = ErrorEnvelope::new(
-            "mysql",
-            "query",
-            ErrorInfo::new("QUERY_FAILED", "Syntax error"),
-        );
+        let envelope =
+            ErrorEnvelope::new("mysql", "query", ErrorInfo::new("QUERY_FAILED", "Syntax error"));
         assert!(!envelope.ok);
     }
 }

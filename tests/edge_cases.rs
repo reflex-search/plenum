@@ -27,10 +27,7 @@ use std::path::PathBuf;
 
 fn create_test_db() -> PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let temp_file = std::env::temp_dir().join(format!("test_edge_{}.db", timestamp));
     let _ = std::fs::remove_file(&temp_file);
     temp_file
@@ -53,19 +50,13 @@ fn test_large_result_set_with_max_rows() {
 
     {
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE large_table (id INTEGER PRIMARY KEY, value TEXT)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE large_table (id INTEGER PRIMARY KEY, value TEXT)", [])
+            .expect("Failed to create table");
 
         // Insert 1000 rows
         for i in 1..=1000 {
-            conn.execute(
-                "INSERT INTO large_table (value) VALUES (?)",
-                [format!("Value {}", i)],
-            )
-            .expect("Failed to insert");
+            conn.execute("INSERT INTO large_table (value) VALUES (?)", [format!("Value {}", i)])
+                .expect("Failed to insert");
         }
     }
 
@@ -99,11 +90,8 @@ fn test_very_large_result_set_without_limit() {
 
     {
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE large_table (id INTEGER PRIMARY KEY, value INTEGER)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE large_table (id INTEGER PRIMARY KEY, value INTEGER)", [])
+            .expect("Failed to create table");
 
         // Insert 5000 rows
         for i in 1..=5000 {
@@ -137,11 +125,8 @@ fn test_unicode_characters() {
 
     {
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE unicode_test (id INTEGER PRIMARY KEY, text TEXT)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE unicode_test (id INTEGER PRIMARY KEY, text TEXT)", [])
+            .expect("Failed to create table");
 
         // Insert various Unicode characters
         conn.execute(
@@ -150,11 +135,8 @@ fn test_unicode_characters() {
         )
         .expect("Failed to insert");
 
-        conn.execute(
-            "INSERT INTO unicode_test (text) VALUES (?)",
-            ["Emoji test: 🚀🔥💯✨🎉"],
-        )
-        .expect("Failed to insert");
+        conn.execute("INSERT INTO unicode_test (text) VALUES (?)", ["Emoji test: 🚀🔥💯✨🎉"])
+            .expect("Failed to insert");
 
         conn.execute(
             "INSERT INTO unicode_test (text) VALUES (?)",
@@ -191,11 +173,8 @@ fn test_special_sql_characters() {
 
     {
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE special_chars (id INTEGER PRIMARY KEY, text TEXT)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE special_chars (id INTEGER PRIMARY KEY, text TEXT)", [])
+            .expect("Failed to create table");
 
         // Test strings with SQL-like characters (should be stored as-is)
         conn.execute(
@@ -246,19 +225,13 @@ fn test_binary_blob_data() {
 
     {
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE blob_test (id INTEGER PRIMARY KEY, data BLOB)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE blob_test (id INTEGER PRIMARY KEY, data BLOB)", [])
+            .expect("Failed to create table");
 
         // Insert binary data
         let binary_data: Vec<u8> = vec![0, 1, 2, 255, 128, 64, 32, 16];
-        conn.execute(
-            "INSERT INTO blob_test (data) VALUES (?)",
-            [&binary_data],
-        )
-        .expect("Failed to insert");
+        conn.execute("INSERT INTO blob_test (data) VALUES (?)", [&binary_data])
+            .expect("Failed to insert");
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
@@ -341,11 +314,8 @@ fn test_empty_string_vs_null() {
 
     {
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE null_test (id INTEGER PRIMARY KEY, value TEXT)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE null_test (id INTEGER PRIMARY KEY, value TEXT)", [])
+            .expect("Failed to create table");
 
         conn.execute("INSERT INTO null_test (value) VALUES (?)", [""])
             .expect("Failed to insert empty string");
@@ -387,11 +357,8 @@ fn test_very_long_query() {
 
     {
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)", [])
+            .expect("Failed to create table");
 
         for i in 1..=10 {
             conn.execute("INSERT INTO test (value) VALUES (?)", [format!("Value {}", i)])
@@ -431,18 +398,12 @@ fn test_sql_injection_patterns_in_data() {
 
     {
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE injection_test (id INTEGER PRIMARY KEY, username TEXT)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE injection_test (id INTEGER PRIMARY KEY, username TEXT)", [])
+            .expect("Failed to create table");
 
         // Store SQL injection-like patterns as data (agent's responsibility to sanitize)
-        conn.execute(
-            "INSERT INTO injection_test (username) VALUES (?)",
-            ["admin' OR '1'='1"],
-        )
-        .expect("Failed to insert");
+        conn.execute("INSERT INTO injection_test (username) VALUES (?)", ["admin' OR '1'='1"])
+            .expect("Failed to insert");
 
         conn.execute(
             "INSERT INTO injection_test (username) VALUES (?)",
@@ -462,10 +423,7 @@ fn test_sql_injection_patterns_in_data() {
 
     // Verify SQL-like patterns are stored as-is (not sanitized by Plenum)
     let row0 = &query_result.rows[0];
-    assert_eq!(
-        row0.get("username").unwrap().as_str().unwrap(),
-        "admin' OR '1'='1"
-    );
+    assert_eq!(row0.get("username").unwrap().as_str().unwrap(), "admin' OR '1'='1");
 
     cleanup_db(&temp_file);
 }
@@ -483,11 +441,8 @@ fn test_timeout_capability() {
 
     {
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE timeout_test (id INTEGER PRIMARY KEY, value TEXT)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE timeout_test (id INTEGER PRIMARY KEY, value TEXT)", [])
+            .expect("Failed to create table");
         conn.execute("INSERT INTO timeout_test (value) VALUES ('test')", [])
             .expect("Failed to insert");
     }
@@ -520,13 +475,9 @@ fn test_query_with_excessive_whitespace() {
 
     {
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)",
-            [],
-        )
-        .expect("Failed to create table");
-        conn.execute("INSERT INTO test (value) VALUES ('data')", [])
-            .expect("Failed to insert");
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)", [])
+            .expect("Failed to create table");
+        conn.execute("INSERT INTO test (value) VALUES ('data')", []).expect("Failed to insert");
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
@@ -554,11 +505,8 @@ fn test_case_sensitivity_in_table_names() {
 
     {
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE TestTable (id INTEGER PRIMARY KEY, Value TEXT)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE TestTable (id INTEGER PRIMARY KEY, Value TEXT)", [])
+            .expect("Failed to create table");
         conn.execute("INSERT INTO TestTable (Value) VALUES ('data')", [])
             .expect("Failed to insert");
     }

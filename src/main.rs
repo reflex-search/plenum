@@ -14,17 +14,17 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use plenum::{
-    Capabilities, ConfigLocation, ConnectionConfig, DatabaseEngine, DatabaseType, ErrorEnvelope, Metadata,
-    PlenumError, Result, SuccessEnvelope,
+    Capabilities, ConfigLocation, ConnectionConfig, DatabaseEngine, DatabaseType, ErrorEnvelope,
+    Metadata, PlenumError, Result, SuccessEnvelope,
 };
 
 // Import database engines
-#[cfg(feature = "sqlite")]
-use plenum::engine::sqlite::SqliteEngine;
-#[cfg(feature = "postgres")]
-use plenum::engine::postgres::PostgresEngine;
 #[cfg(feature = "mysql")]
 use plenum::engine::mysql::MySqlEngine;
+#[cfg(feature = "postgres")]
+use plenum::engine::postgres::PostgresEngine;
+#[cfg(feature = "sqlite")]
+use plenum::engine::sqlite::SqliteEngine;
 
 /// Plenum - Agent-First Database Control CLI
 #[derive(Parser)]
@@ -194,10 +194,7 @@ async fn main() {
         let error_envelope = ErrorEnvelope::new(
             "",
             "unknown",
-            plenum::ErrorInfo::new(
-                "INTERNAL_ERROR",
-                format!("Internal error: {}", panic_info),
-            ),
+            plenum::ErrorInfo::new("INTERNAL_ERROR", format!("Internal error: {}", panic_info)),
         );
         output_error(&error_envelope);
     }));
@@ -241,8 +238,10 @@ async fn main() {
             file,
             schema,
         }) => {
-            handle_introspect(connection, engine, host, port, user, password, database, file, schema)
-                .await
+            handle_introspect(
+                connection, engine, host, port, user, password, database, file, schema,
+            )
+            .await
         }
         Some(Commands::Query {
             connection,
@@ -316,7 +315,6 @@ async fn handle_connect(
     file: Option<PathBuf>,
     save: Option<String>,
 ) -> std::result::Result<(), i32> {
-
     // Start timing
     let start = Instant::now();
 
@@ -423,14 +421,7 @@ async fn interactive_connect_picker() -> Result<(String, ConnectionConfig, Confi
                         )
                     }
                     DatabaseType::SQLite => {
-                        format!(
-                            "{}",
-                            config
-                                .file
-                                .as_ref()
-                                .and_then(|f| f.to_str())
-                                .unwrap_or("?")
-                        )
+                        format!("{}", config.file.as_ref().and_then(|f| f.to_str()).unwrap_or("?"))
                     }
                 }
             )
@@ -487,11 +478,7 @@ async fn interactive_connect_wizard() -> Result<(String, ConnectionConfig, Confi
 
             let port: u16 = Input::new()
                 .with_prompt("Port")
-                .default(if engine == DatabaseType::Postgres {
-                    5432
-                } else {
-                    3306
-                })
+                .default(if engine == DatabaseType::Postgres { 5432 } else { 3306 })
                 .interact_text()
                 .map_err(|e| PlenumError::invalid_input(format!("Input failed: {}", e)))?;
 
@@ -561,16 +548,21 @@ async fn non_interactive_connect(
     // Build config based on engine
     let config = match engine_type {
         DatabaseType::Postgres | DatabaseType::MySQL => {
-            let host =
-                host.ok_or_else(|| PlenumError::invalid_input("--host is required for postgres/mysql"))?;
-            let port =
-                port.ok_or_else(|| PlenumError::invalid_input("--port is required for postgres/mysql"))?;
-            let user =
-                user.ok_or_else(|| PlenumError::invalid_input("--user is required for postgres/mysql"))?;
-            let password = password
-                .ok_or_else(|| PlenumError::invalid_input("--password is required for postgres/mysql"))?;
-            let database = database
-                .ok_or_else(|| PlenumError::invalid_input("--database is required for postgres/mysql"))?;
+            let host = host.ok_or_else(|| {
+                PlenumError::invalid_input("--host is required for postgres/mysql")
+            })?;
+            let port = port.ok_or_else(|| {
+                PlenumError::invalid_input("--port is required for postgres/mysql")
+            })?;
+            let user = user.ok_or_else(|| {
+                PlenumError::invalid_input("--user is required for postgres/mysql")
+            })?;
+            let password = password.ok_or_else(|| {
+                PlenumError::invalid_input("--password is required for postgres/mysql")
+            })?;
+            let database = database.ok_or_else(|| {
+                PlenumError::invalid_input("--database is required for postgres/mysql")
+            })?;
 
             if engine_type == DatabaseType::Postgres {
                 ConnectionConfig::postgres(host, port, user, password, database)
@@ -579,7 +571,8 @@ async fn non_interactive_connect(
             }
         }
         DatabaseType::SQLite => {
-            let file = file.ok_or_else(|| PlenumError::invalid_input("--file is required for sqlite"))?;
+            let file =
+                file.ok_or_else(|| PlenumError::invalid_input("--file is required for sqlite"))?;
             ConnectionConfig::sqlite(file)
         }
     };
@@ -615,11 +608,7 @@ fn prompt_save_location() -> Result<ConfigLocation> {
         .interact()
         .map_err(|e| PlenumError::invalid_input(format!("Selection failed: {}", e)))?;
 
-    Ok(if selection == 0 {
-        ConfigLocation::Local
-    } else {
-        ConfigLocation::Global
-    })
+    Ok(if selection == 0 { ConfigLocation::Local } else { ConfigLocation::Global })
 }
 
 async fn handle_introspect(
@@ -637,16 +626,8 @@ async fn handle_introspect(
     let start = Instant::now();
 
     // Resolve connection config
-    let config_result = build_connection_config(
-        connection,
-        engine,
-        host,
-        port,
-        user,
-        password,
-        database,
-        file,
-    );
+    let config_result =
+        build_connection_config(connection, engine, host, port, user, password, database, file);
 
     let config = match config_result {
         Ok(cfg) => cfg,
@@ -735,7 +716,10 @@ async fn handle_query(
                 let envelope = ErrorEnvelope::new(
                     "",
                     "query",
-                    plenum::ErrorInfo::new("INVALID_INPUT", format!("Could not read SQL file: {}", e)),
+                    plenum::ErrorInfo::new(
+                        "INVALID_INPUT",
+                        format!("Could not read SQL file: {}", e),
+                    ),
                 );
                 output_error(&envelope);
                 return Err(1);
@@ -746,10 +730,7 @@ async fn handle_query(
             let envelope = ErrorEnvelope::new(
                 "",
                 "query",
-                plenum::ErrorInfo::new(
-                    "INVALID_INPUT",
-                    "Cannot specify both --sql and --sql-file",
-                ),
+                plenum::ErrorInfo::new("INVALID_INPUT", "Cannot specify both --sql and --sql-file"),
             );
             output_error(&envelope);
             return Err(1);
@@ -766,7 +747,9 @@ async fn handle_query(
     };
 
     // Resolve connection config
-    let config = match build_connection_config(connection, engine, host, port, user, password, database, file) {
+    let config = match build_connection_config(
+        connection, engine, host, port, user, password, database, file,
+    ) {
         Ok(cfg) => cfg,
         Err(e) => {
             let envelope = ErrorEnvelope::from_error("", "query", &e);
@@ -919,7 +902,7 @@ fn build_connection_config(
         match plenum::resolve_connection(&conn_name) {
             Ok(cfg) => Some(cfg),
             Err(_) if has_explicit_args => None, // Ignore error if explicit args provided as fallback
-            Err(e) => return Err(e),              // Propagate error if no fallback
+            Err(e) => return Err(e),             // Propagate error if no fallback
         }
     } else if !has_explicit_args {
         // No connection name and no explicit args - error
@@ -959,15 +942,22 @@ fn build_connection_config(
     }
 
     // No config found, build from CLI arguments only
-    let engine_type = engine
-        .ok_or_else(|| PlenumError::invalid_input("--engine is required when not using --connection"))?;
+    let engine_type = engine.ok_or_else(|| {
+        PlenumError::invalid_input("--engine is required when not using --connection")
+    })?;
     let engine = parse_engine(&engine_type)?;
 
     match engine {
         DatabaseType::Postgres | DatabaseType::MySQL => {
-            let host = host.ok_or_else(|| PlenumError::invalid_input("--host is required for postgres/mysql"))?;
-            let port = port.ok_or_else(|| PlenumError::invalid_input("--port is required for postgres/mysql"))?;
-            let user = user.ok_or_else(|| PlenumError::invalid_input("--user is required for postgres/mysql"))?;
+            let host = host.ok_or_else(|| {
+                PlenumError::invalid_input("--host is required for postgres/mysql")
+            })?;
+            let port = port.ok_or_else(|| {
+                PlenumError::invalid_input("--port is required for postgres/mysql")
+            })?;
+            let user = user.ok_or_else(|| {
+                PlenumError::invalid_input("--user is required for postgres/mysql")
+            })?;
             let password = password.ok_or_else(|| {
                 PlenumError::invalid_input("--password is required for postgres/mysql")
             })?;
@@ -982,7 +972,8 @@ fn build_connection_config(
             }
         }
         DatabaseType::SQLite => {
-            let file = file.ok_or_else(|| PlenumError::invalid_input("--file is required for sqlite"))?;
+            let file =
+                file.ok_or_else(|| PlenumError::invalid_input("--file is required for sqlite"))?;
             Ok(ConnectionConfig::sqlite(file))
         }
     }
@@ -1008,10 +999,5 @@ fn build_capabilities(
     max_rows: Option<usize>,
     timeout_ms: Option<u64>,
 ) -> Capabilities {
-    Capabilities {
-        allow_write,
-        allow_ddl,
-        max_rows,
-        timeout_ms,
-    }
+    Capabilities { allow_write, allow_ddl, max_rows, timeout_ms }
 }

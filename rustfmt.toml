@@ -1,12 +1,15 @@
 # Rustfmt configuration for Plenum
 # See https://rust-lang.github.io/rustfmt/ for all options
 
+# Stable features only (nightly features removed for Phase 9.1)
 edition = "2021"
 max_width = 100
 use_small_heuristics = "Max"
-imports_granularity = "Crate"
-group_imports = "StdExternalCrate"
-wrap_comments = true
-format_code_in_doc_comments = true
-normalize_comments = true
-normalize_doc_attributes = true
+
+# NOTE: The following features require nightly toolchain and have been removed:
+# - imports_granularity = "Crate"
+# - group_imports = "StdExternalCrate"
+# - wrap_comments = true
+# - format_code_in_doc_comments = true
+# - normalize_comments = true
+# - normalize_doc_attributes = true

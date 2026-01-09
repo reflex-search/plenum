@@ -78,8 +78,9 @@ pub enum ConfigLocation {
 
 /// Get path to local config file (`.plenum/config.json`)
 pub fn local_config_path() -> Result<PathBuf> {
-    let current_dir = std::env::current_dir()
-        .map_err(|e| PlenumError::config_error(format!("Could not determine current directory: {}", e)))?;
+    let current_dir = std::env::current_dir().map_err(|e| {
+        PlenumError::config_error(format!("Could not determine current directory: {}", e))
+    })?;
 
     Ok(current_dir.join(".plenum").join("config.json"))
 }
@@ -112,8 +113,9 @@ pub fn load_registry(path: &Path) -> Result<ConnectionRegistry> {
 pub fn save_registry(path: &Path, registry: &ConnectionRegistry) -> Result<()> {
     // Create parent directory if it doesn't exist
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| PlenumError::config_error(format!("Could not create config directory: {}", e)))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            PlenumError::config_error(format!("Could not create config directory: {}", e))
+        })?;
     }
 
     let contents = serde_json::to_string_pretty(registry)
@@ -201,20 +203,11 @@ pub fn save_connection(
     };
 
     // Load existing registry (or create empty one)
-    let mut registry = if path.exists() {
-        load_registry(&path)?
-    } else {
-        ConnectionRegistry::default()
-    };
+    let mut registry =
+        if path.exists() { load_registry(&path)? } else { ConnectionRegistry::default() };
 
     // Add or update connection
-    registry.connections.insert(
-        name.clone(),
-        StoredConnection {
-            config,
-            password_env: None,
-        },
-    );
+    registry.connections.insert(name.clone(), StoredConnection { config, password_env: None });
 
     // Save registry
     save_registry(&path, &registry)?;
@@ -423,7 +416,6 @@ mod tests {
         assert_eq!(shared_conn.config.engine, DatabaseType::MySQL);
         assert_eq!(shared_conn.config.host.as_deref(), Some("local-host"));
     }
-
 
     #[test]
     fn test_local_connections_separate() {

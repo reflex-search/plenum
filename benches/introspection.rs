@@ -116,11 +116,7 @@ fn bench_sqlite_introspection_complex(c: &mut Criterion) {
 }
 
 #[cfg(feature = "sqlite")]
-criterion_group!(
-    benches,
-    bench_sqlite_introspection_simple,
-    bench_sqlite_introspection_complex
-);
+criterion_group!(benches, bench_sqlite_introspection_simple, bench_sqlite_introspection_complex);
 
 #[cfg(not(feature = "sqlite"))]
 criterion_group!(benches,);
