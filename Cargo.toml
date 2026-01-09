@@ -1,13 +1,13 @@
 [package]
 name = "plenum"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Plenum Contributors"]
 license = "MIT OR Apache-2.0"
 description = "Agent-first database control CLI with least-privilege execution"
-repository = "https://github.com/therecluse26/plenum"
-homepage = "https://github.com/therecluse26/plenum"
-documentation = "https://github.com/therecluse26/plenum"
+repository = "https://github.com/reflex-search/plenum"
+homepage = "https://github.com/reflex-search/plenum"
+documentation = "https://github.com/reflex-search/plenum"
 keywords = ["database", "cli", "mcp", "agent", "sql"]
 categories = ["command-line-utilities", "database"]
 

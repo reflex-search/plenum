@@ -25,7 +25,7 @@ After the first release, configure trusted publishing on crates.io:
 1. Go to your package settings on crates.io
 2. Add GitHub Actions as a trusted publisher
 3. Specify:
-   - Repository: `therecluse26/plenum`
+   - Repository: `reflex-search/plenum`
    - Workflow: `publish-packages.yml`
 
 ### 2. npm Trusted Publishing Setup
@@ -36,7 +36,7 @@ After the first release, configure trusted publishing on crates.io:
    - Navigate to "Publishing Access"
    - Add GitHub Actions as a trusted publisher
    - Specify:
-     - Repository: `therecluse26/plenum`
+     - Repository: `reflex-search/plenum`
      - Workflow: `publish-packages.yml`
 
 Requires npm CLI v11.5.1 or later.
@@ -105,12 +105,12 @@ npm install -g plenum
 ### Shell Script (Linux/macOS)
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/therecluse26/plenum/releases/latest/download/plenum-installer.sh | sh
+  https://github.com/reflex-search/plenum/releases/latest/download/plenum-installer.sh | sh
 ```
 
 ### PowerShell (Windows)
 ```powershell
-irm https://github.com/therecluse26/plenum/releases/latest/download/plenum-installer.ps1 | iex
+irm https://github.com/reflex-search/plenum/releases/latest/download/plenum-installer.ps1 | iex
 ```
 
 ### Cargo
@@ -119,7 +119,7 @@ cargo install plenum
 ```
 
 ### Manual Download
-Download platform-specific binaries from [GitHub Releases](https://github.com/therecluse26/plenum/releases).
+Download platform-specific binaries from [GitHub Releases](https://github.com/reflex-search/plenum/releases).
 
 ## Versioning
 
