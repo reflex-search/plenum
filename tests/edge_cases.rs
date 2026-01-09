@@ -41,9 +41,9 @@ fn cleanup_db(path: &PathBuf) {
 // Large Dataset Tests
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_large_result_set_with_max_rows() {
+async fn test_large_result_set_with_max_rows() {
     use rusqlite::Connection;
 
     let temp_file = create_test_db();
@@ -68,7 +68,7 @@ fn test_large_result_set_with_max_rows() {
         timeout_ms: None,
     };
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM large_table", &caps);
+    let result = SqliteEngine::execute(&config, "SELECT * FROM large_table", &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -81,9 +81,9 @@ fn test_large_result_set_with_max_rows() {
     cleanup_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_very_large_result_set_without_limit() {
+async fn test_very_large_result_set_without_limit() {
     use rusqlite::Connection;
 
     let temp_file = create_test_db();
@@ -103,7 +103,7 @@ fn test_very_large_result_set_without_limit() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM large_table", &caps);
+    let result = SqliteEngine::execute(&config, "SELECT * FROM large_table", &caps).await;
     assert!(result.is_ok(), "Should handle large result sets");
 
     let query_result = result.unwrap();
@@ -116,9 +116,9 @@ fn test_very_large_result_set_without_limit() {
 // Unicode and Special Character Tests
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_unicode_characters() {
+async fn test_unicode_characters() {
     use rusqlite::Connection;
 
     let temp_file = create_test_db();
@@ -148,7 +148,8 @@ fn test_unicode_characters() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM unicode_test ORDER BY id", &caps);
+    let result =
+        SqliteEngine::execute(&config, "SELECT * FROM unicode_test ORDER BY id", &caps).await;
     assert!(result.is_ok(), "Should handle Unicode characters");
 
     let query_result = result.unwrap();
@@ -164,9 +165,9 @@ fn test_unicode_characters() {
     cleanup_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_special_sql_characters() {
+async fn test_special_sql_characters() {
     use rusqlite::Connection;
 
     let temp_file = create_test_db();
@@ -199,7 +200,8 @@ fn test_special_sql_characters() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM special_chars ORDER BY id", &caps);
+    let result =
+        SqliteEngine::execute(&config, "SELECT * FROM special_chars ORDER BY id", &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -216,9 +218,9 @@ fn test_special_sql_characters() {
 // Binary Data (BLOB) Tests
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_binary_blob_data() {
+async fn test_binary_blob_data() {
     use rusqlite::Connection;
 
     let temp_file = create_test_db();
@@ -237,7 +239,7 @@ fn test_binary_blob_data() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM blob_test", &caps);
+    let result = SqliteEngine::execute(&config, "SELECT * FROM blob_test", &caps).await;
     assert!(result.is_ok(), "Should handle BLOB data");
 
     let query_result = result.unwrap();
@@ -255,9 +257,9 @@ fn test_binary_blob_data() {
 // Numeric Edge Cases
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_numeric_extremes() {
+async fn test_numeric_extremes() {
     use rusqlite::Connection;
 
     let temp_file = create_test_db();
@@ -287,7 +289,7 @@ fn test_numeric_extremes() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM numeric_test", &caps);
+    let result = SqliteEngine::execute(&config, "SELECT * FROM numeric_test", &caps).await;
     assert!(result.is_ok(), "Should handle numeric extremes");
 
     let query_result = result.unwrap();
@@ -305,9 +307,9 @@ fn test_numeric_extremes() {
 // Empty String vs NULL Tests
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_empty_string_vs_null() {
+async fn test_empty_string_vs_null() {
     use rusqlite::Connection;
 
     let temp_file = create_test_db();
@@ -327,7 +329,7 @@ fn test_empty_string_vs_null() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM null_test ORDER BY id", &caps);
+    let result = SqliteEngine::execute(&config, "SELECT * FROM null_test ORDER BY id", &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -348,9 +350,9 @@ fn test_empty_string_vs_null() {
 // Very Long Query Tests
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_very_long_query() {
+async fn test_very_long_query() {
     use rusqlite::Connection;
 
     let temp_file = create_test_db();
@@ -379,7 +381,7 @@ fn test_very_long_query() {
     }
     query.push(')');
 
-    let result = SqliteEngine::execute(&config, &query, &caps);
+    let result = SqliteEngine::execute(&config, &query, &caps).await;
     assert!(result.is_ok(), "Should handle very long queries");
 
     cleanup_db(&temp_file);
@@ -389,9 +391,9 @@ fn test_very_long_query() {
 // SQL Injection Patterns (Should be passed through, not sanitized)
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_sql_injection_patterns_in_data() {
+async fn test_sql_injection_patterns_in_data() {
     use rusqlite::Connection;
 
     let temp_file = create_test_db();
@@ -415,7 +417,7 @@ fn test_sql_injection_patterns_in_data() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM injection_test", &caps);
+    let result = SqliteEngine::execute(&config, "SELECT * FROM injection_test", &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -432,9 +434,9 @@ fn test_sql_injection_patterns_in_data() {
 // Timeout Tests (SQLite uses busy_timeout)
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_timeout_capability() {
+async fn test_timeout_capability() {
     use rusqlite::Connection;
 
     let temp_file = create_test_db();
@@ -456,7 +458,7 @@ fn test_timeout_capability() {
     };
 
     // Simple query should complete within timeout
-    let result = SqliteEngine::execute(&config, "SELECT * FROM timeout_test", &caps);
+    let result = SqliteEngine::execute(&config, "SELECT * FROM timeout_test", &caps).await;
     assert!(result.is_ok(), "Simple query should complete within timeout");
 
     cleanup_db(&temp_file);
@@ -466,9 +468,9 @@ fn test_timeout_capability() {
 // Whitespace and Query Format Tests
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_query_with_excessive_whitespace() {
+async fn test_query_with_excessive_whitespace() {
     use rusqlite::Connection;
 
     let temp_file = create_test_db();
@@ -486,7 +488,7 @@ fn test_query_with_excessive_whitespace() {
     // Query with excessive whitespace
     let query = "  \n\n  SELECT   *   \n  FROM   test   \n\n  WHERE   id   =   1   \n\n  ";
 
-    let result = SqliteEngine::execute(&config, query, &caps);
+    let result = SqliteEngine::execute(&config, query, &caps).await;
     assert!(result.is_ok(), "Should handle queries with excessive whitespace");
 
     cleanup_db(&temp_file);
@@ -496,9 +498,9 @@ fn test_query_with_excessive_whitespace() {
 // Case Sensitivity Tests
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_case_sensitivity_in_table_names() {
+async fn test_case_sensitivity_in_table_names() {
     use rusqlite::Connection;
 
     let temp_file = create_test_db();
@@ -515,10 +517,10 @@ fn test_case_sensitivity_in_table_names() {
     let caps = Capabilities::read_only();
 
     // SQLite is case-insensitive for table names
-    let result1 = SqliteEngine::execute(&config, "SELECT * FROM TestTable", &caps);
+    let result1 = SqliteEngine::execute(&config, "SELECT * FROM TestTable", &caps).await;
     assert!(result1.is_ok());
 
-    let result2 = SqliteEngine::execute(&config, "SELECT * FROM testtable", &caps);
+    let result2 = SqliteEngine::execute(&config, "SELECT * FROM testtable", &caps).await;
     assert!(result2.is_ok());
 
     cleanup_db(&temp_file);

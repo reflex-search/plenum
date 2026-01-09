@@ -25,9 +25,12 @@ fn bench_sqlite_connection_validation(c: &mut Criterion) {
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
+    // Create tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     c.bench_function("sqlite_validate_connection", |b| {
         b.iter(|| {
-            let result = SqliteEngine::validate_connection(black_box(&config));
+            let result = runtime.block_on(SqliteEngine::validate_connection(black_box(&config)));
             assert!(result.is_ok());
             result
         });

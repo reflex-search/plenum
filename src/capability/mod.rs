@@ -41,7 +41,7 @@ pub fn validate_query(
     let processed = preprocess_sql(sql)?;
 
     // Categorize query (engine-specific)
-    let category = categorize_query(&processed, engine)?;
+    let category = categorize_query(&processed, engine);
 
     // Check capabilities
     match category {
@@ -117,7 +117,7 @@ fn strip_comments(sql: &str) -> String {
             '-' if chars.peek() == Some(&'-') => {
                 // Line comment: skip until newline
                 chars.next(); // consume second '-'
-                while let Some(ch) = chars.next() {
+                for ch in chars.by_ref() {
                     if ch == '\n' {
                         result.push('\n'); // preserve newline
                         break;
@@ -128,7 +128,7 @@ fn strip_comments(sql: &str) -> String {
                 // Block comment: skip until */
                 chars.next(); // consume '*'
                 let mut prev = ' ';
-                while let Some(ch) = chars.next() {
+                for ch in chars.by_ref() {
                     if prev == '*' && ch == '/' {
                         break;
                     }
@@ -147,7 +147,7 @@ fn strip_comments(sql: &str) -> String {
 ///
 /// Each engine has slightly different SQL dialects, so categorization
 /// is engine-specific.
-fn categorize_query(sql: &str, engine: DatabaseType) -> Result<QueryCategory> {
+fn categorize_query(sql: &str, engine: DatabaseType) -> QueryCategory {
     match engine {
         DatabaseType::Postgres => categorize_postgres(sql),
         DatabaseType::MySQL => categorize_mysql(sql),
@@ -155,76 +155,76 @@ fn categorize_query(sql: &str, engine: DatabaseType) -> Result<QueryCategory> {
     }
 }
 
-/// Categorize PostgreSQL query
-fn categorize_postgres(sql: &str) -> Result<QueryCategory> {
+/// Categorize `PostgreSQL` query
+fn categorize_postgres(sql: &str) -> QueryCategory {
     // Strip EXPLAIN/EXPLAIN ANALYZE prefix
     let sql = strip_explain_prefix(sql);
 
     // Check for DDL operations
     if is_ddl_postgres(&sql) {
-        return Ok(QueryCategory::DDL);
+        return QueryCategory::DDL;
     }
 
     // Check for write operations
     if is_write_postgres(&sql) {
-        return Ok(QueryCategory::Write);
+        return QueryCategory::Write;
     }
 
     // Check for read operations
     if is_read_only_postgres(&sql) {
-        return Ok(QueryCategory::ReadOnly);
+        return QueryCategory::ReadOnly;
     }
 
     // Unknown statement type: default to DDL (most restrictive, fail-safe)
-    Ok(QueryCategory::DDL)
+    QueryCategory::DDL
 }
 
-/// Categorize MySQL query
-fn categorize_mysql(sql: &str) -> Result<QueryCategory> {
+/// Categorize `MySQL` query
+fn categorize_mysql(sql: &str) -> QueryCategory {
     // Strip EXPLAIN prefix
     let sql = strip_explain_prefix(sql);
 
     // Check for DDL operations (MySQL has implicit commits for DDL)
     if is_ddl_mysql(&sql) {
-        return Ok(QueryCategory::DDL);
+        return QueryCategory::DDL;
     }
 
     // Check for write operations
     if is_write_mysql(&sql) {
-        return Ok(QueryCategory::Write);
+        return QueryCategory::Write;
     }
 
     // Check for read operations
     if is_read_only_mysql(&sql) {
-        return Ok(QueryCategory::ReadOnly);
+        return QueryCategory::ReadOnly;
     }
 
     // Unknown statement type: default to DDL (most restrictive, fail-safe)
-    Ok(QueryCategory::DDL)
+    QueryCategory::DDL
 }
 
-/// Categorize SQLite query
-fn categorize_sqlite(sql: &str) -> Result<QueryCategory> {
+/// Categorize `SQLite` query
+fn categorize_sqlite(sql: &str) -> QueryCategory {
     // Strip EXPLAIN prefix
     let sql = strip_explain_prefix(sql);
 
     // Check for DDL operations
     if is_ddl_sqlite(&sql) {
-        return Ok(QueryCategory::DDL);
+        return QueryCategory::DDL;
     }
 
     // Check for write operations
     if is_write_sqlite(&sql) {
-        return Ok(QueryCategory::Write);
+        return QueryCategory::Write;
     }
 
     // Check for read operations
     if is_read_only_sqlite(&sql) {
-        return Ok(QueryCategory::ReadOnly);
+        return QueryCategory::ReadOnly;
     }
 
     // Unknown statement type: default to DDL (most restrictive, fail-safe)
-    Ok(QueryCategory::DDL)
+    QueryCategory::DDL
 }
 
 /// Strip EXPLAIN/EXPLAIN ANALYZE prefix from query

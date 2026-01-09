@@ -76,16 +76,16 @@ fn cleanup_sqlite_db(path: &std::path::Path) {
 // Cross-Engine Consistency Tests
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_cross_engine_select_query_structure() {
+async fn test_cross_engine_select_query_structure() {
     // Test that SELECT queries return consistent JSON structure across engines
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
     let result =
-        SqliteEngine::execute(&config, "SELECT name, email FROM users WHERE id = 1", &caps);
+        SqliteEngine::execute(&config, "SELECT name, email FROM users WHERE id = 1", &caps).await;
     assert!(result.is_ok(), "SQLite SELECT query should succeed");
 
     let query_result = result.unwrap();
@@ -106,9 +106,9 @@ fn test_cross_engine_select_query_structure() {
     cleanup_sqlite_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_cross_engine_insert_query_structure() {
+async fn test_cross_engine_insert_query_structure() {
     // Test that INSERT queries return consistent structure across engines
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
@@ -118,7 +118,8 @@ fn test_cross_engine_insert_query_structure() {
         &config,
         "INSERT INTO users (name, email, age) VALUES ('David', 'david@example.com', 40)",
         &caps,
-    );
+    )
+    .await;
     assert!(result.is_ok(), "SQLite INSERT query should succeed");
 
     let query_result = result.unwrap();
@@ -132,9 +133,9 @@ fn test_cross_engine_insert_query_structure() {
     cleanup_sqlite_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_cross_engine_capability_violation_readonly() {
+async fn test_cross_engine_capability_violation_readonly() {
     // Test that capability violations are caught uniformly across engines
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
@@ -145,7 +146,8 @@ fn test_cross_engine_capability_violation_readonly() {
         &config,
         "INSERT INTO users (name, email) VALUES ('Eve', 'eve@example.com')",
         &caps,
-    );
+    )
+    .await;
 
     assert!(result.is_err(), "Should reject INSERT without write capability");
     let err = result.unwrap_err();
@@ -157,9 +159,9 @@ fn test_cross_engine_capability_violation_readonly() {
     cleanup_sqlite_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_cross_engine_capability_violation_ddl() {
+async fn test_cross_engine_capability_violation_ddl() {
     // Test that DDL operations are rejected without appropriate capability
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
@@ -167,7 +169,7 @@ fn test_cross_engine_capability_violation_ddl() {
 
     // Try to CREATE TABLE without DDL capability
     let result =
-        SqliteEngine::execute(&config, "CREATE TABLE test (id INTEGER PRIMARY KEY)", &caps);
+        SqliteEngine::execute(&config, "CREATE TABLE test (id INTEGER PRIMARY KEY)", &caps).await;
 
     assert!(result.is_err(), "Should reject DDL without --allow-ddl capability");
     let err = result.unwrap_err();
@@ -179,9 +181,9 @@ fn test_cross_engine_capability_violation_ddl() {
     cleanup_sqlite_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_cross_engine_null_handling() {
+async fn test_cross_engine_null_handling() {
     // Test that NULL values are handled consistently across engines
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
@@ -191,7 +193,8 @@ fn test_cross_engine_null_handling() {
         &config,
         "SELECT name, email FROM users WHERE name = 'Charlie'",
         &caps,
-    );
+    )
+    .await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -207,16 +210,16 @@ fn test_cross_engine_null_handling() {
     cleanup_sqlite_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_cross_engine_max_rows_enforcement() {
+async fn test_cross_engine_max_rows_enforcement() {
     // Test that max_rows is enforced uniformly across engines
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps =
         Capabilities { allow_write: false, allow_ddl: false, max_rows: Some(2), timeout_ms: None };
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id", &caps);
+    let result = SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id", &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -225,15 +228,15 @@ fn test_cross_engine_max_rows_enforcement() {
     cleanup_sqlite_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_cross_engine_empty_result_set() {
+async fn test_cross_engine_empty_result_set() {
     // Test that empty result sets are handled consistently
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM users WHERE id = 9999", &caps);
+    let result = SqliteEngine::execute(&config, "SELECT * FROM users WHERE id = 9999", &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -244,14 +247,14 @@ fn test_cross_engine_empty_result_set() {
     cleanup_sqlite_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_cross_engine_schema_introspection_structure() {
+async fn test_cross_engine_schema_introspection_structure() {
     // Test that introspection returns consistent structure across engines
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let result = SqliteEngine::introspect(&config, None);
+    let result = SqliteEngine::introspect(&config, None).await;
     assert!(result.is_ok());
 
     let schema = result.unwrap();
@@ -288,14 +291,14 @@ fn test_cross_engine_schema_introspection_structure() {
     cleanup_sqlite_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_cross_engine_connection_validation_structure() {
+async fn test_cross_engine_connection_validation_structure() {
     // Test that connection validation returns consistent structure
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let result = SqliteEngine::validate_connection(&config);
+    let result = SqliteEngine::validate_connection(&config).await;
     assert!(result.is_ok());
 
     let conn_info = result.unwrap();
@@ -313,16 +316,17 @@ fn test_cross_engine_connection_validation_structure() {
 // Error Handling Consistency Tests
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_cross_engine_malformed_sql_error() {
+async fn test_cross_engine_malformed_sql_error() {
     // Test that malformed SQL produces consistent error behavior
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
     // Use a query with invalid column name (will pass capability check but fail at execution)
-    let result = SqliteEngine::execute(&config, "SELECT nonexistent_column FROM users", &caps);
+    let result =
+        SqliteEngine::execute(&config, "SELECT nonexistent_column FROM users", &caps).await;
     assert!(result.is_err(), "Malformed SQL should error");
 
     // Error should be a query failed error
@@ -339,15 +343,15 @@ fn test_cross_engine_malformed_sql_error() {
     cleanup_sqlite_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_cross_engine_missing_table_error() {
+async fn test_cross_engine_missing_table_error() {
     // Test that querying non-existent table produces consistent error
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM nonexistent_table", &caps);
+    let result = SqliteEngine::execute(&config, "SELECT * FROM nonexistent_table", &caps).await;
     assert!(result.is_err(), "Missing table should error");
 
     let err = result.unwrap_err();
@@ -359,13 +363,13 @@ fn test_cross_engine_missing_table_error() {
     cleanup_sqlite_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_cross_engine_connection_failure() {
+async fn test_cross_engine_connection_failure() {
     // Test that invalid connection produces consistent error
     let config = ConnectionConfig::sqlite(std::path::PathBuf::from("/nonexistent/path/db.sqlite"));
 
-    let result = SqliteEngine::validate_connection(&config);
+    let result = SqliteEngine::validate_connection(&config).await;
     assert!(result.is_err(), "Invalid path should fail connection");
 
     let err = result.unwrap_err();
@@ -376,15 +380,16 @@ fn test_cross_engine_connection_failure() {
 // JSON Output Consistency Tests
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_json_serialization_of_query_result() {
+async fn test_json_serialization_of_query_result() {
     // Test that QueryResult serializes to valid JSON
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id LIMIT 1", &caps);
+    let result =
+        SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id LIMIT 1", &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -404,14 +409,14 @@ fn test_json_serialization_of_query_result() {
     cleanup_sqlite_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_json_serialization_of_schema_info() {
+async fn test_json_serialization_of_schema_info() {
     // Test that SchemaInfo serializes to valid JSON
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let result = SqliteEngine::introspect(&config, None);
+    let result = SqliteEngine::introspect(&config, None).await;
     assert!(result.is_ok());
 
     let schema_info = result.unwrap();
@@ -435,9 +440,9 @@ fn test_json_serialization_of_schema_info() {
 // Determinism Tests
 // ============================================================================
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_deterministic_query_results() {
+async fn test_deterministic_query_results() {
     // Test that identical queries produce identical results
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
@@ -445,8 +450,8 @@ fn test_deterministic_query_results() {
 
     let sql = "SELECT name, email FROM users ORDER BY id";
 
-    let result1 = SqliteEngine::execute(&config, sql, &caps).unwrap();
-    let result2 = SqliteEngine::execute(&config, sql, &caps).unwrap();
+    let result1 = SqliteEngine::execute(&config, sql, &caps).await.unwrap();
+    let result2 = SqliteEngine::execute(&config, sql, &caps).await.unwrap();
 
     // Results should be identical (except timing metadata which is not part of QueryResult)
     assert_eq!(result1.columns, result2.columns, "Columns should be identical");
@@ -456,15 +461,15 @@ fn test_deterministic_query_results() {
     cleanup_sqlite_db(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_deterministic_introspection() {
+async fn test_deterministic_introspection() {
     // Test that introspection is deterministic
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let schema1 = SqliteEngine::introspect(&config, None).unwrap();
-    let schema2 = SqliteEngine::introspect(&config, None).unwrap();
+    let schema1 = SqliteEngine::introspect(&config, None).await.unwrap();
+    let schema2 = SqliteEngine::introspect(&config, None).await.unwrap();
 
     // Schemas should be identical
     assert_eq!(schema1.tables.len(), schema2.tables.len(), "Table count should be identical");

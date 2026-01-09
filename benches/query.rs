@@ -38,13 +38,16 @@ fn bench_sqlite_simple_select(c: &mut Criterion) {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
+    // Create tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     c.bench_function("sqlite_select_all", |b| {
         b.iter(|| {
-            let result = SqliteEngine::execute(
+            let result = runtime.block_on(SqliteEngine::execute(
                 black_box(&config),
                 black_box("SELECT * FROM users"),
                 black_box(&caps),
-            );
+            ));
             assert!(result.is_ok());
             result
         });
@@ -77,13 +80,16 @@ fn bench_sqlite_filtered_select(c: &mut Criterion) {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
+    // Create tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     c.bench_function("sqlite_select_where", |b| {
         b.iter(|| {
-            let result = SqliteEngine::execute(
+            let result = runtime.block_on(SqliteEngine::execute(
                 black_box(&config),
                 black_box("SELECT * FROM users WHERE age > 50"),
                 black_box(&caps),
-            );
+            ));
             assert!(result.is_ok());
             result
         });
@@ -110,6 +116,9 @@ fn bench_sqlite_insert(c: &mut Criterion) {
 
     let mut counter = 0;
 
+    // Create tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     c.bench_function("sqlite_insert_single", |b| {
         b.iter(|| {
             counter += 1;
@@ -118,8 +127,11 @@ fn bench_sqlite_insert(c: &mut Criterion) {
                 counter,
                 counter % 100
             );
-            let result =
-                SqliteEngine::execute(black_box(&config), black_box(&sql), black_box(&caps));
+            let result = runtime.block_on(SqliteEngine::execute(
+                black_box(&config),
+                black_box(&sql),
+                black_box(&caps),
+            ));
             assert!(result.is_ok());
             result
         });
@@ -149,13 +161,16 @@ fn bench_sqlite_large_result_set(c: &mut Criterion) {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
+    // Create tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     c.bench_function("sqlite_select_10000_rows", |b| {
         b.iter(|| {
-            let result = SqliteEngine::execute(
+            let result = runtime.block_on(SqliteEngine::execute(
                 black_box(&config),
                 black_box("SELECT * FROM large_table"),
                 black_box(&caps),
-            );
+            ));
             assert!(result.is_ok());
             result
         });
