@@ -1,7 +1,7 @@
 //! Database Engine Traits and Core Types
 //!
 //! This module defines the core abstractions for database engines.
-//! Each engine (PostgreSQL, MySQL, SQLite) implements the `DatabaseEngine` trait.
+//! Each engine (`PostgreSQL`, `MySQL`, `SQLite`) implements the `DatabaseEngine` trait.
 //!
 //! # Stateless Design
 //! All trait methods are stateless and take `&ConnectionConfig` as input.
@@ -32,21 +32,22 @@ pub mod mysql;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DatabaseType {
-    /// PostgreSQL database
+    /// `PostgreSQL` database
     Postgres,
-    /// MySQL database (includes MariaDB)
+    /// `MySQL` database (includes `MariaDB`)
     MySQL,
-    /// SQLite database
+    /// `SQLite` database
     SQLite,
 }
 
 impl DatabaseType {
     /// Get the engine name as a string
-    pub fn as_str(&self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
         match self {
-            DatabaseType::Postgres => "postgres",
-            DatabaseType::MySQL => "mysql",
-            DatabaseType::SQLite => "sqlite",
+            Self::Postgres => "postgres",
+            Self::MySQL => "mysql",
+            Self::SQLite => "sqlite",
         }
     }
 }
@@ -60,7 +61,7 @@ impl std::fmt::Display for DatabaseType {
 /// Connection configuration for database engines
 ///
 /// This struct contains all parameters needed to establish a database connection.
-/// Fields are engine-specific (e.g., `file` only applies to SQLite).
+/// Fields are engine-specific (e.g., `file` only applies to `SQLite`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionConfig {
     /// Database engine type
@@ -93,8 +94,9 @@ pub struct ConnectionConfig {
 }
 
 impl ConnectionConfig {
-    /// Create a new PostgreSQL connection config
-    pub fn postgres(
+    /// Create a new `PostgreSQL` connection config
+    #[must_use]
+    pub const fn postgres(
         host: String,
         port: u16,
         user: String,
@@ -112,8 +114,9 @@ impl ConnectionConfig {
         }
     }
 
-    /// Create a new MySQL connection config
-    pub fn mysql(
+    /// Create a new `MySQL` connection config
+    #[must_use]
+    pub const fn mysql(
         host: String,
         port: u16,
         user: String,
@@ -131,8 +134,9 @@ impl ConnectionConfig {
         }
     }
 
-    /// Create a new SQLite connection config
-    pub fn sqlite(file: PathBuf) -> Self {
+    /// Create a new `SQLite` connection config
+    #[must_use]
+    pub const fn sqlite(file: PathBuf) -> Self {
         Self {
             engine: DatabaseType::SQLite,
             host: None,
@@ -191,16 +195,19 @@ pub struct Capabilities {
 
 impl Capabilities {
     /// Create read-only capabilities (default)
+    #[must_use]
     pub fn read_only() -> Self {
         Self::default()
     }
 
     /// Create write-enabled capabilities
+    #[must_use]
     pub fn with_write() -> Self {
         Self { allow_write: true, ..Default::default() }
     }
 
     /// Create DDL-enabled capabilities (DDL implies write)
+    #[must_use]
     pub fn with_ddl() -> Self {
         Self {
             allow_write: true, // DDL implies write
@@ -210,13 +217,15 @@ impl Capabilities {
     }
 
     /// Check if write operations are allowed
-    /// Returns true if either allow_write or allow_ddl is true
-    pub fn can_write(&self) -> bool {
+    /// Returns true if either `allow_write` or `allow_ddl` is true
+    #[must_use]
+    pub const fn can_write(&self) -> bool {
         self.allow_write || self.allow_ddl
     }
 
     /// Check if DDL operations are allowed
-    pub fn can_ddl(&self) -> bool {
+    #[must_use]
+    pub const fn can_ddl(&self) -> bool {
         self.allow_ddl
     }
 }
@@ -328,7 +337,9 @@ pub trait DatabaseEngine {
     /// 4. Returns connection info or error
     ///
     /// No persistent connection is maintained.
-    async fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo>;
+    fn validate_connection(
+        config: &ConnectionConfig,
+    ) -> impl std::future::Future<Output = Result<ConnectionInfo>> + Send;
 
     /// Introspect database schema
     ///
@@ -339,10 +350,10 @@ pub trait DatabaseEngine {
     /// 4. Returns schema info or error
     ///
     /// If `schema_filter` is provided, only tables in that schema are returned.
-    async fn introspect(
+    fn introspect(
         config: &ConnectionConfig,
         schema_filter: Option<&str>,
-    ) -> Result<SchemaInfo>;
+    ) -> impl std::future::Future<Output = Result<SchemaInfo>> + Send;
 
     /// Execute a query with capability constraints
     ///
@@ -354,11 +365,11 @@ pub trait DatabaseEngine {
     /// 5. Returns query results or error
     ///
     /// Capability violations MUST fail before query execution.
-    async fn execute(
+    fn execute(
         config: &ConnectionConfig,
         query: &str,
         caps: &Capabilities,
-    ) -> Result<QueryResult>;
+    ) -> impl std::future::Future<Output = Result<QueryResult>> + Send;
 }
 
 #[cfg(test)]

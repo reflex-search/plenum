@@ -32,7 +32,7 @@ pub struct ConnectionRegistry {
 
 /// Stored connection configuration
 ///
-/// Similar to ConnectionConfig but supports environment variable references
+/// Similar to `ConnectionConfig` but supports environment variable references
 /// for sensitive fields like passwords.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredConnection {
@@ -46,7 +46,7 @@ pub struct StoredConnection {
 }
 
 impl StoredConnection {
-    /// Resolve environment variables and return a ConnectionConfig
+    /// Resolve environment variables and return a `ConnectionConfig`
     pub fn resolve(&self) -> Result<ConnectionConfig> {
         let mut config = self.config.clone();
 
@@ -56,8 +56,7 @@ impl StoredConnection {
                 Ok(password) => config.password = Some(password),
                 Err(_) => {
                     return Err(PlenumError::config_error(format!(
-                        "Environment variable {} not found for password",
-                        env_var
+                        "Environment variable {env_var} not found for password"
                     )));
                 }
             }
@@ -79,7 +78,7 @@ pub enum ConfigLocation {
 /// Get path to local config file (`.plenum/config.json`)
 pub fn local_config_path() -> Result<PathBuf> {
     let current_dir = std::env::current_dir().map_err(|e| {
-        PlenumError::config_error(format!("Could not determine current directory: {}", e))
+        PlenumError::config_error(format!("Could not determine current directory: {e}"))
     })?;
 
     Ok(current_dir.join(".plenum").join("config.json"))
@@ -101,10 +100,10 @@ pub fn load_registry(path: &Path) -> Result<ConnectionRegistry> {
     }
 
     let contents = fs::read_to_string(path)
-        .map_err(|e| PlenumError::config_error(format!("Could not read config file: {}", e)))?;
+        .map_err(|e| PlenumError::config_error(format!("Could not read config file: {e}")))?;
 
     let registry: ConnectionRegistry = serde_json::from_str(&contents)
-        .map_err(|e| PlenumError::config_error(format!("Invalid config file format: {}", e)))?;
+        .map_err(|e| PlenumError::config_error(format!("Invalid config file format: {e}")))?;
 
     Ok(registry)
 }
@@ -114,15 +113,15 @@ pub fn save_registry(path: &Path, registry: &ConnectionRegistry) -> Result<()> {
     // Create parent directory if it doesn't exist
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| {
-            PlenumError::config_error(format!("Could not create config directory: {}", e))
+            PlenumError::config_error(format!("Could not create config directory: {e}"))
         })?;
     }
 
     let contents = serde_json::to_string_pretty(registry)
-        .map_err(|e| PlenumError::config_error(format!("Could not serialize config: {}", e)))?;
+        .map_err(|e| PlenumError::config_error(format!("Could not serialize config: {e}")))?;
 
     fs::write(path, contents)
-        .map_err(|e| PlenumError::config_error(format!("Could not write config file: {}", e)))?;
+        .map_err(|e| PlenumError::config_error(format!("Could not write config file: {e}")))?;
 
     Ok(())
 }
@@ -157,10 +156,8 @@ pub fn load_with_precedence() -> Result<ConnectionRegistry> {
             let global_registry = load_registry(&global_path)?;
             let local_registry = load_registry(&local_path)?;
 
-            let mut merged = ConnectionRegistry::default();
-
             // Start with global connections
-            merged.connections = global_registry.connections;
+            let mut merged = global_registry;
 
             // Override with local connections (local wins for same-named connections)
             for (name, conn) in local_registry.connections {
@@ -184,7 +181,7 @@ pub fn resolve_connection(name: &str) -> Result<ConnectionConfig> {
     let stored = registry
         .connections
         .get(name)
-        .ok_or_else(|| PlenumError::config_error(format!("Connection '{}' not found", name)))?;
+        .ok_or_else(|| PlenumError::config_error(format!("Connection '{name}' not found")))?;
 
     // Resolve environment variables
     stored.resolve()
@@ -207,7 +204,7 @@ pub fn save_connection(
         if path.exists() { load_registry(&path)? } else { ConnectionRegistry::default() };
 
     // Add or update connection
-    registry.connections.insert(name.clone(), StoredConnection { config, password_env: None });
+    registry.connections.insert(name, StoredConnection { config, password_env: None });
 
     // Save registry
     save_registry(&path, &registry)?;
@@ -226,7 +223,7 @@ pub fn list_connections() -> Result<Vec<(String, ConnectionConfig)>> {
             Err(_e) => {
                 // Skip connections that fail to resolve (e.g., missing env vars)
                 // Note: Error details not logged to prevent credential leakage
-                eprintln!("Warning: Could not resolve connection '{}'", name);
+                eprintln!("Warning: Could not resolve connection '{name}'");
             }
         }
     }
@@ -358,8 +355,7 @@ mod tests {
         );
 
         // Simulate merging (same logic as load_with_precedence when both exist)
-        let mut merged = ConnectionRegistry::default();
-        merged.connections = global_registry.connections.clone();
+        let mut merged = ConnectionRegistry { connections: global_registry.connections.clone() };
         for (name, conn) in local_registry.connections.clone() {
             merged.connections.insert(name, conn);
         }
@@ -404,8 +400,7 @@ mod tests {
         );
 
         // Simulate merging
-        let mut merged = ConnectionRegistry::default();
-        merged.connections = global_registry.connections;
+        let mut merged = global_registry;
         for (name, conn) in local_registry.connections {
             merged.connections.insert(name, conn);
         }
@@ -482,8 +477,7 @@ mod tests {
         );
 
         // Simulate merging
-        let mut merged = ConnectionRegistry::default();
-        merged.connections = global_registry.connections.clone();
+        let mut merged = ConnectionRegistry { connections: global_registry.connections.clone() };
         for (name, conn) in local_registry.connections.clone() {
             merged.connections.insert(name, conn);
         }

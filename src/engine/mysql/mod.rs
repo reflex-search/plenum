@@ -1,23 +1,23 @@
-//! MySQL Database Engine Implementation
+//! `MySQL` Database Engine Implementation
 //!
-//! This module implements the `DatabaseEngine` trait for MySQL databases (including MariaDB).
+//! This module implements the `DatabaseEngine` trait for `MySQL` databases (including `MariaDB`).
 //!
 //! # Features
 //! - Client-server connections via TCP
-//! - Schema introspection via information_schema
+//! - Schema introspection via `information_schema`
 //! - Capability-enforced query execution
-//! - MySQL and MariaDB version detection
+//! - `MySQL` and `MariaDB` version detection
 //!
 //! # Implementation Notes
 //! - Uses `mysql_async` (async driver, requires tokio runtime)
 //! - Async operations are wrapped in synchronous interface
-//! - Handles MySQL implicit commits for DDL operations
+//! - Handles `MySQL` implicit commits for DDL operations
 //! - ENUM and SET types converted to strings
-//! - JSON type support (MySQL 5.7+)
+//! - JSON type support (`MySQL` 5.7+)
 //! - BLOB data is Base64-encoded for JSON safety
-//! - Timeouts enforced via tokio::time::timeout
+//! - Timeouts enforced via `tokio::time::timeout`
 //! - Row limits enforced in application code
-//! - Schema filtering supported (MySQL has explicit schemas/databases)
+//! - Schema filtering supported (`MySQL` has explicit schemas/databases)
 
 use mysql_async::{prelude::*, Conn, OptsBuilder, Row, Value};
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ use crate::engine::{
 };
 use crate::error::{PlenumError, Result};
 
-/// MySQL database engine implementation
+/// `MySQL` database engine implementation
 pub struct MySqlEngine;
 
 impl DatabaseEngine for MySqlEngine {
@@ -48,7 +48,7 @@ impl DatabaseEngine for MySqlEngine {
 
         // Connect to MySQL
         let mut conn = Conn::new(opts).await.map_err(|e| {
-            PlenumError::connection_failed(format!("Failed to connect to MySQL: {}", e))
+            PlenumError::connection_failed(format!("Failed to connect to MySQL: {e}"))
         })?;
 
         // Get MySQL version
@@ -56,7 +56,7 @@ impl DatabaseEngine for MySqlEngine {
             .query_first("SELECT VERSION()")
             .await
             .map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to query MySQL version: {}", e))
+                PlenumError::connection_failed(format!("Failed to query MySQL version: {e}"))
             })?
             .ok_or_else(|| PlenumError::connection_failed("No version returned".to_string()))?;
 
@@ -72,7 +72,7 @@ impl DatabaseEngine for MySqlEngine {
             .query_first("SELECT DATABASE()")
             .await
             .map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to query current database: {}", e))
+                PlenumError::connection_failed(format!("Failed to query current database: {e}"))
             })?
             .ok_or_else(|| PlenumError::connection_failed("No database returned".to_string()))?;
 
@@ -85,7 +85,7 @@ impl DatabaseEngine for MySqlEngine {
             .query_first("SELECT CURRENT_USER()")
             .await
             .map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to query current user: {}", e))
+                PlenumError::connection_failed(format!("Failed to query current user: {e}"))
             })?
             .ok_or_else(|| PlenumError::connection_failed("No user returned".to_string()))?;
 
@@ -96,7 +96,7 @@ impl DatabaseEngine for MySqlEngine {
         // Close connection
         conn.disconnect()
             .await
-            .map_err(|e| PlenumError::connection_failed(format!("Failed to disconnect: {}", e)))?;
+            .map_err(|e| PlenumError::connection_failed(format!("Failed to disconnect: {e}")))?;
 
         Ok(ConnectionInfo { database_version, server_info, connected_database, user })
     }
@@ -118,7 +118,7 @@ impl DatabaseEngine for MySqlEngine {
 
         // Connect to MySQL
         let mut conn = Conn::new(opts).await.map_err(|e| {
-            PlenumError::connection_failed(format!("Failed to connect to MySQL: {}", e))
+            PlenumError::connection_failed(format!("Failed to connect to MySQL: {e}"))
         })?;
 
         // Get current database if no schema filter provided
@@ -132,7 +132,7 @@ impl DatabaseEngine for MySqlEngine {
                 .map_err(|e| {
                     PlenumError::engine_error(
                         "mysql",
-                        format!("Failed to query current database: {}", e),
+                        format!("Failed to query current database: {e}"),
                     )
                 })?
                 .ok_or_else(|| {
@@ -149,7 +149,7 @@ impl DatabaseEngine for MySqlEngine {
 
         // Close connection
         conn.disconnect().await.map_err(|e| {
-            PlenumError::engine_error("mysql", format!("Failed to disconnect: {}", e))
+            PlenumError::engine_error("mysql", format!("Failed to disconnect: {e}"))
         })?;
 
         Ok(SchemaInfo { tables })
@@ -176,7 +176,7 @@ impl DatabaseEngine for MySqlEngine {
 
         // Connect to MySQL
         let mut conn = Conn::new(opts).await.map_err(|e| {
-            PlenumError::connection_failed(format!("Failed to connect to MySQL: {}", e))
+            PlenumError::connection_failed(format!("Failed to connect to MySQL: {e}"))
         })?;
 
         // Execute with optional timeout
@@ -186,7 +186,7 @@ impl DatabaseEngine for MySqlEngine {
             tokio::time::timeout(timeout_duration, execute_query(&mut conn, query, caps))
                 .await
                 .map_err(|_| {
-                PlenumError::query_failed(format!("Query exceeded timeout of {}ms", timeout_ms))
+                PlenumError::query_failed(format!("Query exceeded timeout of {timeout_ms}ms"))
             })??
         } else {
             execute_query(&mut conn, query, caps).await?
@@ -196,14 +196,14 @@ impl DatabaseEngine for MySqlEngine {
 
         // Close connection
         conn.disconnect().await.map_err(|e| {
-            PlenumError::engine_error("mysql", format!("Failed to disconnect: {}", e))
+            PlenumError::engine_error("mysql", format!("Failed to disconnect: {e}"))
         })?;
 
         Ok(query_result)
     }
 }
 
-/// Build MySQL connection options from ConnectionConfig
+/// Build `MySQL` connection options from `ConnectionConfig`
 fn build_mysql_opts(config: &ConnectionConfig) -> Result<OptsBuilder> {
     let host = config
         .host
@@ -238,7 +238,7 @@ fn build_mysql_opts(config: &ConnectionConfig) -> Result<OptsBuilder> {
     Ok(opts)
 }
 
-/// Parse MySQL version string to detect MySQL vs MariaDB
+/// Parse `MySQL` version string to detect `MySQL` vs `MariaDB`
 fn parse_mysql_version(version_string: &str) -> (String, String) {
     // Example MySQL: "8.0.35"
     // Example MariaDB: "10.11.2-MariaDB"
@@ -246,12 +246,12 @@ fn parse_mysql_version(version_string: &str) -> (String, String) {
     if version_string.to_uppercase().contains("MARIADB") {
         // MariaDB
         let version = version_string.split('-').next().unwrap_or("unknown").to_string();
-        (version.clone(), format!("MariaDB {}", version))
+        (version.clone(), format!("MariaDB {version}"))
     } else {
         // MySQL
         let version =
             version_string.split_whitespace().next().unwrap_or(version_string).to_string();
-        (version.clone(), format!("MySQL {}", version))
+        (version.clone(), format!("MySQL {version}"))
     }
 }
 
@@ -264,9 +264,10 @@ async fn introspect_all_tables(conn: &mut Conn, schema: &str) -> Result<Vec<Tabl
                  AND table_type = 'BASE TABLE'
                  ORDER BY table_name";
 
-    let rows: Vec<Row> = conn.exec(query, (schema,)).await.map_err(|e| {
-        PlenumError::engine_error("mysql", format!("Failed to query tables: {}", e))
-    })?;
+    let rows: Vec<Row> = conn
+        .exec(query, (schema,))
+        .await
+        .map_err(|e| PlenumError::engine_error("mysql", format!("Failed to query tables: {e}")))?;
 
     let mut tables = Vec::new();
     for row in rows {
@@ -303,7 +304,7 @@ async fn introspect_table(conn: &mut Conn, schema: &str, table_name: &str) -> Re
     })
 }
 
-/// Helper function to safely extract an optional string from a MySQL row
+/// Helper function to safely extract an optional string from a `MySQL` row
 /// Returns None if the value is NULL, otherwise attempts to convert to String
 fn get_optional_string(row: &Row, idx: usize) -> Option<String> {
     match row.as_ref(idx)? {
@@ -326,7 +327,7 @@ async fn introspect_columns(
     let rows: Vec<Row> = conn.exec(query, (schema, table_name)).await.map_err(|e| {
         PlenumError::engine_error(
             "mysql",
-            format!("Failed to query columns for {}.{}: {}", schema, table_name, e),
+            format!("Failed to query columns for {schema}.{table_name}: {e}"),
         )
     })?;
 
@@ -370,7 +371,7 @@ async fn introspect_primary_key(
     let rows: Vec<Row> = conn.exec(query, (schema, table_name)).await.map_err(|e| {
         PlenumError::engine_error(
             "mysql",
-            format!("Failed to query primary key for {}.{}: {}", schema, table_name, e),
+            format!("Failed to query primary key for {schema}.{table_name}: {e}"),
         )
     })?;
 
@@ -404,7 +405,7 @@ async fn introspect_foreign_keys(
     let rows: Vec<Row> = conn.exec(query, (schema, table_name)).await.map_err(|e| {
         PlenumError::engine_error(
             "mysql",
-            format!("Failed to query foreign keys for {}.{}: {}", schema, table_name, e),
+            format!("Failed to query foreign keys for {schema}.{table_name}: {e}"),
         )
     })?;
 
@@ -464,7 +465,7 @@ async fn introspect_indexes(
     let rows: Vec<Row> = conn.exec(query, (schema, table_name)).await.map_err(|e| {
         PlenumError::engine_error(
             "mysql",
-            format!("Failed to query indexes for {}.{}: {}", schema, table_name, e),
+            format!("Failed to query indexes for {schema}.{table_name}: {e}"),
         )
     })?;
 
@@ -501,10 +502,7 @@ async fn get_index_columns(
     let rows: Vec<Row> = conn.exec(query, (schema, table_name, index_name)).await.map_err(|e| {
         PlenumError::engine_error(
             "mysql",
-            format!(
-                "Failed to query columns for index {}.{}.{}: {}",
-                schema, table_name, index_name, e
-            ),
+            format!("Failed to query columns for index {schema}.{table_name}.{index_name}: {e}"),
         )
     })?;
 
@@ -514,7 +512,7 @@ async fn get_index_columns(
     Ok(columns)
 }
 
-/// Execute query and return QueryResult
+/// Execute query and return `QueryResult`
 async fn execute_query(conn: &mut Conn, query: &str, caps: &Capabilities) -> Result<QueryResult> {
     // Execute query and determine if it returns rows
     // MySQL async doesn't have a prepare-then-check pattern like tokio-postgres
@@ -532,7 +530,7 @@ async fn execute_query(conn: &mut Conn, query: &str, caps: &Capabilities) -> Res
         let rows: Vec<Row> = conn
             .query(query)
             .await
-            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {}", e)))?;
+            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {e}")))?;
 
         // Get column names from first row (if any)
         let column_names: Vec<String> = if let Some(first_row) = rows.first() {
@@ -562,7 +560,7 @@ async fn execute_query(conn: &mut Conn, query: &str, caps: &Capabilities) -> Res
         let result = conn
             .query_iter(query)
             .await
-            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {}", e)))?;
+            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {e}")))?;
 
         let rows_affected = result.affected_rows();
 
@@ -577,7 +575,7 @@ async fn execute_query(conn: &mut Conn, query: &str, caps: &Capabilities) -> Res
     }
 }
 
-/// Convert a MySQL row to a JSON-safe HashMap
+/// Convert a `MySQL` row to a JSON-safe `HashMap`
 fn row_to_json(row: &Row) -> Result<HashMap<String, serde_json::Value>> {
     let mut map = HashMap::new();
 
@@ -590,11 +588,11 @@ fn row_to_json(row: &Row) -> Result<HashMap<String, serde_json::Value>> {
     Ok(map)
 }
 
-/// Convert MySQL value to JSON value
+/// Convert `MySQL` value to JSON value
 fn mysql_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
-    let value = row.as_ref(idx).ok_or_else(|| {
-        PlenumError::query_failed(format!("Failed to get value at index {}", idx))
-    })?;
+    let value = row
+        .as_ref(idx)
+        .ok_or_else(|| PlenumError::query_failed(format!("Failed to get value at index {idx}")))?;
 
     let json_value = match value {
         Value::NULL => serde_json::Value::Null,
@@ -615,19 +613,16 @@ fn mysql_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
 
         Value::UInt(u) => serde_json::json!(*u), // Use json! macro for u64
 
-        Value::Float(f) => serde_json::Number::from_f64(*f as f64)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null), // Handle NaN/Infinity as null
+        Value::Float(f) => serde_json::Number::from_f64(f64::from(*f))
+            .map_or(serde_json::Value::Null, serde_json::Value::Number), // Handle NaN/Infinity as null
 
         Value::Double(d) => serde_json::Number::from_f64(*d)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null), // Handle NaN/Infinity as null
+            .map_or(serde_json::Value::Null, serde_json::Value::Number), // Handle NaN/Infinity as null
 
         Value::Date(year, month, day, hour, minute, second, micro) => {
             // Format as ISO 8601 datetime string
             let datetime_str = format!(
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}",
-                year, month, day, hour, minute, second, micro
+                "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{micro:06}"
             );
             serde_json::Value::String(datetime_str)
         }
@@ -635,11 +630,9 @@ fn mysql_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
         Value::Time(is_negative, days, hours, minutes, seconds, microseconds) => {
             // Format as time duration string
             let sign = if *is_negative { "-" } else { "" };
-            let total_hours = days * 24 + (*hours as u32);
-            let time_str = format!(
-                "{}{}:{:02}:{:02}.{:06}",
-                sign, total_hours, minutes, seconds, microseconds
-            );
+            let total_hours = days * 24 + u32::from(*hours);
+            let time_str =
+                format!("{sign}{total_hours}:{minutes:02}:{seconds:02}.{microseconds:06}");
             serde_json::Value::String(time_str)
         }
     };

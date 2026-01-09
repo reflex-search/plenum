@@ -45,14 +45,15 @@ impl PlenumError {
     /// Convert error to error code string for JSON output
     ///
     /// Error codes are stable and suitable for programmatic handling by agents.
-    pub fn error_code(&self) -> &'static str {
+    #[must_use]
+    pub const fn error_code(&self) -> &'static str {
         match self {
-            PlenumError::CapabilityViolation(_) => "CAPABILITY_VIOLATION",
-            PlenumError::ConnectionFailed(_) => "CONNECTION_FAILED",
-            PlenumError::QueryFailed(_) => "QUERY_FAILED",
-            PlenumError::InvalidInput(_) => "INVALID_INPUT",
-            PlenumError::EngineError { .. } => "ENGINE_ERROR",
-            PlenumError::ConfigError(_) => "CONFIG_ERROR",
+            Self::CapabilityViolation(_) => "CAPABILITY_VIOLATION",
+            Self::ConnectionFailed(_) => "CONNECTION_FAILED",
+            Self::QueryFailed(_) => "QUERY_FAILED",
+            Self::InvalidInput(_) => "INVALID_INPUT",
+            Self::EngineError { .. } => "ENGINE_ERROR",
+            Self::ConfigError(_) => "CONFIG_ERROR",
         }
     }
 
@@ -60,6 +61,7 @@ impl PlenumError {
     ///
     /// This message is safe to include in JSON output.
     /// It does not contain credentials, file paths, or other sensitive information.
+    #[must_use]
     pub fn message(&self) -> String {
         // Use Display implementation from thiserror
         self.to_string()
@@ -67,32 +69,32 @@ impl PlenumError {
 
     /// Create a capability violation error
     pub fn capability_violation(message: impl Into<String>) -> Self {
-        PlenumError::CapabilityViolation(message.into())
+        Self::CapabilityViolation(message.into())
     }
 
     /// Create a connection failed error
     pub fn connection_failed(message: impl Into<String>) -> Self {
-        PlenumError::ConnectionFailed(message.into())
+        Self::ConnectionFailed(message.into())
     }
 
     /// Create a query failed error
     pub fn query_failed(message: impl Into<String>) -> Self {
-        PlenumError::QueryFailed(message.into())
+        Self::QueryFailed(message.into())
     }
 
     /// Create an invalid input error
     pub fn invalid_input(message: impl Into<String>) -> Self {
-        PlenumError::InvalidInput(message.into())
+        Self::InvalidInput(message.into())
     }
 
     /// Create an engine-specific error
     pub fn engine_error(engine: impl Into<String>, detail: impl Into<String>) -> Self {
-        PlenumError::EngineError { engine: engine.into(), detail: detail.into() }
+        Self::EngineError { engine: engine.into(), detail: detail.into() }
     }
 
     /// Create a configuration error
     pub fn config_error(message: impl Into<String>) -> Self {
-        PlenumError::ConfigError(message.into())
+        Self::ConfigError(message.into())
     }
 }
 

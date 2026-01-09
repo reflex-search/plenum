@@ -1,11 +1,11 @@
-//! SQLite Database Engine Implementation
+//! `SQLite` Database Engine Implementation
 //!
-//! This module implements the `DatabaseEngine` trait for SQLite databases.
+//! This module implements the `DatabaseEngine` trait for `SQLite` databases.
 //!
 //! # Features
 //! - File-based connections (`/path/to/db.sqlite`)
 //! - In-memory connections (`:memory:`)
-//! - Schema introspection via SQLite system tables and PRAGMAs
+//! - Schema introspection via `SQLite` system tables and PRAGMAs
 //! - Capability-enforced query execution
 //!
 //! # Implementation Notes
@@ -13,7 +13,7 @@
 //! - BLOB data is Base64-encoded for JSON safety
 //! - Timeouts enforced via `busy_timeout`
 //! - Row limits enforced in application code
-//! - No explicit schema support (SQLite uses catalogs)
+//! - No explicit schema support (`SQLite` uses catalogs)
 
 use rusqlite::{Connection, OpenFlags, Row};
 use std::collections::HashMap;
@@ -26,7 +26,7 @@ use crate::engine::{
 };
 use crate::error::{PlenumError, Result};
 
-/// SQLite database engine implementation
+/// `SQLite` database engine implementation
 pub struct SqliteEngine;
 
 impl DatabaseEngine for SqliteEngine {
@@ -54,19 +54,19 @@ impl DatabaseEngine for SqliteEngine {
         // Get SQLite version
         let version: String =
             conn.query_row("SELECT sqlite_version()", [], |row| row.get(0)).map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to query SQLite version: {}", e))
+                PlenumError::connection_failed(format!("Failed to query SQLite version: {e}"))
             })?;
 
         // Get database file name for connected_database
         let db_name = file_path
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or(file_path.to_str().unwrap_or("unknown"))
+            .unwrap_or_else(|| file_path.to_str().unwrap_or("unknown"))
             .to_string();
 
         Ok(ConnectionInfo {
             database_version: version.clone(),
-            server_info: format!("SQLite {}", version),
+            server_info: format!("SQLite {version}"),
             connected_database: db_name,
             user: "N/A".to_string(), // SQLite has no user concept
         })
@@ -111,17 +111,17 @@ impl DatabaseEngine for SqliteEngine {
                  ORDER BY name",
             )
             .map_err(|e| {
-                PlenumError::engine_error("sqlite", format!("Failed to query tables: {}", e))
+                PlenumError::engine_error("sqlite", format!("Failed to query tables: {e}"))
             })?;
 
         let table_names: Vec<String> = stmt
             .query_map([], |row| row.get(0))
             .map_err(|e| {
-                PlenumError::engine_error("sqlite", format!("Failed to fetch table names: {}", e))
+                PlenumError::engine_error("sqlite", format!("Failed to fetch table names: {e}"))
             })?
             .collect::<std::result::Result<Vec<String>, _>>()
             .map_err(|e| {
-                PlenumError::engine_error("sqlite", format!("Failed to collect table names: {}", e))
+                PlenumError::engine_error("sqlite", format!("Failed to collect table names: {e}"))
             })?;
 
         // Introspect each table
@@ -159,25 +159,25 @@ impl DatabaseEngine for SqliteEngine {
         let path_str = file_path.to_str().ok_or_else(|| {
             PlenumError::invalid_input("SQLite file path contains invalid UTF-8 characters")
         })?;
-        let mut conn = open_connection(path_str, false)?;
+        let conn = open_connection(path_str, false)?;
 
         // Set busy timeout if specified
         if let Some(timeout_ms) = caps.timeout_ms {
             conn.busy_timeout(std::time::Duration::from_millis(timeout_ms)).map_err(|e| {
-                PlenumError::engine_error("sqlite", format!("Failed to set timeout: {}", e))
+                PlenumError::engine_error("sqlite", format!("Failed to set timeout: {e}"))
             })?;
         }
 
         // Execute query
         let start = Instant::now();
-        let result = execute_query(&mut conn, query, caps)?;
+        let result = execute_query(&conn, query, caps)?;
         let _elapsed = start.elapsed();
 
         Ok(result)
     }
 }
 
-/// Open SQLite connection with appropriate flags
+/// Open `SQLite` connection with appropriate flags
 fn open_connection(path: &str, read_only: bool) -> Result<Connection> {
     let flags = if read_only {
         OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -185,18 +185,17 @@ fn open_connection(path: &str, read_only: bool) -> Result<Connection> {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
     };
 
-    Connection::open_with_flags(path, flags).map_err(|e| {
-        PlenumError::connection_failed(format!("Failed to open SQLite database: {}", e))
-    })
+    Connection::open_with_flags(path, flags)
+        .map_err(|e| PlenumError::connection_failed(format!("Failed to open SQLite database: {e}")))
 }
 
-/// Introspect a single table and return TableInfo
+/// Introspect a single table and return `TableInfo`
 fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
     // Get column information via PRAGMA table_info
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table_name)).map_err(|e| {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table_name})")).map_err(|e| {
         PlenumError::engine_error(
             "sqlite",
-            format!("Failed to prepare table_info for {}: {}", table_name, e),
+            format!("Failed to prepare table_info for {table_name}: {e}"),
         )
     })?;
 
@@ -212,22 +211,22 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
         .map_err(|e| {
             PlenumError::engine_error(
                 "sqlite",
-                format!("Failed to query columns for {}: {}", table_name, e),
+                format!("Failed to query columns for {table_name}: {e}"),
             )
         })?
         .collect::<std::result::Result<Vec<ColumnInfo>, _>>()
         .map_err(|e| {
             PlenumError::engine_error(
                 "sqlite",
-                format!("Failed to collect columns for {}: {}", table_name, e),
+                format!("Failed to collect columns for {table_name}: {e}"),
             )
         })?;
 
     // Detect primary key columns
-    let mut pk_stmt = conn.prepare(&format!("PRAGMA table_info({})", table_name)).map_err(|e| {
+    let mut pk_stmt = conn.prepare(&format!("PRAGMA table_info({table_name})")).map_err(|e| {
         PlenumError::engine_error(
             "sqlite",
-            format!("Failed to prepare pk query for {}: {}", table_name, e),
+            format!("Failed to prepare pk query for {table_name}: {e}"),
         )
     })?;
 
@@ -240,10 +239,10 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
         .map_err(|e| {
             PlenumError::engine_error(
                 "sqlite",
-                format!("Failed to query primary keys for {}: {}", table_name, e),
+                format!("Failed to query primary keys for {table_name}: {e}"),
             )
         })?
-        .filter_map(|r| r.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|(pk, _)| *pk > 0)
         .map(|(_, name)| name)
         .collect();
@@ -252,10 +251,10 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
 
     // Get foreign keys via PRAGMA foreign_key_list
     let mut fk_stmt =
-        conn.prepare(&format!("PRAGMA foreign_key_list({})", table_name)).map_err(|e| {
+        conn.prepare(&format!("PRAGMA foreign_key_list({table_name})")).map_err(|e| {
             PlenumError::engine_error(
                 "sqlite",
-                format!("Failed to prepare foreign_key_list for {}: {}", table_name, e),
+                format!("Failed to prepare foreign_key_list for {table_name}: {e}"),
             )
         })?;
 
@@ -273,7 +272,7 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
         .map_err(|e| {
             PlenumError::engine_error(
                 "sqlite",
-                format!("Failed to query foreign keys for {}: {}", table_name, e),
+                format!("Failed to query foreign keys for {table_name}: {e}"),
             )
         })?
         .for_each(|r| {
@@ -287,7 +286,7 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
     let foreign_keys: Vec<ForeignKeyInfo> = fk_map
         .into_iter()
         .map(|(id, (ref_table, from_cols, to_cols))| ForeignKeyInfo {
-            name: format!("fk_{}_{}", table_name, id),
+            name: format!("fk_{table_name}_{id}"),
             columns: from_cols,
             referenced_table: ref_table,
             referenced_columns: to_cols,
@@ -295,13 +294,12 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
         .collect();
 
     // Get indexes via PRAGMA index_list
-    let mut idx_stmt =
-        conn.prepare(&format!("PRAGMA index_list({})", table_name)).map_err(|e| {
-            PlenumError::engine_error(
-                "sqlite",
-                format!("Failed to prepare index_list for {}: {}", table_name, e),
-            )
-        })?;
+    let mut idx_stmt = conn.prepare(&format!("PRAGMA index_list({table_name})")).map_err(|e| {
+        PlenumError::engine_error(
+            "sqlite",
+            format!("Failed to prepare index_list for {table_name}: {e}"),
+        )
+    })?;
 
     let index_list: Vec<(String, bool)> = idx_stmt
         .query_map([], |row| {
@@ -312,10 +310,10 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
         .map_err(|e| {
             PlenumError::engine_error(
                 "sqlite",
-                format!("Failed to query indexes for {}: {}", table_name, e),
+                format!("Failed to query indexes for {table_name}: {e}"),
             )
         })?
-        .filter_map(|r| r.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     let mut indexes = Vec::new();
@@ -327,10 +325,10 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
 
         // Get columns in this index via PRAGMA index_info
         let mut idx_info_stmt =
-            conn.prepare(&format!("PRAGMA index_info({})", index_name)).map_err(|e| {
+            conn.prepare(&format!("PRAGMA index_info({index_name})")).map_err(|e| {
                 PlenumError::engine_error(
                     "sqlite",
-                    format!("Failed to prepare index_info for {}: {}", index_name, e),
+                    format!("Failed to prepare index_info for {index_name}: {e}"),
                 )
             })?;
 
@@ -339,10 +337,10 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
             .map_err(|e| {
                 PlenumError::engine_error(
                     "sqlite",
-                    format!("Failed to query index columns for {}: {}", index_name, e),
+                    format!("Failed to query index columns for {index_name}: {e}"),
                 )
             })?
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .collect();
 
         indexes.push(IndexInfo { name: index_name, columns: index_columns, unique });
@@ -358,32 +356,39 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
     })
 }
 
-/// Execute query and return QueryResult
-fn execute_query(conn: &mut Connection, query: &str, caps: &Capabilities) -> Result<QueryResult> {
+/// Execute query and return `QueryResult`
+fn execute_query(conn: &Connection, query: &str, caps: &Capabilities) -> Result<QueryResult> {
     // Prepare statement
     let mut stmt = conn
         .prepare(query)
-        .map_err(|e| PlenumError::query_failed(format!("Failed to prepare query: {}", e)))?;
+        .map_err(|e| PlenumError::query_failed(format!("Failed to prepare query: {e}")))?;
 
     // Get column names
-    let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let column_names: Vec<String> = stmt.column_names().iter().map(|s| (*s).to_string()).collect();
 
     // Execute query and collect rows
     let mut rows_data = Vec::new();
     let mut rows_affected: Option<u64> = None;
 
     // Check if this is a SELECT query (has columns)
-    if !column_names.is_empty() {
+    if column_names.is_empty() {
+        // Non-SELECT query (INSERT, UPDATE, DELETE, DDL)
+        stmt.execute([])
+            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {e}")))?;
+
+        // Get rows affected (only for DML statements)
+        rows_affected = Some(conn.changes());
+    } else {
         // SELECT query - collect result set
         let rows = stmt
             .query([])
-            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {}", e)))?;
+            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {e}")))?;
 
         let mapped_rows = rows.mapped(|row| row_to_json(&column_names, row)).collect::<Vec<_>>();
 
         for row_result in mapped_rows {
             let row = row_result
-                .map_err(|e| PlenumError::query_failed(format!("Failed to fetch row: {}", e)))?;
+                .map_err(|e| PlenumError::query_failed(format!("Failed to fetch row: {e}")))?;
             rows_data.push(row);
 
             // Enforce max_rows limit
@@ -393,19 +398,12 @@ fn execute_query(conn: &mut Connection, query: &str, caps: &Capabilities) -> Res
                 }
             }
         }
-    } else {
-        // Non-SELECT query (INSERT, UPDATE, DELETE, DDL)
-        stmt.execute([])
-            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {}", e)))?;
-
-        // Get rows affected (only for DML statements)
-        rows_affected = Some(conn.changes());
     }
 
     Ok(QueryResult { columns: column_names, rows: rows_data, rows_affected })
 }
 
-/// Convert a SQLite row to a JSON-safe HashMap
+/// Convert a `SQLite` row to a JSON-safe `HashMap`
 fn row_to_json(
     column_names: &[String],
     row: &Row,
@@ -420,7 +418,7 @@ fn row_to_json(
     Ok(map)
 }
 
-/// Convert SQLite value to JSON value
+/// Convert `SQLite` value to JSON value
 fn sqlite_value_to_json(
     row: &Row,
     idx: usize,
@@ -433,8 +431,7 @@ fn sqlite_value_to_json(
         ValueRef::Null => serde_json::Value::Null,
         ValueRef::Integer(i) => serde_json::Value::Number(i.into()),
         ValueRef::Real(f) => serde_json::Number::from_f64(f)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null), // Handle NaN/Infinity as null
+            .map_or(serde_json::Value::Null, serde_json::Value::Number), // Handle NaN/Infinity as null
         ValueRef::Text(s) => {
             let text = std::str::from_utf8(s).map_err(|e| {
                 rusqlite::Error::FromSqlConversionFailure(
@@ -668,7 +665,7 @@ mod tests {
                 .expect("Failed to create table");
 
             for i in 1..=10 {
-                conn.execute("INSERT INTO users (name) VALUES (?)", [format!("User {}", i)])
+                conn.execute("INSERT INTO users (name) VALUES (?)", [format!("User {i}")])
                     .expect("Failed to insert");
             }
         }
@@ -706,7 +703,13 @@ mod tests {
 
             conn.execute(
                 "INSERT INTO test_types VALUES (?, ?, ?, ?, ?)",
-                rusqlite::params![42, 3.14, "hello", vec![1u8, 2u8, 3u8], Option::<String>::None],
+                rusqlite::params![
+                    42,
+                    std::f64::consts::PI,
+                    "hello",
+                    vec![1u8, 2u8, 3u8],
+                    Option::<String>::None
+                ],
             )
             .expect("Failed to insert");
         }
@@ -771,7 +774,7 @@ mod tests {
         let posts_table =
             schema.tables.iter().find(|t| t.name == "posts").expect("posts table not found");
 
-        assert!(posts_table.foreign_keys.len() > 0);
+        assert!(!posts_table.foreign_keys.is_empty());
         let fk = &posts_table.foreign_keys[0];
         assert_eq!(fk.referenced_table, "users");
         assert_eq!(fk.columns, vec!["user_id"]);

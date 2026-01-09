@@ -57,9 +57,9 @@ mod tests {
     fn test_public_api_exports() {
         // Verify that key types are accessible
         let _caps = Capabilities::default();
-        let _engine_type = DatabaseType::Postgres;
+        let _ = DatabaseType::Postgres;
 
         // This test ensures the public API is properly exported
-        assert!(true, "Public API exports are accessible");
+        // If this test compiles, the API is accessible
     }
 }

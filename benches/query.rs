@@ -29,7 +29,7 @@ fn bench_sqlite_simple_select(c: &mut Criterion) {
         for i in 1..=100 {
             conn.execute(
                 "INSERT INTO users (name, age) VALUES (?, ?)",
-                [format!("User {}", i), i.to_string()],
+                [format!("User {i}"), i.to_string()],
             )
             .expect("Failed to insert");
         }
@@ -71,7 +71,7 @@ fn bench_sqlite_filtered_select(c: &mut Criterion) {
         for i in 1..=1000 {
             conn.execute(
                 "INSERT INTO users (name, age) VALUES (?, ?)",
-                [format!("User {}", i), (i % 100).to_string()],
+                [format!("User {i}"), (i % 100).to_string()],
             )
             .expect("Failed to insert");
         }
@@ -153,7 +153,7 @@ fn bench_sqlite_large_result_set(c: &mut Criterion) {
             .expect("Failed to create table");
 
         for i in 1..=10000 {
-            conn.execute("INSERT INTO large_table (value) VALUES (?)", [format!("Value {}", i)])
+            conn.execute("INSERT INTO large_table (value) VALUES (?)", [format!("Value {i}")])
                 .expect("Failed to insert");
         }
     }
