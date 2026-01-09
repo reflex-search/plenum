@@ -44,17 +44,15 @@ use serde_json::Value;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
-use crate::{
-    Capabilities, ConfigLocation, ConnectionConfig, DatabaseEngine, DatabaseType,
-};
+use crate::{Capabilities, ConfigLocation, ConnectionConfig, DatabaseEngine, DatabaseType};
 
 // Import database engines
-#[cfg(feature = "sqlite")]
-use crate::engine::sqlite::SqliteEngine;
-#[cfg(feature = "postgres")]
-use crate::engine::postgres::PostgresEngine;
 #[cfg(feature = "mysql")]
 use crate::engine::mysql::MySqlEngine;
+#[cfg(feature = "postgres")]
+use crate::engine::postgres::PostgresEngine;
+#[cfg(feature = "sqlite")]
+use crate::engine::sqlite::SqliteEngine;
 
 // ============================================================================
 // JSON-RPC 2.0 Structures
@@ -379,9 +377,7 @@ fn handle_list_tools() -> Result<Value> {
 /// Routes the tool call to the appropriate tool implementation.
 async fn handle_call_tool(params: Option<Value>) -> Result<Value> {
     let params = params.ok_or_else(|| anyhow!("Missing params"))?;
-    let name = params["name"]
-        .as_str()
-        .ok_or_else(|| anyhow!("Missing tool name"))?;
+    let name = params["name"].as_str().ok_or_else(|| anyhow!("Missing tool name"))?;
     let arguments = &params["arguments"];
 
     match name {
@@ -401,9 +397,8 @@ async fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 /// Validates and optionally saves a database connection configuration.
 async fn tool_connect(args: &Value) -> Result<Value> {
     // Extract engine
-    let engine_str = args["engine"]
-        .as_str()
-        .ok_or_else(|| anyhow!("Missing required field: engine"))?;
+    let engine_str =
+        args["engine"].as_str().ok_or_else(|| anyhow!("Missing required field: engine"))?;
 
     // Build ConnectionConfig
     let config = build_connection_config_from_args(args, engine_str)?;
@@ -419,10 +414,8 @@ async fn tool_connect(args: &Value) -> Result<Value> {
             _ => return Err(anyhow!("Invalid save location. Must be 'local' or 'global'")),
         };
 
-        let conn_name = args["name"]
-            .as_str()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "default".to_string());
+        let conn_name =
+            args["name"].as_str().map(|s| s.to_string()).unwrap_or_else(|| "default".to_string());
 
         crate::save_connection(conn_name.clone(), config.clone(), location)
             .map_err(|e| anyhow!("Failed to save connection: {}", e))?;
@@ -466,9 +459,7 @@ async fn tool_introspect(args: &Value) -> Result<Value> {
 /// Executes a SQL query with capability constraints.
 async fn tool_query(args: &Value) -> Result<Value> {
     // Extract SQL
-    let sql = args["sql"]
-        .as_str()
-        .ok_or_else(|| anyhow!("Missing required field: sql"))?;
+    let sql = args["sql"].as_str().ok_or_else(|| anyhow!("Missing required field: sql"))?;
 
     // Resolve connection config
     let config = resolve_connection_from_args(args)?;
@@ -583,9 +574,8 @@ fn resolve_connection_from_args(args: &Value) -> Result<ConnectionConfig> {
     }
 
     // No named connection - must have explicit engine
-    let engine_str = args["engine"]
-        .as_str()
-        .ok_or_else(|| anyhow!("Must provide either 'name' or 'engine'"))?;
+    let engine_str =
+        args["engine"].as_str().ok_or_else(|| anyhow!("Must provide either 'name' or 'engine'"))?;
 
     build_connection_config_from_args(args, engine_str)
 }
@@ -601,27 +591,27 @@ async fn validate_connection(config: &ConnectionConfig) -> Result<crate::Connect
             .await
             .map_err(|e| anyhow!("SQLite connection failed: {}", e)),
         #[cfg(not(feature = "sqlite"))]
-        DatabaseType::SQLite => Err(anyhow!(
-            "SQLite engine not enabled. Build with --features sqlite"
-        )),
+        DatabaseType::SQLite => {
+            Err(anyhow!("SQLite engine not enabled. Build with --features sqlite"))
+        }
 
         #[cfg(feature = "postgres")]
         DatabaseType::Postgres => PostgresEngine::validate_connection(config)
             .await
             .map_err(|e| anyhow!("PostgreSQL connection failed: {}", e)),
         #[cfg(not(feature = "postgres"))]
-        DatabaseType::Postgres => Err(anyhow!(
-            "PostgreSQL engine not enabled. Build with --features postgres"
-        )),
+        DatabaseType::Postgres => {
+            Err(anyhow!("PostgreSQL engine not enabled. Build with --features postgres"))
+        }
 
         #[cfg(feature = "mysql")]
         DatabaseType::MySQL => MySqlEngine::validate_connection(config)
             .await
             .map_err(|e| anyhow!("MySQL connection failed: {}", e)),
         #[cfg(not(feature = "mysql"))]
-        DatabaseType::MySQL => Err(anyhow!(
-            "MySQL engine not enabled. Build with --features mysql"
-        )),
+        DatabaseType::MySQL => {
+            Err(anyhow!("MySQL engine not enabled. Build with --features mysql"))
+        }
     }
 }
 
@@ -639,27 +629,27 @@ async fn introspect_schema(
             .await
             .map_err(|e| anyhow!("SQLite introspection failed: {}", e)),
         #[cfg(not(feature = "sqlite"))]
-        DatabaseType::SQLite => Err(anyhow!(
-            "SQLite engine not enabled. Build with --features sqlite"
-        )),
+        DatabaseType::SQLite => {
+            Err(anyhow!("SQLite engine not enabled. Build with --features sqlite"))
+        }
 
         #[cfg(feature = "postgres")]
         DatabaseType::Postgres => PostgresEngine::introspect(config, schema_filter)
             .await
             .map_err(|e| anyhow!("PostgreSQL introspection failed: {}", e)),
         #[cfg(not(feature = "postgres"))]
-        DatabaseType::Postgres => Err(anyhow!(
-            "PostgreSQL engine not enabled. Build with --features postgres"
-        )),
+        DatabaseType::Postgres => {
+            Err(anyhow!("PostgreSQL engine not enabled. Build with --features postgres"))
+        }
 
         #[cfg(feature = "mysql")]
         DatabaseType::MySQL => MySqlEngine::introspect(config, schema_filter)
             .await
             .map_err(|e| anyhow!("MySQL introspection failed: {}", e)),
         #[cfg(not(feature = "mysql"))]
-        DatabaseType::MySQL => Err(anyhow!(
-            "MySQL engine not enabled. Build with --features mysql"
-        )),
+        DatabaseType::MySQL => {
+            Err(anyhow!("MySQL engine not enabled. Build with --features mysql"))
+        }
     }
 }
 
@@ -678,26 +668,26 @@ async fn execute_query(
             .await
             .map_err(|e| anyhow!("SQLite query failed: {}", e)),
         #[cfg(not(feature = "sqlite"))]
-        DatabaseType::SQLite => Err(anyhow!(
-            "SQLite engine not enabled. Build with --features sqlite"
-        )),
+        DatabaseType::SQLite => {
+            Err(anyhow!("SQLite engine not enabled. Build with --features sqlite"))
+        }
 
         #[cfg(feature = "postgres")]
         DatabaseType::Postgres => PostgresEngine::execute(config, sql, capabilities)
             .await
             .map_err(|e| anyhow!("PostgreSQL query failed: {}", e)),
         #[cfg(not(feature = "postgres"))]
-        DatabaseType::Postgres => Err(anyhow!(
-            "PostgreSQL engine not enabled. Build with --features postgres"
-        )),
+        DatabaseType::Postgres => {
+            Err(anyhow!("PostgreSQL engine not enabled. Build with --features postgres"))
+        }
 
         #[cfg(feature = "mysql")]
         DatabaseType::MySQL => MySqlEngine::execute(config, sql, capabilities)
             .await
             .map_err(|e| anyhow!("MySQL query failed: {}", e)),
         #[cfg(not(feature = "mysql"))]
-        DatabaseType::MySQL => Err(anyhow!(
-            "MySQL engine not enabled. Build with --features mysql"
-        )),
+        DatabaseType::MySQL => {
+            Err(anyhow!("MySQL engine not enabled. Build with --features mysql"))
+        }
     }
 }

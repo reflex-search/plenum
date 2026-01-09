@@ -19,10 +19,10 @@ use crate::error::Result;
 
 // Engine-specific implementations
 #[cfg(feature = "sqlite")]
-pub mod sqlite;  // Phase 3 ✅
+pub mod sqlite; // Phase 3 ✅
 
 #[cfg(feature = "postgres")]
-pub mod postgres;  // Phase 4 (in progress)
+pub mod postgres; // Phase 4 (in progress)
 
 // MySQL engine (Phase 5)
 #[cfg(feature = "mysql")]
@@ -197,10 +197,7 @@ impl Capabilities {
 
     /// Create write-enabled capabilities
     pub fn with_write() -> Self {
-        Self {
-            allow_write: true,
-            ..Default::default()
-        }
+        Self { allow_write: true, ..Default::default() }
     }
 
     /// Create DDL-enabled capabilities (DDL implies write)
@@ -342,7 +339,10 @@ pub trait DatabaseEngine {
     /// 4. Returns schema info or error
     ///
     /// If `schema_filter` is provided, only tables in that schema are returned.
-    async fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo>;
+    async fn introspect(
+        config: &ConnectionConfig,
+        schema_filter: Option<&str>,
+    ) -> Result<SchemaInfo>;
 
     /// Execute a query with capability constraints
     ///
@@ -354,7 +354,11 @@ pub trait DatabaseEngine {
     /// 5. Returns query results or error
     ///
     /// Capability violations MUST fail before query execution.
-    async fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult>;
+    async fn execute(
+        config: &ConnectionConfig,
+        query: &str,
+        caps: &Capabilities,
+    ) -> Result<QueryResult>;
 }
 
 #[cfg(test)]
@@ -363,18 +367,9 @@ mod tests {
 
     #[test]
     fn test_database_type_serialization() {
-        assert_eq!(
-            serde_json::to_string(&DatabaseType::Postgres).unwrap(),
-            r#""postgres""#
-        );
-        assert_eq!(
-            serde_json::to_string(&DatabaseType::MySQL).unwrap(),
-            r#""mysql""#
-        );
-        assert_eq!(
-            serde_json::to_string(&DatabaseType::SQLite).unwrap(),
-            r#""sqlite""#
-        );
+        assert_eq!(serde_json::to_string(&DatabaseType::Postgres).unwrap(), r#""postgres""#);
+        assert_eq!(serde_json::to_string(&DatabaseType::MySQL).unwrap(), r#""mysql""#);
+        assert_eq!(serde_json::to_string(&DatabaseType::SQLite).unwrap(), r#""sqlite""#);
     }
 
     #[test]
@@ -437,11 +432,7 @@ mod tests {
     #[test]
     fn test_capabilities_hierarchy() {
         // DDL implies write
-        let caps = Capabilities {
-            allow_write: false,
-            allow_ddl: true,
-            ..Default::default()
-        };
+        let caps = Capabilities { allow_write: false, allow_ddl: true, ..Default::default() };
         assert!(caps.can_write()); // can_write() returns true because DDL is enabled
         assert!(caps.can_ddl());
     }

@@ -29,25 +29,25 @@
 //! - Functions: Configuration resolution and validation
 
 // Core modules (Phase 1)
-pub mod error;       // Error handling infrastructure (Phase 1.3)
-pub mod output;      // JSON output envelopes (Phase 1.2)
-pub mod engine;      // Database engine trait and implementations (Phase 1.1, 3-5)
-pub mod capability;  // Capability validation and enforcement (Phase 1.4)
-pub mod config;      // Configuration management (Phase 1.5)
-pub mod mcp;         // MCP server (Phase 7) - Manual JSON-RPC 2.0 implementation
+pub mod capability; // Capability validation and enforcement (Phase 1.4)
+pub mod config; // Configuration management (Phase 1.5)
+pub mod engine; // Database engine trait and implementations (Phase 1.1, 3-5)
+pub mod error; // Error handling infrastructure (Phase 1.3)
+pub mod mcp;
+pub mod output; // JSON output envelopes (Phase 1.2) // MCP server (Phase 7) - Manual JSON-RPC 2.0 implementation
 
 // Re-export commonly used types for convenience
-pub use error::{PlenumError, Result};
-pub use output::{ErrorEnvelope, ErrorInfo, Metadata, SuccessEnvelope};
+pub use capability::{validate_query, QueryCategory};
+pub use config::{
+    list_connections, resolve_connection, save_connection, ConfigLocation, ConnectionRegistry,
+    StoredConnection,
+};
 pub use engine::{
     Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine, DatabaseType,
     ForeignKeyInfo, IndexInfo, QueryResult, SchemaInfo, TableInfo,
 };
-pub use capability::{validate_query, QueryCategory};
-pub use config::{
-    resolve_connection, save_connection, list_connections,
-    ConfigLocation, ConnectionRegistry, StoredConnection,
-};
+pub use error::{PlenumError, Result};
+pub use output::{ErrorEnvelope, ErrorInfo, Metadata, SuccessEnvelope};
 
 #[cfg(test)]
 mod tests {

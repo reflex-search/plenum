@@ -30,16 +30,13 @@ use std::path::PathBuf;
 fn test_success_envelope_structure() {
     // Create a simple success envelope and validate its JSON structure
     let data = serde_json::json!({"test": "value"});
-    let envelope: SuccessEnvelope<serde_json::Value> = SuccessEnvelope::new(
-        "sqlite",
-        "test",
-        data,
-        Metadata::new(42),
-    );
+    let envelope: SuccessEnvelope<serde_json::Value> =
+        SuccessEnvelope::new("sqlite", "test", data, Metadata::new(42));
 
     // Serialize to JSON
     let json_str = serde_json::to_string(&envelope).expect("Should serialize");
-    let json_value: serde_json::Value = serde_json::from_str(&json_str).expect("Should deserialize");
+    let json_value: serde_json::Value =
+        serde_json::from_str(&json_str).expect("Should deserialize");
 
     // Verify required fields
     assert!(json_value.is_object(), "Should be JSON object");
@@ -53,7 +50,8 @@ fn test_success_envelope_structure() {
     assert_eq!(json_value["meta"]["execution_ms"], 42, "execution_ms should be 42");
 
     // Verify no extra fields (should match schema exactly)
-    let top_level_keys: Vec<&str> = json_value.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+    let top_level_keys: Vec<&str> =
+        json_value.as_object().unwrap().keys().map(|s| s.as_str()).collect();
     assert_eq!(top_level_keys.len(), 5, "Should have exactly 5 top-level fields");
     assert!(top_level_keys.contains(&"ok"));
     assert!(top_level_keys.contains(&"engine"));
@@ -74,7 +72,8 @@ fn test_error_envelope_structure() {
 
     // Serialize to JSON
     let json_str = serde_json::to_string(&envelope).expect("Should serialize");
-    let json_value: serde_json::Value = serde_json::from_str(&json_str).expect("Should deserialize");
+    let json_value: serde_json::Value =
+        serde_json::from_str(&json_str).expect("Should deserialize");
 
     // Verify required fields
     assert!(json_value.is_object(), "Should be JSON object");
@@ -88,14 +87,16 @@ fn test_error_envelope_structure() {
     assert_eq!(json_value["error"]["message"], "Test error message");
 
     // Verify no extra fields
-    let top_level_keys: Vec<&str> = json_value.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+    let top_level_keys: Vec<&str> =
+        json_value.as_object().unwrap().keys().map(|s| s.as_str()).collect();
     assert_eq!(top_level_keys.len(), 4, "Should have exactly 4 top-level fields");
     assert!(top_level_keys.contains(&"ok"));
     assert!(top_level_keys.contains(&"engine"));
     assert!(top_level_keys.contains(&"command"));
     assert!(top_level_keys.contains(&"error"));
 
-    let error_keys: Vec<&str> = json_value["error"].as_object().unwrap().keys().map(|s| s.as_str()).collect();
+    let error_keys: Vec<&str> =
+        json_value["error"].as_object().unwrap().keys().map(|s| s.as_str()).collect();
     assert_eq!(error_keys.len(), 2, "Should have exactly 2 error fields");
     assert!(error_keys.contains(&"code"));
     assert!(error_keys.contains(&"message"));
@@ -130,7 +131,10 @@ fn test_query_result_serializes_to_pure_json() {
 
     // Verify no extra whitespace or content
     assert!(!json_str.contains('\n'), "Should not contain newlines");
-    assert!(!json_str.starts_with("INFO:") && !json_str.starts_with("ERROR:"), "Should not contain log prefixes");
+    assert!(
+        !json_str.starts_with("INFO:") && !json_str.starts_with("ERROR:"),
+        "Should not contain log prefixes"
+    );
 }
 
 #[test]
@@ -139,9 +143,7 @@ fn test_schema_info_serializes_to_pure_json() {
     // Verify that SchemaInfo serializes to pure JSON with no extra content
     use plenum::engine::SchemaInfo;
 
-    let schema = SchemaInfo {
-        tables: vec![],
-    };
+    let schema = SchemaInfo { tables: vec![] };
 
     let json_str = serde_json::to_string(&schema).expect("Should serialize");
 
@@ -164,7 +166,8 @@ fn test_metadata_includes_execution_time() {
     let meta = Metadata::new(123);
 
     let json_str = serde_json::to_string(&meta).expect("Should serialize");
-    let json_value: serde_json::Value = serde_json::from_str(&json_str).expect("Should deserialize");
+    let json_value: serde_json::Value =
+        serde_json::from_str(&json_str).expect("Should deserialize");
 
     assert_eq!(json_value["execution_ms"], 123);
 }
@@ -175,7 +178,8 @@ fn test_metadata_includes_rows_returned_for_queries() {
     let meta = Metadata::with_rows(456, 10);
 
     let json_str = serde_json::to_string(&meta).expect("Should serialize");
-    let json_value: serde_json::Value = serde_json::from_str(&json_str).expect("Should deserialize");
+    let json_value: serde_json::Value =
+        serde_json::from_str(&json_str).expect("Should deserialize");
 
     assert_eq!(json_value["execution_ms"], 456);
     assert_eq!(json_value["rows_returned"], 10);
@@ -221,12 +225,8 @@ fn test_success_envelope_snapshot() {
         "value": 42
     });
 
-    let envelope: SuccessEnvelope<serde_json::Value> = SuccessEnvelope::new(
-        "sqlite",
-        "test",
-        data,
-        Metadata::with_rows(100, 5),
-    );
+    let envelope: SuccessEnvelope<serde_json::Value> =
+        SuccessEnvelope::new("sqlite", "test", data, Metadata::with_rows(100, 5));
 
     let json_str = serde_json::to_string_pretty(&envelope).expect("Should serialize");
     insta::assert_snapshot!(json_str);
@@ -259,10 +259,7 @@ fn test_error_envelope_snapshot() {
 /// Helper to create a test SQLite database
 fn create_test_db() -> PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let temp_file = std::env::temp_dir().join(format!("test_output_{}.db", timestamp));
     let _ = std::fs::remove_file(&temp_file);
 
@@ -285,23 +282,19 @@ fn create_test_db() -> PathBuf {
     temp_file
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_real_query_output_is_valid_json() {
+async fn test_real_query_output_is_valid_json() {
     let temp_file = create_test_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &caps);
+    let result = SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &caps).await;
     assert!(result.is_ok());
 
     // Wrap in success envelope (like the CLI does)
-    let envelope = SuccessEnvelope::new(
-        "sqlite",
-        "query",
-        result.unwrap(),
-        Metadata::with_rows(42, 2),
-    );
+    let envelope =
+        SuccessEnvelope::new("sqlite", "query", result.unwrap(), Metadata::with_rows(42, 2));
 
     // Verify it serializes to valid JSON
     let json_str = serde_json::to_string(&envelope).expect("Should serialize");
@@ -314,22 +307,17 @@ fn test_real_query_output_is_valid_json() {
     let _ = std::fs::remove_file(&temp_file);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "sqlite")]
-fn test_real_introspect_output_is_valid_json() {
+async fn test_real_introspect_output_is_valid_json() {
     let temp_file = create_test_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let result = SqliteEngine::introspect(&config, None);
+    let result = SqliteEngine::introspect(&config, None).await;
     assert!(result.is_ok());
 
     // Wrap in success envelope
-    let envelope = SuccessEnvelope::new(
-        "sqlite",
-        "introspect",
-        result.unwrap(),
-        Metadata::new(50),
-    );
+    let envelope = SuccessEnvelope::new("sqlite", "introspect", result.unwrap(), Metadata::new(50));
 
     // Verify it serializes to valid JSON
     let json_str = serde_json::to_string(&envelope).expect("Should serialize");

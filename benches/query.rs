@@ -23,11 +23,8 @@ fn bench_sqlite_simple_select(c: &mut Criterion) {
     {
         use rusqlite::Connection;
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)", [])
+            .expect("Failed to create table");
 
         for i in 1..=100 {
             conn.execute(
@@ -41,13 +38,16 @@ fn bench_sqlite_simple_select(c: &mut Criterion) {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
+    // Create tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     c.bench_function("sqlite_select_all", |b| {
         b.iter(|| {
-            let result = SqliteEngine::execute(
+            let result = runtime.block_on(SqliteEngine::execute(
                 black_box(&config),
                 black_box("SELECT * FROM users"),
                 black_box(&caps),
-            );
+            ));
             assert!(result.is_ok());
             result
         });
@@ -65,11 +65,8 @@ fn bench_sqlite_filtered_select(c: &mut Criterion) {
     {
         use rusqlite::Connection;
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)", [])
+            .expect("Failed to create table");
 
         for i in 1..=1000 {
             conn.execute(
@@ -83,13 +80,16 @@ fn bench_sqlite_filtered_select(c: &mut Criterion) {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
+    // Create tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     c.bench_function("sqlite_select_where", |b| {
         b.iter(|| {
-            let result = SqliteEngine::execute(
+            let result = runtime.block_on(SqliteEngine::execute(
                 black_box(&config),
                 black_box("SELECT * FROM users WHERE age > 50"),
                 black_box(&caps),
-            );
+            ));
             assert!(result.is_ok());
             result
         });
@@ -107,11 +107,8 @@ fn bench_sqlite_insert(c: &mut Criterion) {
     {
         use rusqlite::Connection;
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)", [])
+            .expect("Failed to create table");
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
@@ -119,15 +116,22 @@ fn bench_sqlite_insert(c: &mut Criterion) {
 
     let mut counter = 0;
 
+    // Create tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     c.bench_function("sqlite_insert_single", |b| {
         b.iter(|| {
             counter += 1;
-            let sql = format!("INSERT INTO users (name, age) VALUES ('User {}', {})", counter, counter % 100);
-            let result = SqliteEngine::execute(
+            let sql = format!(
+                "INSERT INTO users (name, age) VALUES ('User {}', {})",
+                counter,
+                counter % 100
+            );
+            let result = runtime.block_on(SqliteEngine::execute(
                 black_box(&config),
                 black_box(&sql),
                 black_box(&caps),
-            );
+            ));
             assert!(result.is_ok());
             result
         });
@@ -145,31 +149,28 @@ fn bench_sqlite_large_result_set(c: &mut Criterion) {
     {
         use rusqlite::Connection;
         let conn = Connection::open(&temp_file).expect("Failed to create database");
-        conn.execute(
-            "CREATE TABLE large_table (id INTEGER PRIMARY KEY, value TEXT)",
-            [],
-        )
-        .expect("Failed to create table");
+        conn.execute("CREATE TABLE large_table (id INTEGER PRIMARY KEY, value TEXT)", [])
+            .expect("Failed to create table");
 
         for i in 1..=10000 {
-            conn.execute(
-                "INSERT INTO large_table (value) VALUES (?)",
-                [format!("Value {}", i)],
-            )
-            .expect("Failed to insert");
+            conn.execute("INSERT INTO large_table (value) VALUES (?)", [format!("Value {}", i)])
+                .expect("Failed to insert");
         }
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::read_only();
 
+    // Create tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     c.bench_function("sqlite_select_10000_rows", |b| {
         b.iter(|| {
-            let result = SqliteEngine::execute(
+            let result = runtime.block_on(SqliteEngine::execute(
                 black_box(&config),
                 black_box("SELECT * FROM large_table"),
                 black_box(&caps),
-            );
+            ));
             assert!(result.is_ok());
             result
         });

@@ -87,10 +87,7 @@ impl PlenumError {
 
     /// Create an engine-specific error
     pub fn engine_error(engine: impl Into<String>, detail: impl Into<String>) -> Self {
-        PlenumError::EngineError {
-            engine: engine.into(),
-            detail: detail.into(),
-        }
+        PlenumError::EngineError { engine: engine.into(), detail: detail.into() }
     }
 
     /// Create a configuration error
@@ -108,30 +105,12 @@ mod tests {
 
     #[test]
     fn test_error_codes() {
-        assert_eq!(
-            PlenumError::capability_violation("test").error_code(),
-            "CAPABILITY_VIOLATION"
-        );
-        assert_eq!(
-            PlenumError::connection_failed("test").error_code(),
-            "CONNECTION_FAILED"
-        );
-        assert_eq!(
-            PlenumError::query_failed("test").error_code(),
-            "QUERY_FAILED"
-        );
-        assert_eq!(
-            PlenumError::invalid_input("test").error_code(),
-            "INVALID_INPUT"
-        );
-        assert_eq!(
-            PlenumError::engine_error("mysql", "test").error_code(),
-            "ENGINE_ERROR"
-        );
-        assert_eq!(
-            PlenumError::config_error("test").error_code(),
-            "CONFIG_ERROR"
-        );
+        assert_eq!(PlenumError::capability_violation("test").error_code(), "CAPABILITY_VIOLATION");
+        assert_eq!(PlenumError::connection_failed("test").error_code(), "CONNECTION_FAILED");
+        assert_eq!(PlenumError::query_failed("test").error_code(), "QUERY_FAILED");
+        assert_eq!(PlenumError::invalid_input("test").error_code(), "INVALID_INPUT");
+        assert_eq!(PlenumError::engine_error("mysql", "test").error_code(), "ENGINE_ERROR");
+        assert_eq!(PlenumError::config_error("test").error_code(), "CONFIG_ERROR");
     }
 
     #[test]

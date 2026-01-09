@@ -57,39 +57,27 @@ impl DatabaseEngine for PostgresEngine {
         });
 
         // Get PostgreSQL version
-        let version_row = client
-            .query_one("SELECT version()", &[])
-            .await
-            .map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to query PostgreSQL version: {}", e))
-            })?;
+        let version_row = client.query_one("SELECT version()", &[]).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to query PostgreSQL version: {}", e))
+        })?;
 
         let version_string: String = version_row.get(0);
 
         // Extract version number (e.g., "PostgreSQL 15.3 on x86_64..." -> "15.3")
-        let database_version = version_string
-            .split_whitespace()
-            .nth(1)
-            .unwrap_or("unknown")
-            .to_string();
+        let database_version =
+            version_string.split_whitespace().nth(1).unwrap_or("unknown").to_string();
 
         // Get current database name
-        let db_row = client
-            .query_one("SELECT current_database()", &[])
-            .await
-            .map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to query current database: {}", e))
-            })?;
+        let db_row = client.query_one("SELECT current_database()", &[]).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to query current database: {}", e))
+        })?;
 
         let connected_database: String = db_row.get(0);
 
         // Get current user
-        let user_row = client
-            .query_one("SELECT current_user", &[])
-            .await
-            .map_err(|e| {
-                PlenumError::connection_failed(format!("Failed to query current user: {}", e))
-            })?;
+        let user_row = client.query_one("SELECT current_user", &[]).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to query current user: {}", e))
+        })?;
 
         let user: String = user_row.get(0);
 
@@ -101,7 +89,10 @@ impl DatabaseEngine for PostgresEngine {
         })
     }
 
-    async fn introspect(config: &ConnectionConfig, schema_filter: Option<&str>) -> Result<SchemaInfo> {
+    async fn introspect(
+        config: &ConnectionConfig,
+        schema_filter: Option<&str>,
+    ) -> Result<SchemaInfo> {
         // Validate config is for PostgreSQL
         if config.engine != DatabaseType::Postgres {
             return Err(PlenumError::invalid_input(format!(
@@ -130,7 +121,11 @@ impl DatabaseEngine for PostgresEngine {
         Ok(SchemaInfo { tables })
     }
 
-    async fn execute(config: &ConnectionConfig, query: &str, caps: &Capabilities) -> Result<QueryResult> {
+    async fn execute(
+        config: &ConnectionConfig,
+        query: &str,
+        caps: &Capabilities,
+    ) -> Result<QueryResult> {
         // Validate config is for PostgreSQL
         if config.engine != DatabaseType::Postgres {
             return Err(PlenumError::invalid_input(format!(
@@ -202,12 +197,7 @@ fn build_pg_config(config: &ConnectionConfig) -> Result<Config> {
         .ok_or_else(|| PlenumError::invalid_input("PostgreSQL requires 'database' parameter"))?;
 
     let mut pg_config = Config::new();
-    pg_config
-        .host(host)
-        .port(port)
-        .user(user)
-        .password(password)
-        .dbname(database);
+    pg_config.host(host).port(port).user(user).password(password).dbname(database);
 
     Ok(pg_config)
 }
@@ -276,22 +266,23 @@ async fn introspect_table(client: &Client, schema: &str, table_name: &str) -> Re
 }
 
 /// Introspect table columns
-async fn introspect_columns(client: &Client, schema: &str, table_name: &str) -> Result<Vec<ColumnInfo>> {
+async fn introspect_columns(
+    client: &Client,
+    schema: &str,
+    table_name: &str,
+) -> Result<Vec<ColumnInfo>> {
     let query = "
         SELECT column_name, data_type, is_nullable, column_default
         FROM information_schema.columns
         WHERE table_schema = $1 AND table_name = $2
         ORDER BY ordinal_position";
 
-    let rows = client
-        .query(query, &[&schema, &table_name])
-        .await
-        .map_err(|e| {
-            PlenumError::engine_error(
-                "postgres",
-                format!("Failed to query columns for {}.{}: {}", schema, table_name, e),
-            )
-        })?;
+    let rows = client.query(query, &[&schema, &table_name]).await.map_err(|e| {
+        PlenumError::engine_error(
+            "postgres",
+            format!("Failed to query columns for {}.{}: {}", schema, table_name, e),
+        )
+    })?;
 
     let mut columns = Vec::new();
     for row in rows {
@@ -328,15 +319,12 @@ async fn introspect_primary_key(
           AND tc.table_name = $2
         ORDER BY kcu.ordinal_position";
 
-    let rows = client
-        .query(query, &[&schema, &table_name])
-        .await
-        .map_err(|e| {
-            PlenumError::engine_error(
-                "postgres",
-                format!("Failed to query primary key for {}.{}: {}", schema, table_name, e),
-            )
-        })?;
+    let rows = client.query(query, &[&schema, &table_name]).await.map_err(|e| {
+        PlenumError::engine_error(
+            "postgres",
+            format!("Failed to query primary key for {}.{}: {}", schema, table_name, e),
+        )
+    })?;
 
     if rows.is_empty() {
         return Ok(None);
@@ -370,15 +358,12 @@ async fn introspect_foreign_keys(
           AND tc.table_name = $2
         ORDER BY tc.constraint_name, kcu.ordinal_position";
 
-    let rows = client
-        .query(query, &[&schema, &table_name])
-        .await
-        .map_err(|e| {
-            PlenumError::engine_error(
-                "postgres",
-                format!("Failed to query foreign keys for {}.{}: {}", schema, table_name, e),
-            )
-        })?;
+    let rows = client.query(query, &[&schema, &table_name]).await.map_err(|e| {
+        PlenumError::engine_error(
+            "postgres",
+            format!("Failed to query foreign keys for {}.{}: {}", schema, table_name, e),
+        )
+    })?;
 
     // Group by constraint name
     let mut fk_map: HashMap<String, (Vec<String>, String, Vec<String>)> = HashMap::new();
@@ -412,7 +397,11 @@ async fn introspect_foreign_keys(
 }
 
 /// Introspect indexes
-async fn introspect_indexes(client: &Client, schema: &str, table_name: &str) -> Result<Vec<IndexInfo>> {
+async fn introspect_indexes(
+    client: &Client,
+    schema: &str,
+    table_name: &str,
+) -> Result<Vec<IndexInfo>> {
     // Query pg_indexes for index information
     let query = "
         SELECT
@@ -422,15 +411,12 @@ async fn introspect_indexes(client: &Client, schema: &str, table_name: &str) -> 
         WHERE schemaname = $1 AND tablename = $2
         ORDER BY indexname";
 
-    let rows = client
-        .query(query, &[&schema, &table_name])
-        .await
-        .map_err(|e| {
-            PlenumError::engine_error(
-                "postgres",
-                format!("Failed to query indexes for {}.{}: {}", schema, table_name, e),
-            )
-        })?;
+    let rows = client.query(query, &[&schema, &table_name]).await.map_err(|e| {
+        PlenumError::engine_error(
+            "postgres",
+            format!("Failed to query indexes for {}.{}: {}", schema, table_name, e),
+        )
+    })?;
 
     let mut indexes = Vec::new();
     for row in rows {
@@ -449,11 +435,7 @@ async fn introspect_indexes(client: &Client, schema: &str, table_name: &str) -> 
         // Example: "CREATE INDEX idx_users_email ON public.users USING btree (email)"
         let columns = extract_index_columns(&index_def);
 
-        indexes.push(IndexInfo {
-            name: index_name,
-            columns,
-            unique,
-        });
+        indexes.push(IndexInfo { name: index_name, columns, unique });
     }
 
     Ok(indexes)
@@ -465,10 +447,7 @@ fn extract_index_columns(index_def: &str) -> Vec<String> {
     if let Some(start) = index_def.rfind('(') {
         if let Some(end) = index_def.rfind(')') {
             let column_str = &index_def[start + 1..end];
-            return column_str
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .collect();
+            return column_str.split(',').map(|s| s.trim().to_string()).collect();
         }
     }
     Vec::new()
@@ -477,21 +456,24 @@ fn extract_index_columns(index_def: &str) -> Vec<String> {
 /// Execute query and return QueryResult
 async fn execute_query(client: &Client, query: &str, caps: &Capabilities) -> Result<QueryResult> {
     // Execute query
-    let stmt = client.prepare(query).await.map_err(|e| {
-        PlenumError::query_failed(format!("Failed to prepare query: {}", e))
-    })?;
+    let stmt = client
+        .prepare(query)
+        .await
+        .map_err(|e| PlenumError::query_failed(format!("Failed to prepare query: {}", e)))?;
 
     // Check if this is a SELECT query (returns rows)
     let is_select = !stmt.columns().is_empty();
 
     if is_select {
         // SELECT query - execute and collect rows
-        let rows = client.query(&stmt, &[]).await.map_err(|e| {
-            PlenumError::query_failed(format!("Failed to execute query: {}", e))
-        })?;
+        let rows = client
+            .query(&stmt, &[])
+            .await
+            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {}", e)))?;
 
         // Get column names
-        let column_names: Vec<String> = stmt.columns().iter().map(|c| c.name().to_string()).collect();
+        let column_names: Vec<String> =
+            stmt.columns().iter().map(|c| c.name().to_string()).collect();
 
         // Convert rows to JSON
         let mut rows_data = Vec::new();
@@ -506,16 +488,13 @@ async fn execute_query(client: &Client, query: &str, caps: &Capabilities) -> Res
             }
         }
 
-        Ok(QueryResult {
-            columns: column_names,
-            rows: rows_data,
-            rows_affected: None,
-        })
+        Ok(QueryResult { columns: column_names, rows: rows_data, rows_affected: None })
     } else {
         // Non-SELECT query (INSERT, UPDATE, DELETE, DDL)
-        let rows_affected = client.execute(&stmt, &[]).await.map_err(|e| {
-            PlenumError::query_failed(format!("Failed to execute query: {}", e))
-        })?;
+        let rows_affected = client
+            .execute(&stmt, &[])
+            .await
+            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {}", e)))?;
 
         Ok(QueryResult {
             columns: Vec::new(),
@@ -702,7 +681,7 @@ mod tests {
     // cargo test --features postgres -- --ignored
 
     #[tokio::test]
-    #[ignore] // Requires running PostgreSQL instance
+    #[ignore = "Requires running PostgreSQL instance"]
     async fn test_validate_connection() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
@@ -735,10 +714,7 @@ mod tests {
 
         let result = PostgresEngine::validate_connection(&config).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message()
-            .contains("Expected PostgreSQL engine"));
+        assert!(result.unwrap_err().message().contains("Expected PostgreSQL engine"));
     }
 
     #[tokio::test]
@@ -755,14 +731,11 @@ mod tests {
 
         let result = PostgresEngine::validate_connection(&config).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message()
-            .contains("PostgreSQL requires 'host' parameter"));
+        assert!(result.unwrap_err().message().contains("PostgreSQL requires 'host' parameter"));
     }
 
     #[tokio::test]
-    #[ignore] // Requires running PostgreSQL instance
+    #[ignore = "Requires running PostgreSQL instance"]
     async fn test_introspect_schema() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
@@ -774,11 +747,8 @@ mod tests {
 
         // Create test table first
         let create_caps = Capabilities::with_ddl();
-        let _ = PostgresEngine::execute(
-            &config,
-            "DROP TABLE IF EXISTS test_users",
-            &create_caps,
-        ).await;
+        let _ =
+            PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_users", &create_caps).await;
         let _ = PostgresEngine::execute(
             &config,
             "CREATE TABLE test_users (
@@ -787,7 +757,8 @@ mod tests {
                 email VARCHAR(255)
             )",
             &create_caps,
-        ).await;
+        )
+        .await;
 
         // Introspect
         let result = PostgresEngine::introspect(&config, Some("public")).await;
@@ -812,7 +783,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires running PostgreSQL instance
+    #[ignore = "Requires running PostgreSQL instance"]
     async fn test_execute_select_query() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
@@ -823,7 +794,8 @@ mod tests {
         );
 
         let caps = Capabilities::read_only();
-        let result = PostgresEngine::execute(&config, "SELECT 1 AS num, 'test' AS str", &caps).await;
+        let result =
+            PostgresEngine::execute(&config, "SELECT 1 AS num, 'test' AS str", &caps).await;
         assert!(result.is_ok(), "Query execution failed: {:?}", result.err());
 
         let query_result = result.unwrap();
@@ -837,7 +809,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires running PostgreSQL instance
+    #[ignore = "Requires running PostgreSQL instance"]
     async fn test_execute_insert_without_capability() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
@@ -849,12 +821,14 @@ mod tests {
 
         // Create test table
         let ddl_caps = Capabilities::with_ddl();
-        let _ = PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_insert", &ddl_caps).await;
+        let _ =
+            PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_insert", &ddl_caps).await;
         let _ = PostgresEngine::execute(
             &config,
             "CREATE TABLE test_insert (id SERIAL PRIMARY KEY, name TEXT)",
             &ddl_caps,
-        ).await;
+        )
+        .await;
 
         // Try to insert without write capability
         let caps = Capabilities::read_only();
@@ -862,20 +836,18 @@ mod tests {
             &config,
             "INSERT INTO test_insert (name) VALUES ('test')",
             &caps,
-        ).await;
+        )
+        .await;
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message()
-            .contains("Write operations require --allow-write"));
+        assert!(result.unwrap_err().message().contains("Write operations require --allow-write"));
 
         // Cleanup
         let _ = PostgresEngine::execute(&config, "DROP TABLE test_insert", &ddl_caps).await;
     }
 
     #[tokio::test]
-    #[ignore] // Requires running PostgreSQL instance
+    #[ignore = "Requires running PostgreSQL instance"]
     async fn test_execute_insert_with_capability() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
@@ -887,12 +859,14 @@ mod tests {
 
         // Create test table
         let ddl_caps = Capabilities::with_ddl();
-        let _ = PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_insert2", &ddl_caps).await;
+        let _ =
+            PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_insert2", &ddl_caps).await;
         let _ = PostgresEngine::execute(
             &config,
             "CREATE TABLE test_insert2 (id SERIAL PRIMARY KEY, name TEXT)",
             &ddl_caps,
-        ).await;
+        )
+        .await;
 
         // Insert with write capability
         let write_caps = Capabilities::with_write();
@@ -900,7 +874,8 @@ mod tests {
             &config,
             "INSERT INTO test_insert2 (name) VALUES ('test')",
             &write_caps,
-        ).await;
+        )
+        .await;
 
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
         let query_result = result.unwrap();
@@ -911,7 +886,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires running PostgreSQL instance
+    #[ignore = "Requires running PostgreSQL instance"]
     async fn test_execute_ddl_without_capability() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
@@ -926,17 +901,15 @@ mod tests {
             &config,
             "CREATE TABLE test_ddl (id SERIAL PRIMARY KEY)",
             &caps,
-        ).await;
+        )
+        .await;
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message()
-            .contains("DDL operations require --allow-ddl"));
+        assert!(result.unwrap_err().message().contains("DDL operations require --allow-ddl"));
     }
 
     #[tokio::test]
-    #[ignore] // Requires running PostgreSQL instance
+    #[ignore = "Requires running PostgreSQL instance"]
     async fn test_execute_ddl_with_capability() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
@@ -952,7 +925,8 @@ mod tests {
             &config,
             "CREATE TABLE test_ddl2 (id SERIAL PRIMARY KEY)",
             &caps,
-        ).await;
+        )
+        .await;
 
         assert!(result.is_ok(), "DDL execution failed: {:?}", result.err());
 
@@ -961,7 +935,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires running PostgreSQL instance
+    #[ignore = "Requires running PostgreSQL instance"]
     async fn test_execute_max_rows_limit() {
         let config = ConnectionConfig::postgres(
             "localhost".to_string(),
@@ -973,12 +947,14 @@ mod tests {
 
         // Create and populate test table
         let ddl_caps = Capabilities::with_ddl();
-        let _ = PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_limit", &ddl_caps).await;
+        let _ =
+            PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_limit", &ddl_caps).await;
         let _ = PostgresEngine::execute(
             &config,
             "CREATE TABLE test_limit (id SERIAL PRIMARY KEY, name TEXT)",
             &ddl_caps,
-        ).await;
+        )
+        .await;
 
         let write_caps = Capabilities::with_write();
         for i in 1..=10 {
@@ -986,14 +962,12 @@ mod tests {
                 &config,
                 &format!("INSERT INTO test_limit (name) VALUES ('User {}')", i),
                 &write_caps,
-            ).await;
+            )
+            .await;
         }
 
         // Query with row limit
-        let caps = Capabilities {
-            max_rows: Some(5),
-            ..Capabilities::read_only()
-        };
+        let caps = Capabilities { max_rows: Some(5), ..Capabilities::read_only() };
         let result = PostgresEngine::execute(&config, "SELECT * FROM test_limit", &caps).await;
 
         assert!(result.is_ok(), "Query failed: {:?}", result.err());
@@ -1010,7 +984,8 @@ mod tests {
         let columns = extract_index_columns(index_def);
         assert_eq!(columns, vec!["email"]);
 
-        let index_def_multi = "CREATE INDEX idx_composite ON public.orders USING btree (user_id, order_date)";
+        let index_def_multi =
+            "CREATE INDEX idx_composite ON public.orders USING btree (user_id, order_date)";
         let columns_multi = extract_index_columns(index_def_multi);
         assert_eq!(columns_multi, vec!["user_id", "order_date"]);
     }

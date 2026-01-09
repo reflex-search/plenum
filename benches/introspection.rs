@@ -36,9 +36,12 @@ fn bench_sqlite_introspection_simple(c: &mut Criterion) {
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
+    // Create tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     c.bench_function("sqlite_introspect_single_table", |b| {
         b.iter(|| {
-            let result = SqliteEngine::introspect(black_box(&config), None);
+            let result = runtime.block_on(SqliteEngine::introspect(black_box(&config), None));
             assert!(result.is_ok());
             result
         });
@@ -103,9 +106,12 @@ fn bench_sqlite_introspection_complex(c: &mut Criterion) {
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
+    // Create tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     c.bench_function("sqlite_introspect_multiple_tables", |b| {
         b.iter(|| {
-            let result = SqliteEngine::introspect(black_box(&config), None);
+            let result = runtime.block_on(SqliteEngine::introspect(black_box(&config), None));
             assert!(result.is_ok());
             result
         });
@@ -116,11 +122,7 @@ fn bench_sqlite_introspection_complex(c: &mut Criterion) {
 }
 
 #[cfg(feature = "sqlite")]
-criterion_group!(
-    benches,
-    bench_sqlite_introspection_simple,
-    bench_sqlite_introspection_complex
-);
+criterion_group!(benches, bench_sqlite_introspection_simple, bench_sqlite_introspection_complex);
 
 #[cfg(not(feature = "sqlite"))]
 criterion_group!(benches,);
