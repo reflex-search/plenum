@@ -78,11 +78,19 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Publish to npm (Trusted Publishing with OIDC)
+      - name: Upgrade npm for Trusted Publishing
+        run: npm install -g npm@latest
+
+      - name: Verify npm version
+        run: npm --version
+
+      - name: Publish to NPM
         run: |
-          for package in npm-packages/*-npm-package.tar.gz; do
-            echo "Publishing $package..."
-            # Trusted publishing uses OIDC - no token needed
-            # npm CLI >= 11.5.1 automatically includes provenance with trusted publishing
-            npm publish "$package" --access public
+          cd npm-packages
+          for tarball in *-npm-package.tar.gz; do
+            if [ -f "$tarball" ]; then
+              echo "Publishing $tarball to NPM..."
+              npm publish "$tarball" --access public --provenance
+              echo "✓ Successfully published $tarball"
+            fi
           done
