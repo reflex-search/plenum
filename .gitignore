@@ -38,3 +38,7 @@ Cargo.lock
 /doc
 
 plenum
+
+*.tar.gz
+
+package/

@@ -99,7 +99,6 @@ async fn test_large_result_set_with_max_rows() {
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_very_large_result_set_without_limit() {
-
     let temp_file = create_test_db();
 
     {
@@ -133,7 +132,6 @@ async fn test_very_large_result_set_without_limit() {
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_unicode_characters() {
-
     let temp_file = create_test_db();
 
     {
@@ -181,7 +179,6 @@ async fn test_unicode_characters() {
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_special_sql_characters() {
-
     let temp_file = create_test_db();
 
     {
@@ -233,7 +230,6 @@ async fn test_special_sql_characters() {
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_binary_blob_data() {
-
     let temp_file = create_test_db();
 
     {
@@ -271,7 +267,6 @@ async fn test_binary_blob_data() {
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_numeric_extremes() {
-
     let temp_file = create_test_db();
 
     {
@@ -320,7 +315,6 @@ async fn test_numeric_extremes() {
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_empty_string_vs_null() {
-
     let temp_file = create_test_db();
 
     {
@@ -362,7 +356,6 @@ async fn test_empty_string_vs_null() {
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_very_long_query() {
-
     let temp_file = create_test_db();
 
     {
@@ -402,7 +395,6 @@ async fn test_very_long_query() {
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_sql_injection_patterns_in_data() {
-
     let temp_file = create_test_db();
 
     {
@@ -444,7 +436,6 @@ async fn test_sql_injection_patterns_in_data() {
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_timeout_capability() {
-
     let temp_file = create_test_db();
 
     {
@@ -477,7 +468,6 @@ async fn test_timeout_capability() {
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_query_with_excessive_whitespace() {
-
     let temp_file = create_test_db();
 
     {
@@ -506,7 +496,6 @@ async fn test_query_with_excessive_whitespace() {
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_case_sensitivity_in_table_names() {
-
     let temp_file = create_test_db();
 
     {
