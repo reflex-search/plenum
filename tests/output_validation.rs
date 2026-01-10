@@ -258,14 +258,18 @@ fn test_error_envelope_snapshot() {
 
 /// Helper to create a test `SQLite` database
 fn create_test_db() -> PathBuf {
+    use rusqlite::{Connection, OpenFlags};
     use std::time::{SystemTime, UNIX_EPOCH};
+
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let temp_file = std::env::temp_dir().join(format!("test_output_{timestamp}.db"));
     let _ = std::fs::remove_file(&temp_file);
 
     {
-        use rusqlite::Connection;
-        let conn = Connection::open(&temp_file).expect("Failed to create temp database");
+        // Use explicit read-write flags to avoid macOS symlink readonly issues
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
+        let conn = Connection::open_with_flags(&temp_file, flags)
+            .expect("Failed to create temp database");
 
         conn.execute(
             "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price REAL)",
