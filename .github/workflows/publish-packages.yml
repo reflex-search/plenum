@@ -78,11 +78,11 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to npm (Trusted Publishing with OIDC)
         run: |
           for package in npm-packages/*-npm-package.tar.gz; do
             echo "Publishing $package..."
-            npm publish "$package" --access public --provenance
+            # Trusted publishing uses OIDC - no token needed
+            # npm CLI >= 11.5.1 automatically includes provenance with trusted publishing
+            npm publish "$package" --access public
           done

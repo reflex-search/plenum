@@ -30,16 +30,35 @@ After the first release, configure trusted publishing on crates.io:
 
 ### 2. npm Trusted Publishing Setup
 
-1. Create an npm account at [npmjs.com](https://npmjs.com)
-2. Configure trusted publishing:
-   - Go to your npm account settings
-   - Navigate to "Publishing Access"
-   - Add GitHub Actions as a trusted publisher
-   - Specify:
-     - Repository: `reflex-search/plenum`
-     - Workflow: `publish-packages.yml`
+First, you need to publish the package manually once:
 
-Requires npm CLI v11.5.1 or later.
+```bash
+# Ensure you have npm >= 11.5.1
+npm --version
+
+# Login to npm
+npm login
+
+# Publish manually for the first time
+npm publish --access public
+```
+
+After the first manual publish, configure trusted publishing:
+
+1. Go to your package page: `https://www.npmjs.com/package/plenum`
+2. Click the **"Settings"** tab
+3. Scroll down to the **"Publishing access"** section
+4. Click **"Automate publishing with GitHub Actions"** or **"Add trusted publisher"**
+5. Fill in the form (**case-sensitive!**):
+   - **Repository owner**: `reflex-search`
+   - **Repository name**: `plenum`
+   - **Workflow name**: `publish-packages.yml` (must include .yml extension)
+   - **Environment name**: (leave blank)
+6. Click "Add" or "Save"
+
+**Optional but recommended**: After configuring trusted publishing, go back to Publishing access and select **"Require two-factor authentication and disallow tokens"** for enhanced security.
+
+**Note**: Trusted publishing uses OIDC tokens automatically - no npm tokens or secrets needed in your workflow.
 
 ## Release Workflow
 
