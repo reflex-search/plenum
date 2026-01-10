@@ -23,7 +23,9 @@ ehthumbs.db
 Desktop.ini
 
 # Cargo
-# NOTE: Cargo.lock is NOT ignored - it should be committed for binary projects
+# NOTE: Cargo.lock is ignored to match reflex-search/reflex approach
+# This prevents dirty tree issues during cargo publish in CI
+Cargo.lock
 
 # Test artifacts
 *.profraw
