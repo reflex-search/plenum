@@ -268,8 +268,8 @@ fn create_test_db() -> PathBuf {
     {
         // Use explicit read-write flags to avoid macOS symlink readonly issues
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
-        let conn = Connection::open_with_flags(&temp_file, flags)
-            .expect("Failed to create temp database");
+        let conn =
+            Connection::open_with_flags(&temp_file, flags).expect("Failed to create temp database");
 
         conn.execute(
             "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price REAL)",
