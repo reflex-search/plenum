@@ -36,7 +36,7 @@ fn bench_sqlite_simple_select(c: &mut Criterion) {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     // Create tokio runtime for async operations
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -78,7 +78,7 @@ fn bench_sqlite_filtered_select(c: &mut Criterion) {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     // Create tokio runtime for async operations
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -159,7 +159,7 @@ fn bench_sqlite_large_result_set(c: &mut Criterion) {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     // Create tokio runtime for async operations
     let runtime = tokio::runtime::Runtime::new().unwrap();

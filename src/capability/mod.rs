@@ -1,72 +1,43 @@
-//! Capability Validation and SQL Categorization
+//! Query Validation for Read-Only Operations
 //!
-//! This module implements capability-based query validation.
-//! All queries are categorized (Read-only, Write, DDL) and checked against
-//! the provided capabilities BEFORE execution.
+//! This module implements strict read-only query validation.
+//! Plenum is a read-only tool - all write and DDL operations are rejected.
 //!
-//! # SQL Categorization Strategy
-//! - Regex-based pattern matching
-//! - Engine-specific implementations (no shared SQL helpers)
+//! # Validation Strategy
+//! - Engine-specific pattern matching (no shared SQL helpers)
 //! - Conservative approach (fail-safe defaults)
-//!
-//! # Capability Hierarchy
-//! - Read-only: Default mode, SELECT queries only
-//! - Write: Requires `allow_write`, enables INSERT/UPDATE/DELETE
-//! - DDL: Requires `allow_ddl`, enables DDL operations (implies write)
+//! - Only SELECT, SHOW, DESCRIBE, PRAGMA, EXPLAIN, and transaction control statements are permitted
+//! - Everything else is rejected with a helpful error message
 
 use crate::engine::{Capabilities, DatabaseType};
 use crate::error::{PlenumError, Result};
 
-/// SQL query category
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueryCategory {
-    /// Read-only query (SELECT, WITH...SELECT, EXPLAIN SELECT)
-    ReadOnly,
-    /// Write query (INSERT, UPDATE, DELETE, stored procedure calls)
-    Write,
-    /// DDL query (CREATE, DROP, ALTER, TRUNCATE, RENAME)
-    DDL,
-}
-
-/// Validate query against capabilities
+/// Validate query is read-only
 ///
-/// This function categorizes the query and checks if the capabilities permit it.
-/// Returns an error if the query violates capability constraints.
-pub fn validate_query(
-    sql: &str,
-    caps: &Capabilities,
-    engine: DatabaseType,
-) -> Result<QueryCategory> {
+/// This function checks if the query is a permitted read-only operation.
+/// Any write or DDL operations are rejected with a helpful error message.
+///
+/// # Arguments
+/// * `sql` - The SQL query to validate
+/// * `_caps` - Capabilities (currently only used for max_rows/timeout, not for permission checks)
+/// * `engine` - Database engine type
+///
+/// # Returns
+/// * `Ok(())` if the query is read-only
+/// * `Err(PlenumError)` with a helpful message if the query attempts to modify data
+pub fn validate_query(sql: &str, _caps: &Capabilities, engine: DatabaseType) -> Result<()> {
     // Pre-process SQL
     let processed = preprocess_sql(sql)?;
 
-    // Categorize query (engine-specific)
-    let category = categorize_query(&processed, engine);
-
-    // Check capabilities
-    match category {
-        QueryCategory::ReadOnly => {
-            // Always permitted
-            Ok(category)
-        }
-        QueryCategory::Write => {
-            // Requires allow_write OR allow_ddl (DDL implies write)
-            if caps.can_write() {
-                Ok(category)
-            } else {
-                Err(PlenumError::capability_violation(
-                    "Write operations require --allow-write flag",
-                ))
-            }
-        }
-        QueryCategory::DDL => {
-            // Requires explicit allow_ddl flag
-            if caps.can_ddl() {
-                Ok(category)
-            } else {
-                Err(PlenumError::capability_violation("DDL operations require --allow-ddl flag"))
-            }
-        }
+    // Check if query is read-only (engine-specific)
+    if is_read_only(&processed, engine) {
+        Ok(())
+    } else {
+        // Reject with helpful error message
+        Err(PlenumError::capability_violation(format!(
+            "Plenum is read-only and cannot execute this query. Please run this query manually:\n\n{}",
+            sql
+        )))
     }
 }
 
@@ -143,88 +114,16 @@ fn strip_comments(sql: &str) -> String {
     result
 }
 
-/// Categorize SQL query (engine-specific)
+/// Check if query is read-only (engine-specific)
 ///
-/// Each engine has slightly different SQL dialects, so categorization
-/// is engine-specific.
-fn categorize_query(sql: &str, engine: DatabaseType) -> QueryCategory {
+/// Each engine has slightly different SQL dialects, so validation is engine-specific.
+/// This is a conservative check - if uncertain, the query is rejected.
+fn is_read_only(sql: &str, engine: DatabaseType) -> bool {
     match engine {
-        DatabaseType::Postgres => categorize_postgres(sql),
-        DatabaseType::MySQL => categorize_mysql(sql),
-        DatabaseType::SQLite => categorize_sqlite(sql),
+        DatabaseType::Postgres => is_read_only_postgres(sql),
+        DatabaseType::MySQL => is_read_only_mysql(sql),
+        DatabaseType::SQLite => is_read_only_sqlite(sql),
     }
-}
-
-/// Categorize `PostgreSQL` query
-fn categorize_postgres(sql: &str) -> QueryCategory {
-    // Strip EXPLAIN/EXPLAIN ANALYZE prefix
-    let sql = strip_explain_prefix(sql);
-
-    // Check for DDL operations
-    if is_ddl_postgres(&sql) {
-        return QueryCategory::DDL;
-    }
-
-    // Check for write operations
-    if is_write_postgres(&sql) {
-        return QueryCategory::Write;
-    }
-
-    // Check for read operations
-    if is_read_only_postgres(&sql) {
-        return QueryCategory::ReadOnly;
-    }
-
-    // Unknown statement type: default to DDL (most restrictive, fail-safe)
-    QueryCategory::DDL
-}
-
-/// Categorize `MySQL` query
-fn categorize_mysql(sql: &str) -> QueryCategory {
-    // Strip EXPLAIN prefix
-    let sql = strip_explain_prefix(sql);
-
-    // Check for DDL operations (MySQL has implicit commits for DDL)
-    if is_ddl_mysql(&sql) {
-        return QueryCategory::DDL;
-    }
-
-    // Check for write operations
-    if is_write_mysql(&sql) {
-        return QueryCategory::Write;
-    }
-
-    // Check for read operations
-    if is_read_only_mysql(&sql) {
-        return QueryCategory::ReadOnly;
-    }
-
-    // Unknown statement type: default to DDL (most restrictive, fail-safe)
-    QueryCategory::DDL
-}
-
-/// Categorize `SQLite` query
-fn categorize_sqlite(sql: &str) -> QueryCategory {
-    // Strip EXPLAIN prefix
-    let sql = strip_explain_prefix(sql);
-
-    // Check for DDL operations
-    if is_ddl_sqlite(&sql) {
-        return QueryCategory::DDL;
-    }
-
-    // Check for write operations
-    if is_write_sqlite(&sql) {
-        return QueryCategory::Write;
-    }
-
-    // Check for read operations
-    if is_read_only_sqlite(&sql) {
-        return QueryCategory::ReadOnly;
-    }
-
-    // Unknown statement type: default to DDL (most restrictive, fail-safe)
-    QueryCategory::DDL
 }
 
 /// Strip EXPLAIN/EXPLAIN ANALYZE prefix from query
@@ -244,30 +143,14 @@ fn strip_explain_prefix(sql: &str) -> String {
     sql.to_string()
 }
 
-// PostgreSQL categorization helpers
-
-fn is_ddl_postgres(sql: &str) -> bool {
-    let sql = sql.trim();
-    sql.starts_with("CREATE ")
-        || sql.starts_with("DROP ")
-        || sql.starts_with("ALTER ")
-        || sql.starts_with("TRUNCATE ")
-        || sql.starts_with("RENAME ")
-}
-
-fn is_write_postgres(sql: &str) -> bool {
-    let sql = sql.trim();
-    sql.starts_with("INSERT ")
-        || sql.starts_with("UPDATE ")
-        || sql.starts_with("DELETE ")
-        || sql.starts_with("CALL ")
-        || (sql.starts_with("WITH ") && contains_write_cte(sql))
-}
-
+// PostgreSQL read-only check
 fn is_read_only_postgres(sql: &str) -> bool {
+    // Strip EXPLAIN/EXPLAIN ANALYZE prefix
+    let sql = strip_explain_prefix(sql);
     let sql = sql.trim();
+
     sql.starts_with("SELECT ")
-        || (sql.starts_with("WITH ") && !contains_write_cte(sql))
+        || sql.starts_with("WITH ")  // CTEs are allowed (conservative: assume read-only)
         || sql.starts_with("BEGIN")
         || sql.starts_with("COMMIT")
         || sql.starts_with("ROLLBACK")
@@ -276,35 +159,14 @@ fn is_read_only_postgres(sql: &str) -> bool {
         || sql.starts_with("RELEASE")
 }
 
-// MySQL categorization helpers
-
-fn is_ddl_mysql(sql: &str) -> bool {
-    let sql = sql.trim();
-    // MySQL DDL statements (cause implicit commit)
-    sql.starts_with("CREATE ")
-        || sql.starts_with("DROP ")
-        || sql.starts_with("ALTER ")
-        || sql.starts_with("TRUNCATE ")
-        || sql.starts_with("RENAME ")
-        || sql.starts_with("LOCK TABLES")
-        || sql.starts_with("UNLOCK TABLES")
-}
-
-fn is_write_mysql(sql: &str) -> bool {
-    let sql = sql.trim();
-    sql.starts_with("INSERT ")
-        || sql.starts_with("UPDATE ")
-        || sql.starts_with("DELETE ")
-        || sql.starts_with("REPLACE ")
-        || sql.starts_with("CALL ")
-        || sql.starts_with("EXEC ")
-        || (sql.starts_with("WITH ") && contains_write_cte(sql))
-}
-
+// MySQL read-only check
 fn is_read_only_mysql(sql: &str) -> bool {
+    // Strip EXPLAIN prefix
+    let sql = strip_explain_prefix(sql);
     let sql = sql.trim();
+
     sql.starts_with("SELECT ")
-        || (sql.starts_with("WITH ") && !contains_write_cte(sql))
+        || sql.starts_with("WITH ")  // CTEs are allowed (conservative: assume read-only)
         || sql.starts_with("SHOW ")
         || sql.starts_with("DESCRIBE ")
         || sql.starts_with("DESC ")
@@ -316,46 +178,20 @@ fn is_read_only_mysql(sql: &str) -> bool {
         || sql.starts_with("RELEASE")
 }
 
-// SQLite categorization helpers
-
-fn is_ddl_sqlite(sql: &str) -> bool {
-    let sql = sql.trim();
-    sql.starts_with("CREATE ")
-        || sql.starts_with("DROP ")
-        || sql.starts_with("ALTER ")
-        || sql.starts_with("RENAME ")
-        || sql.starts_with("VACUUM")
-        || sql.starts_with("REINDEX")
-        || sql.starts_with("ATTACH ")
-        || sql.starts_with("DETACH ")
-}
-
-fn is_write_sqlite(sql: &str) -> bool {
-    let sql = sql.trim();
-    sql.starts_with("INSERT ")
-        || sql.starts_with("UPDATE ")
-        || sql.starts_with("DELETE ")
-        || sql.starts_with("REPLACE ")
-        || (sql.starts_with("WITH ") && contains_write_cte(sql))
-}
-
+// SQLite read-only check
 fn is_read_only_sqlite(sql: &str) -> bool {
+    // Strip EXPLAIN prefix
+    let sql = strip_explain_prefix(sql);
     let sql = sql.trim();
+
     sql.starts_with("SELECT ")
-        || (sql.starts_with("WITH ") && !contains_write_cte(sql))
+        || sql.starts_with("WITH ")  // CTEs are allowed (conservative: assume read-only)
         || sql.starts_with("PRAGMA ")
         || sql.starts_with("BEGIN")
         || sql.starts_with("COMMIT")
         || sql.starts_with("ROLLBACK")
         || sql.starts_with("SAVEPOINT")
         || sql.starts_with("RELEASE")
-}
-
-// Helper: Check if CTE contains write operations
-fn contains_write_cte(sql: &str) -> bool {
-    // Simple heuristic: check if CTE contains INSERT/UPDATE/DELETE keywords
-    // This is conservative - it may misclassify some queries as write
-    sql.contains(" INSERT ") || sql.contains(" UPDATE ") || sql.contains(" DELETE ")
 }
 
 #[cfg(test)]
@@ -418,190 +254,181 @@ mod tests {
         assert!(result.contains("FROM"));
     }
 
-    // PostgreSQL categorization tests
+    // PostgreSQL read-only tests
 
     #[test]
     fn test_postgres_select() {
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result = validate_query("SELECT * FROM users", &caps, DatabaseType::Postgres);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), QueryCategory::ReadOnly);
     }
 
     #[test]
-    fn test_postgres_insert_without_write_capability() {
-        let caps = Capabilities::read_only();
+    fn test_postgres_insert_rejected() {
+        let caps = Capabilities::default();
         let result = validate_query(
             "INSERT INTO users (name) VALUES ('test')",
             &caps,
             DatabaseType::Postgres,
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().message().contains("Write operations require --allow-write"));
+        let error_message = result.unwrap_err().message().to_string();
+        assert!(error_message.contains("Plenum is read-only"));
+        assert!(error_message.contains("Please run this query manually"));
     }
 
     #[test]
-    fn test_postgres_insert_with_write_capability() {
-        let caps = Capabilities::with_write();
+    fn test_postgres_update_rejected() {
+        let caps = Capabilities::default();
         let result = validate_query(
-            "INSERT INTO users (name) VALUES ('test')",
+            "UPDATE users SET name = 'test' WHERE id = 1",
             &caps,
             DatabaseType::Postgres,
         );
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), QueryCategory::Write);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
     }
 
     #[test]
-    fn test_postgres_create_without_ddl_capability() {
-        let caps = Capabilities::with_write();
+    fn test_postgres_delete_rejected() {
+        let caps = Capabilities::default();
+        let result =
+            validate_query("DELETE FROM users WHERE id = 1", &caps, DatabaseType::Postgres);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
+    }
+
+    #[test]
+    fn test_postgres_create_table_rejected() {
+        let caps = Capabilities::default();
         let result = validate_query("CREATE TABLE test (id INT)", &caps, DatabaseType::Postgres);
         assert!(result.is_err());
-        assert!(result.unwrap_err().message().contains("DDL operations require --allow-ddl"));
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
     }
 
     #[test]
-    fn test_postgres_create_with_ddl_capability() {
-        let caps = Capabilities::with_ddl();
-        let result = validate_query("CREATE TABLE test (id INT)", &caps, DatabaseType::Postgres);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), QueryCategory::DDL);
+    fn test_postgres_drop_table_rejected() {
+        let caps = Capabilities::default();
+        let result = validate_query("DROP TABLE users", &caps, DatabaseType::Postgres);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
     }
 
     #[test]
     fn test_postgres_explain_select() {
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result = validate_query("EXPLAIN SELECT * FROM users", &caps, DatabaseType::Postgres);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), QueryCategory::ReadOnly);
     }
 
     #[test]
     fn test_postgres_explain_analyze() {
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result =
             validate_query("EXPLAIN ANALYZE SELECT * FROM users", &caps, DatabaseType::Postgres);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), QueryCategory::ReadOnly);
     }
 
     #[test]
     fn test_postgres_transaction_control() {
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         assert!(validate_query("BEGIN", &caps, DatabaseType::Postgres).is_ok());
         assert!(validate_query("COMMIT", &caps, DatabaseType::Postgres).is_ok());
         assert!(validate_query("ROLLBACK", &caps, DatabaseType::Postgres).is_ok());
     }
 
     #[test]
-    fn test_postgres_cte_read_only() {
-        let caps = Capabilities::read_only();
+    fn test_postgres_cte_allowed() {
+        let caps = Capabilities::default();
         let result = validate_query(
             "WITH cte AS (SELECT * FROM users) SELECT * FROM cte",
             &caps,
             DatabaseType::Postgres,
         );
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), QueryCategory::ReadOnly);
     }
 
-    // MySQL categorization tests
+    // MySQL read-only tests
 
     #[test]
     fn test_mysql_select() {
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result = validate_query("SELECT * FROM users", &caps, DatabaseType::MySQL);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), QueryCategory::ReadOnly);
     }
 
     #[test]
-    fn test_mysql_replace() {
-        let caps = Capabilities::with_write();
+    fn test_mysql_replace_rejected() {
+        let caps = Capabilities::default();
         let result = validate_query(
             "REPLACE INTO users (id, name) VALUES (1, 'test')",
             &caps,
             DatabaseType::MySQL,
         );
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), QueryCategory::Write);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
     }
 
     #[test]
-    fn test_mysql_lock_tables_requires_ddl() {
-        let caps = Capabilities::with_write();
+    fn test_mysql_lock_tables_rejected() {
+        let caps = Capabilities::default();
         let result = validate_query("LOCK TABLES users WRITE", &caps, DatabaseType::MySQL);
         assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
     }
 
     #[test]
     fn test_mysql_show_statement() {
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result = validate_query("SHOW TABLES", &caps, DatabaseType::MySQL);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), QueryCategory::ReadOnly);
     }
 
-    // SQLite categorization tests
+    // SQLite read-only tests
 
     #[test]
     fn test_sqlite_select() {
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result = validate_query("SELECT * FROM users", &caps, DatabaseType::SQLite);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), QueryCategory::ReadOnly);
     }
 
     #[test]
     fn test_sqlite_pragma() {
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result = validate_query("PRAGMA table_info(users)", &caps, DatabaseType::SQLite);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), QueryCategory::ReadOnly);
     }
 
     #[test]
-    fn test_sqlite_vacuum_requires_ddl() {
-        let caps = Capabilities::with_write();
+    fn test_sqlite_vacuum_rejected() {
+        let caps = Capabilities::default();
         let result = validate_query("VACUUM", &caps, DatabaseType::SQLite);
         assert!(result.is_err());
-    }
-
-    // Capability hierarchy tests
-
-    #[test]
-    fn test_ddl_implies_write() {
-        let caps = Capabilities::with_ddl();
-        // DDL capability should allow write operations
-        let result = validate_query(
-            "INSERT INTO users (name) VALUES ('test')",
-            &caps,
-            DatabaseType::Postgres,
-        );
-        assert!(result.is_ok());
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
     }
 
     #[test]
-    fn test_write_does_not_imply_ddl() {
-        let caps = Capabilities::with_write();
-        // Write capability should NOT allow DDL operations
-        let result = validate_query("CREATE TABLE test (id INT)", &caps, DatabaseType::Postgres);
+    fn test_sqlite_insert_rejected() {
+        let caps = Capabilities::default();
+        let result =
+            validate_query("INSERT INTO users (name) VALUES ('test')", &caps, DatabaseType::SQLite);
         assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
     }
 
     // Edge case tests
 
     #[test]
     fn test_case_insensitivity() {
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result = validate_query("select * from users", &caps, DatabaseType::Postgres);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), QueryCategory::ReadOnly);
     }
 
     #[test]
     fn test_mixed_case_with_comments() {
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result = validate_query(
             "-- Query users\nSeLeCt * FrOm UsErS -- get all",
             &caps,

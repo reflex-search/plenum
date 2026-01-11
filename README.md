@@ -10,8 +10,8 @@ Plenum is a lightweight, deterministic database control tool designed specifical
 
 Plenum enables AI agents to:
 - **Introspect database schemas** safely and deterministically
-- **Execute constrained SQL queries** with explicit permission requirements
-- **Maintain least-privilege access** with read-only mode as default
+- **Execute read-only SQL queries** with safety constraints
+- **Ensure strict read-only access** - all write and DDL operations are rejected
 - **Produce machine-parseable output** (JSON-only to stdout)
 
 Plenum is exposed via a local MCP (Model Context Protocol) server, making it seamlessly integrable with AI agent frameworks.
@@ -20,7 +20,7 @@ Plenum is exposed via a local MCP (Model Context Protocol) server, making it sea
 
 - **Agent-First Design**: JSON-only output, no interactive UX, deterministic behavior
 - **Vendor-Specific SQL**: No query abstraction layer - PostgreSQL SQL ≠ MySQL SQL ≠ SQLite SQL
-- **Explicit Capabilities**: Read-only by default, writes and DDL require explicit flags
+- **Strictly Read-Only**: All write and DDL operations are rejected - guaranteed safe for AI agents
 - **Stateless Execution**: No persistent connections, no caching, no implicit state
 - **Three Database Engines**: PostgreSQL, MySQL, and SQLite support (first-class, equally constrained)
 
@@ -88,31 +88,39 @@ Returns JSON with:
 - Foreign keys
 - Indexes
 
-### 3. `plenum query` - Constrained Query Execution
+### 3. `plenum query` - Read-Only Query Execution
 
-Execute SQL queries with explicit capability requirements:
+Execute read-only SQL queries with safety constraints:
 
 ```bash
-# Read-only query (default, no flags needed)
+# Read-only query
 plenum query --name prod --sql "SELECT * FROM users WHERE id = 1"
 
-# Write query (requires --allow-write)
-plenum query --name prod --sql "UPDATE users SET name = 'Alice' WHERE id = 1" \
-  --allow-write
-
-# DDL query (requires --allow-ddl, which implies write)
-plenum query --name prod --sql "CREATE TABLE test (id INT PRIMARY KEY)" \
-  --allow-ddl
-
-# With row limit and timeout
+# With row limit (recommended for large tables)
 plenum query --name prod --sql "SELECT * FROM large_table" \
-  --max-rows 1000 --timeout-ms 5000
+  --max-rows 100 --timeout-ms 5000
+
+# Introspection queries
+plenum query --name prod --sql "SHOW TABLES"
+plenum query --name prod --sql "DESCRIBE users"
+
+# Complex query with joins
+plenum query --name prod --sql "
+  SELECT u.name, o.total
+  FROM users u
+  JOIN orders o ON u.id = o.user_id
+  WHERE o.status = 'completed'
+" --max-rows 50
 ```
 
-**Capability Hierarchy:**
-- **Read-only** (default): SELECT queries only
-- **Write** (`--allow-write`): INSERT, UPDATE, DELETE (but NOT DDL)
-- **DDL** (`--allow-ddl`): CREATE, DROP, ALTER, TRUNCATE (includes write)
+**Read-Only Enforcement:**
+- ✅ SELECT queries are permitted
+- ✅ SHOW, DESCRIBE, PRAGMA statements are permitted
+- ✅ EXPLAIN queries are permitted
+- ❌ INSERT, UPDATE, DELETE operations are **rejected**
+- ❌ CREATE, DROP, ALTER operations are **rejected**
+
+**For write operations:** Plenum will reject the query with a helpful error message. Construct the SQL and present it to the user for manual execution.
 
 ## Output Format
 
@@ -151,7 +159,7 @@ Plenum returns stable, machine-parseable error codes. Agents should check the `e
 
 | Code | Description | When It Occurs |
 |------|-------------|----------------|
-| `CAPABILITY_VIOLATION` | Operation blocked by capability constraints | Attempting write/DDL operations without appropriate flags |
+| `CAPABILITY_VIOLATION` | Operation blocked - Plenum is read-only | Attempting any write or DDL operations (INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, etc.) |
 | `CONNECTION_FAILED` | Database connection failed | Invalid credentials, unreachable host, or database doesn't exist |
 | `QUERY_FAILED` | Query execution failed | SQL syntax errors, missing tables/columns, constraint violations |
 | `INVALID_INPUT` | Malformed input or missing parameters | Missing required flags, invalid engine type, etc. |
@@ -166,7 +174,7 @@ Plenum returns stable, machine-parseable error codes. Agents should check the `e
   "command": "query",
   "error": {
     "code": "CAPABILITY_VIOLATION",
-    "message": "Write operations require --allow-write flag"
+    "message": "Plenum is read-only and cannot execute this query. Please run this query manually:\n\nINSERT INTO users (name) VALUES ('Alice')"
   }
 }
 ```
@@ -216,12 +224,12 @@ Plenum is built around strict architectural principles:
 
 ### Security Model
 
-Plenum's security boundary is **capability-based access control**, not SQL validation.
+Plenum's security boundary is **strict read-only enforcement**, not SQL validation.
 
 **Plenum enforces:**
-- ✅ Operation type restrictions (read-only, write, DDL)
+- ✅ **Strict read-only operation** - all write/DDL operations are rejected
 - ✅ Row limits (`max_rows`) and query timeouts (`timeout_ms`)
-- ✅ Pre-execution validation (no capability bypasses)
+- ✅ Pre-execution validation (queries validated before execution)
 - ✅ Credential security (best-effort, no intentional logging)
 
 **Plenum does NOT enforce:**
@@ -230,7 +238,7 @@ Plenum's security boundary is **capability-based access control**, not SQL valid
 - ❌ Business logic constraints
 - ❌ Data access policies (row-level security, column masking)
 
-**Critical**: Agents must sanitize all user inputs before constructing SQL. Plenum assumes SQL passed to it is safe and passes it verbatim to database drivers.
+**Critical**: Agents must sanitize all user inputs before constructing SQL. Plenum assumes read-only SQL passed to it is safe and passes it verbatim to database drivers.
 
 #### Credential Security
 

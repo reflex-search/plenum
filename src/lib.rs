@@ -37,7 +37,7 @@ pub mod mcp;
 pub mod output; // JSON output envelopes (Phase 1.2) // MCP server (Phase 7) - Manual JSON-RPC 2.0 implementation
 
 // Re-export commonly used types for convenience
-pub use capability::{validate_query, QueryCategory};
+pub use capability::validate_query;
 pub use config::{
     list_connections, list_connections_for_project, resolve_connection, save_connection,
     ConfigLocation, ConnectionRegistry, StoredConnection,

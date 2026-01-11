@@ -288,7 +288,7 @@ fn create_test_db() -> PathBuf {
 async fn test_real_query_output_is_valid_json() {
     let temp_file = create_test_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &caps).await;
     assert!(result.is_ok());

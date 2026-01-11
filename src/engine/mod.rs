@@ -166,21 +166,10 @@ pub struct ConnectionInfo {
 
 /// Query execution capabilities
 ///
-/// Capabilities define what operations are permitted for a query execution.
-/// All capabilities default to the most restrictive settings (read-only).
+/// Capabilities define constraints for query execution.
+/// Plenum is strictly read-only - all write and DDL operations are rejected.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Capabilities {
-    /// Allow write operations (INSERT, UPDATE, DELETE)
-    /// Default: false (read-only)
-    #[serde(default)]
-    pub allow_write: bool,
-
-    /// Allow DDL operations (CREATE, DROP, ALTER, etc.)
-    /// DDL implicitly grants write permission (DDL is a superset of write)
-    /// Default: false
-    #[serde(default)]
-    pub allow_ddl: bool,
-
     /// Maximum number of rows to return (enforced by engine)
     /// None means no limit
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -193,39 +182,10 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// Create read-only capabilities (default)
+    /// Create new capabilities with optional constraints
     #[must_use]
-    pub fn read_only() -> Self {
-        Self::default()
-    }
-
-    /// Create write-enabled capabilities
-    #[must_use]
-    pub fn with_write() -> Self {
-        Self { allow_write: true, ..Default::default() }
-    }
-
-    /// Create DDL-enabled capabilities (DDL implies write)
-    #[must_use]
-    pub fn with_ddl() -> Self {
-        Self {
-            allow_write: true, // DDL implies write
-            allow_ddl: true,
-            ..Default::default()
-        }
-    }
-
-    /// Check if write operations are allowed
-    /// Returns true if either `allow_write` or `allow_ddl` is true
-    #[must_use]
-    pub const fn can_write(&self) -> bool {
-        self.allow_write || self.allow_ddl
-    }
-
-    /// Check if DDL operations are allowed
-    #[must_use]
-    pub const fn can_ddl(&self) -> bool {
-        self.allow_ddl
+    pub const fn new(max_rows: Option<usize>, timeout_ms: Option<u64>) -> Self {
+        Self { max_rows, timeout_ms }
     }
 }
 
@@ -412,38 +372,14 @@ mod tests {
     #[test]
     fn test_capabilities_defaults() {
         let caps = Capabilities::default();
-        assert!(!caps.allow_write);
-        assert!(!caps.allow_ddl);
         assert!(caps.max_rows.is_none());
         assert!(caps.timeout_ms.is_none());
     }
 
     #[test]
-    fn test_capabilities_read_only() {
-        let caps = Capabilities::read_only();
-        assert!(!caps.can_write());
-        assert!(!caps.can_ddl());
-    }
-
-    #[test]
-    fn test_capabilities_with_write() {
-        let caps = Capabilities::with_write();
-        assert!(caps.can_write());
-        assert!(!caps.can_ddl());
-    }
-
-    #[test]
-    fn test_capabilities_with_ddl() {
-        let caps = Capabilities::with_ddl();
-        assert!(caps.can_write()); // DDL implies write
-        assert!(caps.can_ddl());
-    }
-
-    #[test]
-    fn test_capabilities_hierarchy() {
-        // DDL implies write
-        let caps = Capabilities { allow_write: false, allow_ddl: true, ..Default::default() };
-        assert!(caps.can_write()); // can_write() returns true because DDL is enabled
-        assert!(caps.can_ddl());
+    fn test_capabilities_new() {
+        let caps = Capabilities::new(Some(100), Some(5000));
+        assert_eq!(caps.max_rows, Some(100));
+        assert_eq!(caps.timeout_ms, Some(5000));
     }
 }

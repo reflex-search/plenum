@@ -174,14 +174,6 @@ enum Commands {
         #[arg(long)]
         sql_file: Option<PathBuf>,
 
-        /// Allow write operations
-        #[arg(long)]
-        allow_write: bool,
-
-        /// Allow DDL operations
-        #[arg(long)]
-        allow_ddl: bool,
-
         /// Max rows to return
         #[arg(long)]
         max_rows: Option<usize>,
@@ -279,8 +271,6 @@ async fn main() {
             file,
             sql,
             sql_file,
-            allow_write,
-            allow_ddl,
             max_rows,
             timeout_ms,
         }) => {
@@ -296,8 +286,6 @@ async fn main() {
                 file,
                 sql,
                 sql_file,
-                allow_write,
-                allow_ddl,
                 max_rows,
                 timeout_ms,
             )
@@ -380,7 +368,12 @@ async fn handle_connect(
     match result {
         Ok((conn_name, proj_path, config, location)) => {
             // Save connection
-            match plenum::save_connection(proj_path, Some(conn_name.clone()), config.clone(), location) {
+            match plenum::save_connection(
+                proj_path,
+                Some(conn_name.clone()),
+                config.clone(),
+                location,
+            ) {
                 Ok(()) => {
                     // Build success response
                     let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -419,7 +412,8 @@ async fn handle_connect(
 }
 
 /// Interactive connection picker (when no args provided)
-async fn interactive_connect_picker() -> Result<(String, Option<String>, ConnectionConfig, ConfigLocation)> {
+async fn interactive_connect_picker(
+) -> Result<(String, Option<String>, ConnectionConfig, ConfigLocation)> {
     use dialoguer::Select;
 
     // Get current project path
@@ -484,7 +478,8 @@ async fn interactive_connect_picker() -> Result<(String, Option<String>, Connect
 }
 
 /// Interactive connection wizard
-async fn interactive_connect_wizard() -> Result<(String, Option<String>, ConnectionConfig, ConfigLocation)> {
+async fn interactive_connect_wizard(
+) -> Result<(String, Option<String>, ConnectionConfig, ConfigLocation)> {
     use dialoguer::{Input, Select};
 
     eprintln!("\n=== Create New Database Connection ===\n");
@@ -741,8 +736,6 @@ async fn handle_query(
     file: Option<PathBuf>,
     sql: Option<String>,
     sql_file: Option<PathBuf>,
-    allow_write: bool,
-    allow_ddl: bool,
     max_rows: Option<usize>,
     timeout_ms: Option<u64>,
 ) -> std::result::Result<(), i32> {
@@ -789,7 +782,7 @@ async fn handle_query(
     };
 
     // Resolve connection config
-    let (config, is_readonly) = match build_connection_config(
+    let (config, _is_readonly) = match build_connection_config(
         name.as_deref(),
         project_path.as_deref(),
         engine,
@@ -808,35 +801,13 @@ async fn handle_query(
         }
     };
 
-    // Enforce readonly mode: if connection is readonly, reject write/DDL operations
-    if is_readonly && (allow_write || allow_ddl) {
-        let conn_name = name.unwrap_or_else(|| "default".to_string());
-        let envelope = ErrorEnvelope::new(
-            config.engine.as_str(),
-            "query",
-            plenum::ErrorInfo::new(
-                "READONLY_VIOLATION",
-                format!(
-                    "Connection '{conn_name}' is configured as readonly. Write and DDL operations are not permitted."
-                ),
-            ),
-        );
-        output_error(&envelope);
-        return Err(1);
-    }
+    // Build capabilities (read-only only)
+    let capabilities = Capabilities { max_rows, timeout_ms };
 
-    // Build capabilities (forced to read-only if connection is readonly)
-    let capabilities = if is_readonly {
-        // Force read-only mode, ignore flags
-        Capabilities { allow_write: false, allow_ddl: false, max_rows, timeout_ms }
-    } else {
-        build_capabilities(allow_write, allow_ddl, max_rows, timeout_ms)
-    };
-
-    // Validate query against capabilities
+    // Validate query is read-only
     match plenum::validate_query(&sql_text, &capabilities, config.engine) {
-        Ok(_category) => {
-            // Query is valid according to capabilities
+        Ok(()) => {
+            // Query is read-only and permitted
         }
         Err(e) => {
             let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "query", &e);
@@ -1066,14 +1037,4 @@ fn parse_engine(engine: &str) -> Result<DatabaseType> {
             "Invalid engine '{engine}'. Must be postgres, mysql, or sqlite"
         ))),
     }
-}
-
-/// Build capabilities from CLI flags
-const fn build_capabilities(
-    allow_write: bool,
-    allow_ddl: bool,
-    max_rows: Option<usize>,
-    timeout_ms: Option<u64>,
-) -> Capabilities {
-    Capabilities { allow_write, allow_ddl, max_rows, timeout_ms }
 }

@@ -551,7 +551,7 @@ mod tests {
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result = SqliteEngine::execute(&config, "SELECT * FROM users", &caps).await;
         assert!(result.is_ok());
 
@@ -565,8 +565,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_insert_without_capability() {
-        let temp_file = std::env::temp_dir().join("test_execute_insert_no_cap.db");
+    async fn test_execute_insert_rejected() {
+        let temp_file = std::env::temp_dir().join("test_execute_insert_rejected.db");
         let _ = std::fs::remove_file(&temp_file);
 
         {
@@ -576,44 +576,50 @@ mod tests {
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result =
             SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &caps).await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().message().contains("Write operations require --allow-write"));
+        let error_message = result.unwrap_err().message().to_string();
+        assert!(error_message.contains("Plenum is read-only"));
+        assert!(error_message.contains("Please run this query manually"));
 
         // Clean up
         let _ = std::fs::remove_file(&temp_file);
     }
 
     #[tokio::test]
-    async fn test_execute_insert_with_capability() {
-        let temp_file = std::env::temp_dir().join("test_execute_insert.db");
+    async fn test_execute_update_rejected() {
+        let temp_file = std::env::temp_dir().join("test_execute_update_rejected.db");
         let _ = std::fs::remove_file(&temp_file);
 
         {
             let conn = Connection::open(&temp_file).expect("Failed to create temp database");
             conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", [])
                 .expect("Failed to create table");
+            conn.execute("INSERT INTO users (name) VALUES ('Alice')", [])
+                .expect("Failed to insert");
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let caps = Capabilities::with_write();
+        let caps = Capabilities::default();
         let result =
-            SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &caps).await;
+            SqliteEngine::execute(&config, "UPDATE users SET name = 'Bob' WHERE id = 1", &caps)
+                .await;
 
-        assert!(result.is_ok());
-        let query_result = result.unwrap();
-        assert_eq!(query_result.rows_affected, Some(1));
+        assert!(result.is_err());
+        let error_message = result.unwrap_err().message().to_string();
+        assert!(error_message.contains("Plenum is read-only"));
+        assert!(error_message.contains("Please run this query manually"));
 
         // Clean up
         let _ = std::fs::remove_file(&temp_file);
     }
 
     #[tokio::test]
-    async fn test_execute_ddl_without_capability() {
-        let temp_file = std::env::temp_dir().join("test_execute_ddl_no_cap.db");
+    async fn test_execute_ddl_rejected() {
+        let temp_file = std::env::temp_dir().join("test_execute_ddl_rejected.db");
         let _ = std::fs::remove_file(&temp_file);
 
         {
@@ -621,34 +627,41 @@ mod tests {
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let caps = Capabilities::with_write();
+        let caps = Capabilities::default();
         let result =
             SqliteEngine::execute(&config, "CREATE TABLE users (id INTEGER PRIMARY KEY)", &caps)
                 .await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().message().contains("DDL operations require --allow-ddl"));
+        let error_message = result.unwrap_err().message().to_string();
+        assert!(error_message.contains("Plenum is read-only"));
+        assert!(error_message.contains("Please run this query manually"));
 
         // Clean up
         let _ = std::fs::remove_file(&temp_file);
     }
 
     #[tokio::test]
-    async fn test_execute_ddl_with_capability() {
-        let temp_file = std::env::temp_dir().join("test_execute_ddl.db");
+    async fn test_execute_delete_rejected() {
+        let temp_file = std::env::temp_dir().join("test_execute_delete_rejected.db");
         let _ = std::fs::remove_file(&temp_file);
 
         {
-            let _ = Connection::open(&temp_file).expect("Failed to create temp database");
+            let conn = Connection::open(&temp_file).expect("Failed to create temp database");
+            conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", [])
+                .expect("Failed to create table");
+            conn.execute("INSERT INTO users (name) VALUES ('Alice')", [])
+                .expect("Failed to insert");
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let caps = Capabilities::with_ddl();
-        let result =
-            SqliteEngine::execute(&config, "CREATE TABLE users (id INTEGER PRIMARY KEY)", &caps)
-                .await;
+        let caps = Capabilities::default();
+        let result = SqliteEngine::execute(&config, "DELETE FROM users WHERE id = 1", &caps).await;
 
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        let error_message = result.unwrap_err().message().to_string();
+        assert!(error_message.contains("Plenum is read-only"));
+        assert!(error_message.contains("Please run this query manually"));
 
         // Clean up
         let _ = std::fs::remove_file(&temp_file);
@@ -671,7 +684,7 @@ mod tests {
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let caps = Capabilities { max_rows: Some(5), ..Capabilities::read_only() };
+        let caps = Capabilities { max_rows: Some(5), ..Capabilities::default() };
         let result = SqliteEngine::execute(&config, "SELECT * FROM users", &caps).await;
 
         assert!(result.is_ok());
@@ -715,7 +728,7 @@ mod tests {
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result = SqliteEngine::execute(&config, "SELECT * FROM test_types", &caps).await;
 
         assert!(result.is_ok());

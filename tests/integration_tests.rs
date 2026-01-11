@@ -94,7 +94,7 @@ async fn test_cross_engine_select_query_structure() {
     // Test that SELECT queries return consistent JSON structure across engines
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let result =
         SqliteEngine::execute(&config, "SELECT name, email FROM users WHERE id = 1", &caps).await;
@@ -120,11 +120,11 @@ async fn test_cross_engine_select_query_structure() {
 
 #[tokio::test]
 #[cfg(feature = "sqlite")]
-async fn test_cross_engine_insert_query_structure() {
-    // Test that INSERT queries return consistent structure across engines
+async fn test_cross_engine_insert_query_rejected() {
+    // Test that INSERT queries are rejected uniformly across engines (read-only mode)
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::with_write();
+    let caps = Capabilities::default();
 
     let result = SqliteEngine::execute(
         &config,
@@ -132,40 +132,14 @@ async fn test_cross_engine_insert_query_structure() {
         &caps,
     )
     .await;
-    assert!(result.is_ok(), "SQLite INSERT query should succeed");
 
-    let query_result = result.unwrap();
-
-    // Verify structure for DML operations
-    assert_eq!(query_result.columns.len(), 0, "INSERT should have no columns");
-    assert_eq!(query_result.rows.len(), 0, "INSERT should have no rows");
-    assert!(query_result.rows_affected.is_some(), "INSERT should have rows_affected");
-    assert_eq!(query_result.rows_affected.unwrap(), 1, "Should affect 1 row");
-
-    cleanup_sqlite_db(&temp_file);
-}
-
-#[tokio::test]
-#[cfg(feature = "sqlite")]
-async fn test_cross_engine_capability_violation_readonly() {
-    // Test that capability violations are caught uniformly across engines
-    let temp_file = create_test_sqlite_db();
-    let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
-
-    // Try to INSERT without write capability
-    let result = SqliteEngine::execute(
-        &config,
-        "INSERT INTO users (name, email) VALUES ('Eve', 'eve@example.com')",
-        &caps,
-    )
-    .await;
-
-    assert!(result.is_err(), "Should reject INSERT without write capability");
+    assert!(result.is_err(), "SQLite INSERT query should be rejected (read-only)");
     let err = result.unwrap_err();
+    let error_message = err.message().to_string();
+    assert!(error_message.contains("Plenum is read-only"), "Error should mention read-only");
     assert!(
-        err.message().contains("Write operations require --allow-write"),
-        "Error message should mention capability requirement"
+        error_message.contains("Please run this query manually"),
+        "Error should suggest manual execution"
     );
 
     cleanup_sqlite_db(&temp_file);
@@ -173,21 +147,57 @@ async fn test_cross_engine_capability_violation_readonly() {
 
 #[tokio::test]
 #[cfg(feature = "sqlite")]
-async fn test_cross_engine_capability_violation_ddl() {
-    // Test that DDL operations are rejected without appropriate capability
+async fn test_cross_engine_write_operation_rejected() {
+    // Test that write operations are rejected uniformly across engines (read-only mode)
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::with_write(); // Has write but NOT ddl
+    let caps = Capabilities::default();
 
-    // Try to CREATE TABLE without DDL capability
+    // Try to INSERT (should always be rejected)
+    let result = SqliteEngine::execute(
+        &config,
+        "INSERT INTO users (name, email) VALUES ('Eve', 'eve@example.com')",
+        &caps,
+    )
+    .await;
+
+    assert!(result.is_err(), "Should reject INSERT (Plenum is read-only)");
+    let err = result.unwrap_err();
+    let error_message = err.message().to_string();
+    assert!(
+        error_message.contains("Plenum is read-only"),
+        "Error message should mention read-only mode"
+    );
+    assert!(
+        error_message.contains("Please run this query manually"),
+        "Error message should suggest manual execution"
+    );
+
+    cleanup_sqlite_db(&temp_file);
+}
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn test_cross_engine_ddl_operation_rejected() {
+    // Test that DDL operations are rejected uniformly across engines (read-only mode)
+    let temp_file = create_test_sqlite_db();
+    let config = ConnectionConfig::sqlite(temp_file.clone());
+    let caps = Capabilities::default();
+
+    // Try to CREATE TABLE (should always be rejected)
     let result =
         SqliteEngine::execute(&config, "CREATE TABLE test (id INTEGER PRIMARY KEY)", &caps).await;
 
-    assert!(result.is_err(), "Should reject DDL without --allow-ddl capability");
+    assert!(result.is_err(), "Should reject DDL (Plenum is read-only)");
     let err = result.unwrap_err();
+    let error_message = err.message().to_string();
     assert!(
-        err.message().contains("DDL operations require --allow-ddl"),
-        "Error message should mention DDL capability requirement"
+        error_message.contains("Plenum is read-only"),
+        "Error message should mention read-only mode"
+    );
+    assert!(
+        error_message.contains("Please run this query manually"),
+        "Error message should suggest manual execution"
     );
 
     cleanup_sqlite_db(&temp_file);
@@ -199,7 +209,7 @@ async fn test_cross_engine_null_handling() {
     // Test that NULL values are handled consistently across engines
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let result = SqliteEngine::execute(
         &config,
@@ -228,8 +238,7 @@ async fn test_cross_engine_max_rows_enforcement() {
     // Test that max_rows is enforced uniformly across engines
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps =
-        Capabilities { allow_write: false, allow_ddl: false, max_rows: Some(2), timeout_ms: None };
+    let caps = Capabilities { max_rows: Some(2), timeout_ms: None };
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id", &caps).await;
     assert!(result.is_ok());
@@ -246,7 +255,7 @@ async fn test_cross_engine_empty_result_set() {
     // Test that empty result sets are handled consistently
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM users WHERE id = 9999", &caps).await;
     assert!(result.is_ok());
@@ -334,7 +343,7 @@ async fn test_cross_engine_malformed_sql_error() {
     // Test that malformed SQL produces consistent error behavior
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     // Use a query with invalid column name (will pass capability check but fail at execution)
     let result =
@@ -360,7 +369,7 @@ async fn test_cross_engine_missing_table_error() {
     // Test that querying non-existent table produces consistent error
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM nonexistent_table", &caps).await;
     assert!(result.is_err(), "Missing table should error");
@@ -397,7 +406,7 @@ async fn test_json_serialization_of_query_result() {
     // Test that QueryResult serializes to valid JSON
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let result =
         SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id LIMIT 1", &caps).await;
@@ -457,7 +466,7 @@ async fn test_deterministic_query_results() {
     // Test that identical queries produce identical results
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let sql = "SELECT name, email FROM users ORDER BY id";
 

@@ -44,10 +44,7 @@ pub type LocalConfig = ProjectConfig;
 
 impl Default for ProjectConfig {
     fn default() -> Self {
-        Self {
-            connections: HashMap::new(),
-            default: None,
-        }
+        Self { connections: HashMap::new(), default: None }
     }
 }
 
@@ -166,7 +163,6 @@ pub fn get_current_project_path() -> Result<String> {
         .map(std::string::ToString::to_string)
 }
 
-
 /// Load connection registry from a config file
 ///
 /// Handles both formats:
@@ -182,29 +178,34 @@ pub fn load_registry(path: &Path) -> Result<ConnectionRegistry> {
         .map_err(|e| PlenumError::config_error(format!("Could not read config file: {e}")))?;
 
     // Determine if this is a local or global config
-    let is_local_config = path.ends_with(".plenum/config.json")
-        || path.ends_with(".plenum\\config.json"); // Windows support
+    let is_local_config =
+        path.ends_with(".plenum/config.json") || path.ends_with(".plenum\\config.json"); // Windows support
 
     if is_local_config {
-        // Try parsing as LocalConfig (ProjectConfig) first
-        if let Ok(local_config) = serde_json::from_str::<LocalConfig>(&contents) {
-            // Convert to ConnectionRegistry with the current directory as project path
-            let project_path = path
-                .parent() // .plenum
-                .and_then(|p| p.parent()) // project root
-                .and_then(|p| p.canonicalize().ok())
-                .and_then(|p| p.to_str().map(String::from))
-                .ok_or_else(|| PlenumError::config_error("Could not determine project path from config file location"))?;
+        // Parse as LocalConfig (ProjectConfig)
+        let local_config = serde_json::from_str::<LocalConfig>(&contents)
+            .map_err(|e| PlenumError::config_error(format!("Invalid local config file format: {e}")))?;
 
-            let mut registry = ConnectionRegistry::default();
-            registry.projects.insert(project_path, local_config);
-            return Ok(registry);
-        }
+        // Convert to ConnectionRegistry with the current directory as project path
+        let project_path = path
+            .parent() // .plenum
+            .and_then(|p| p.parent()) // project root
+            .and_then(|p| p.canonicalize().ok())
+            .and_then(|p| p.to_str().map(String::from))
+            .ok_or_else(|| {
+                PlenumError::config_error(
+                    "Could not determine project path from config file location",
+                )
+            })?;
+
+        let mut registry = ConnectionRegistry::default();
+        registry.projects.insert(project_path, local_config);
+        Ok(registry)
+    } else {
+        // Parse as ConnectionRegistry (global format)
+        serde_json::from_str::<ConnectionRegistry>(&contents)
+            .map_err(|e| PlenumError::config_error(format!("Invalid global config file format: {e}")))
     }
-
-    // Try parsing as ConnectionRegistry (global format or legacy local format)
-    Ok(serde_json::from_str::<ConnectionRegistry>(&contents)
-        .map_err(|e| PlenumError::config_error(format!("Invalid config file format: {e}")))?)
 }
 
 /// Save connection registry to a config file
@@ -221,8 +222,8 @@ pub fn save_registry(path: &Path, registry: &ConnectionRegistry) -> Result<()> {
     }
 
     // Determine if this is a local or global config
-    let is_local_config = path.ends_with(".plenum/config.json")
-        || path.ends_with(".plenum\\config.json"); // Windows support
+    let is_local_config =
+        path.ends_with(".plenum/config.json") || path.ends_with(".plenum\\config.json"); // Windows support
 
     let contents = if is_local_config {
         // For local configs, extract the single project and save as LocalConfig
@@ -231,12 +232,18 @@ pub fn save_registry(path: &Path, registry: &ConnectionRegistry) -> Result<()> {
             .and_then(|p| p.parent()) // project root
             .and_then(|p| p.canonicalize().ok())
             .and_then(|p| p.to_str().map(String::from))
-            .ok_or_else(|| PlenumError::config_error("Could not determine project path from config file location"))?;
+            .ok_or_else(|| {
+                PlenumError::config_error(
+                    "Could not determine project path from config file location",
+                )
+            })?;
 
-        let project_config = registry.projects.get(&project_path)
-            .ok_or_else(|| PlenumError::config_error(format!(
-                "No configuration found for project '{}' in registry", project_path
-            )))?;
+        let project_config = registry.projects.get(&project_path).ok_or_else(|| {
+            PlenumError::config_error(format!(
+                "No configuration found for project '{}' in registry",
+                project_path
+            ))
+        })?;
 
         // Serialize as LocalConfig (which is just ProjectConfig)
         serde_json::to_string_pretty(project_config)
@@ -341,14 +348,18 @@ pub fn resolve_connection(
         Some(n) => n.to_string(),
         None => {
             // Use project's default
-            project.default.as_ref().ok_or_else(|| {
-                let available: Vec<_> = project.connections.keys().collect();
-                PlenumError::config_error(format!(
+            project
+                .default
+                .as_ref()
+                .ok_or_else(|| {
+                    let available: Vec<_> = project.connections.keys().collect();
+                    PlenumError::config_error(format!(
                     "No default connection set for project '{path}'. Available connections: {:?}. \
                      Specify one with --name or set a default in the config.",
                     available
                 ))
-            })?.clone()
+                })?
+                .clone()
         }
     };
 
@@ -411,14 +422,9 @@ pub fn save_connection(
     let is_first_connection = project.connections.is_empty();
 
     // Add or update connection
-    project.connections.insert(
-        conn_name.clone(),
-        StoredConnection {
-            config,
-            password_env: None,
-            readonly: None,
-        },
-    );
+    project
+        .connections
+        .insert(conn_name.clone(), StoredConnection { config, password_env: None, readonly: None });
 
     // Auto-set as default if this is the first connection
     if is_first_connection {

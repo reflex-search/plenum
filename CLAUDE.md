@@ -200,38 +200,43 @@ Stdout MUST NOT include logs or diagnostic text.
 
 ---
 
-## Capability Model
+## Read-Only Mode
 
-Read-only is the default mode (SELECT queries only).
+**Plenum is strictly read-only.** All write and DDL operations are prohibited.
 
-Operations requiring higher privileges are gated by explicit capability flags:
-- allow_write (enables INSERT, UPDATE, DELETE)
-- allow_ddl (enables CREATE, DROP, ALTER, etc.)
-- max_rows (limits result set size)
-- timeout_ms (limits execution time)
+Permitted operations:
+- `SELECT` queries
+- `SHOW`, `DESCRIBE`, `PRAGMA` statements (database-specific introspection)
+- `EXPLAIN` and `EXPLAIN ANALYZE`
+- Transaction control statements (BEGIN, COMMIT, ROLLBACK, SAVEPOINT, RELEASE)
 
-Violations MUST fail before query execution.
+Rejected operations:
+- `INSERT`, `UPDATE`, `DELETE` (write operations)
+- `CREATE`, `DROP`, `ALTER`, `TRUNCATE` (DDL operations)
+- Any other statement that modifies data or schema
 
-Capabilities are NEVER inferred.
+### Safety Constraints
 
-### Capability Hierarchy
-
-Capabilities follow a strict hierarchy:
-- **Read-only** (default): No flags needed, SELECT queries only
-- **Write**: Requires `--allow-write` flag, enables INSERT, UPDATE, DELETE
-- **DDL**: Requires `--allow-ddl` flag, enables DDL operations AND write operations
-
-**Important rules:**
-- `--allow-ddl` implicitly grants write permissions (DDL is a superset of write)
-- `--allow-write` does NOT enable DDL operations (DDL requires explicit flag)
-- Agents must explicitly request `--allow-ddl` even if write is already enabled
+While Plenum does not allow write operations, it provides safety constraints for read operations:
+- `max_rows` (limits result set size to prevent overwhelming MCP token limits)
+- `timeout_ms` (limits execution time to prevent long-running queries)
 
 **Examples:**
-- `plenum query --sql "SELECT ..."` → allowed (read-only default)
-- `plenum query --sql "INSERT ..." --allow-write` → allowed
-- `plenum query --sql "CREATE TABLE ..." --allow-write` → DENIED (needs --allow-ddl)
-- `plenum query --sql "CREATE TABLE ..." --allow-ddl` → allowed (DDL implies write)
-- `plenum query --sql "INSERT ..." --allow-ddl` → allowed (DDL implies write)
+- `plenum query --sql "SELECT * FROM users" --max-rows 100` → allowed
+- `plenum query --sql "INSERT INTO users ..." ` → DENIED (Plenum is read-only)
+- `plenum query --sql "CREATE TABLE ..." ` → DENIED (Plenum is read-only)
+- `plenum query --sql "SHOW TABLES"` → allowed
+- `plenum query --sql "EXPLAIN SELECT * FROM users"` → allowed
+
+### Agent Workflow for Write Operations
+
+When an agent determines that a write or DDL operation is needed:
+1. Use `plenum introspect` to understand the schema
+2. Use `plenum query` to read current data if needed
+3. Construct the appropriate SQL statement
+4. **Present the SQL to the user** in the response for manual execution
+
+Plenum will never execute write operations - this ensures all data modifications remain under human control.
 
 ---
 
@@ -288,25 +293,27 @@ Engine quirks stay inside engine modules.
 
 ## Security Model
 
-Plenum's security boundary is **capability enforcement**, not SQL validation.
+Plenum's security boundary is **read-only enforcement**, not SQL validation.
 
 ### Plenum Enforces:
-- Operation type restrictions (read-only, write, DDL)
-- Row limits and timeouts
+- Strict read-only operation (rejects all write/DDL operations)
+- Row limits and timeouts (for safety constraints)
 - Credential security (no logging/persistence in error messages or logs)
 
 ### Plenum Does NOT Enforce:
 - SQL injection prevention
 - Query semantic correctness
 - Business logic constraints
+- Row-level security or access control
 
 ### Agent Responsibility:
 The calling agent MUST:
 - Sanitize user inputs before constructing SQL
 - Validate queries for safety before passing to Plenum
 - Implement application-level security controls
+- Present write operations to users instead of attempting to execute them
 
-**Plenum assumes SQL passed to it is safe.** It provides capability constraints, not query validation.
+**Plenum assumes SQL passed to it is safe for reading.** It provides read-only enforcement and safety constraints, not query validation.
 
 ---
 

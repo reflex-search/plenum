@@ -203,9 +203,13 @@ fn build_pg_config(config: &ConnectionConfig) -> Result<Config> {
 
     // Check if database is wildcard ("*") - if so, connect to default "postgres" database
     let db_name = match database {
-        Some(db) if db == "*" => "postgres",  // Wildcard - use default postgres database
-        Some(db) => db.as_str(),              // Explicit database
-        None => return Err(PlenumError::invalid_input("PostgreSQL requires 'database' parameter (use \"*\" for default database)")),
+        Some(db) if db == "*" => "postgres", // Wildcard - use default postgres database
+        Some(db) => db.as_str(),             // Explicit database
+        None => {
+            return Err(PlenumError::invalid_input(
+                "PostgreSQL requires 'database' parameter (use \"*\" for default database)",
+            ))
+        }
     };
 
     let mut pg_config = Config::new();
@@ -705,7 +709,11 @@ mod tests {
 
         // Build config should work with wildcard and connect to "postgres" database
         let result = build_pg_config(&config);
-        assert!(result.is_ok(), "Failed to build Postgres config with wildcard: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to build Postgres config with wildcard: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -783,7 +791,7 @@ mod tests {
             "*".to_string(),
         );
 
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result = PostgresEngine::execute(
             &config,
             "SELECT datname FROM pg_catalog.pg_database WHERE datistemplate = false",
@@ -842,7 +850,7 @@ mod tests {
         );
 
         // Create test table first
-        let create_caps = Capabilities::with_ddl();
+        let create_caps = Capabilities::default();
         let _ =
             PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_users", &create_caps).await;
         let _ = PostgresEngine::execute(
@@ -889,7 +897,7 @@ mod tests {
             "postgres".to_string(),
         );
 
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result =
             PostgresEngine::execute(&config, "SELECT 1 AS num, 'test' AS str", &caps).await;
         assert!(result.is_ok(), "Query execution failed: {:?}", result.err());
@@ -916,7 +924,7 @@ mod tests {
         );
 
         // Create test table
-        let ddl_caps = Capabilities::with_ddl();
+        let ddl_caps = Capabilities::default();
         let _ =
             PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_insert", &ddl_caps).await;
         let _ = PostgresEngine::execute(
@@ -927,7 +935,7 @@ mod tests {
         .await;
 
         // Try to insert without write capability
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result = PostgresEngine::execute(
             &config,
             "INSERT INTO test_insert (name) VALUES ('test')",
@@ -954,7 +962,7 @@ mod tests {
         );
 
         // Create test table
-        let ddl_caps = Capabilities::with_ddl();
+        let ddl_caps = Capabilities::default();
         let _ =
             PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_insert2", &ddl_caps).await;
         let _ = PostgresEngine::execute(
@@ -965,7 +973,7 @@ mod tests {
         .await;
 
         // Insert with write capability
-        let write_caps = Capabilities::with_write();
+        let write_caps = Capabilities::default();
         let result = PostgresEngine::execute(
             &config,
             "INSERT INTO test_insert2 (name) VALUES ('test')",
@@ -992,7 +1000,7 @@ mod tests {
             "postgres".to_string(),
         );
 
-        let caps = Capabilities::with_write();
+        let caps = Capabilities::default();
         let result = PostgresEngine::execute(
             &config,
             "CREATE TABLE test_ddl (id SERIAL PRIMARY KEY)",
@@ -1015,7 +1023,7 @@ mod tests {
             "postgres".to_string(),
         );
 
-        let caps = Capabilities::with_ddl();
+        let caps = Capabilities::default();
         let _ = PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_ddl2", &caps).await;
         let result = PostgresEngine::execute(
             &config,
@@ -1042,7 +1050,7 @@ mod tests {
         );
 
         // Create and populate test table
-        let ddl_caps = Capabilities::with_ddl();
+        let ddl_caps = Capabilities::default();
         let _ =
             PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_limit", &ddl_caps).await;
         let _ = PostgresEngine::execute(
@@ -1052,7 +1060,7 @@ mod tests {
         )
         .await;
 
-        let write_caps = Capabilities::with_write();
+        let write_caps = Capabilities::default();
         for i in 1..=10 {
             let _ = PostgresEngine::execute(
                 &config,
@@ -1063,7 +1071,7 @@ mod tests {
         }
 
         // Query with row limit
-        let caps = Capabilities { max_rows: Some(5), ..Capabilities::read_only() };
+        let caps = Capabilities { max_rows: Some(5), ..Capabilities::default() };
         let result = PostgresEngine::execute(&config, "SELECT * FROM test_limit", &caps).await;
 
         assert!(result.is_ok(), "Query failed: {:?}", result.err());

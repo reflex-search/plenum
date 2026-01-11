@@ -79,7 +79,7 @@ impl DatabaseEngine for MySqlEngine {
         // Handle NULL result when using wildcard database ("*")
         let connected_database: String = match db_row.get(0) {
             Some(db) => db,
-            None => "(no database selected)".to_string(),  // Wildcard mode
+            None => "(no database selected)".to_string(), // Wildcard mode
         };
 
         // Get current user
@@ -235,9 +235,13 @@ fn build_mysql_opts(config: &ConnectionConfig) -> Result<OptsBuilder> {
 
     // Check if database is wildcard ("*") - if so, connect without selecting a database
     let db_name = match database {
-        Some(db) if db == "*" => None,  // Wildcard - no database selected
-        Some(db) => Some(db.as_str()),   // Explicit database
-        None => return Err(PlenumError::invalid_input("MySQL requires 'database' parameter (use \"*\" for no database)")),
+        Some(db) if db == "*" => None, // Wildcard - no database selected
+        Some(db) => Some(db.as_str()), // Explicit database
+        None => {
+            return Err(PlenumError::invalid_input(
+                "MySQL requires 'database' parameter (use \"*\" for no database)",
+            ))
+        }
     };
 
     let opts = OptsBuilder::default()
@@ -761,7 +765,7 @@ mod tests {
             "*".to_string(),
         );
 
-        let caps = Capabilities::read_only();
+        let caps = Capabilities::default();
         let result = MySqlEngine::execute(&config, "SHOW DATABASES", &caps).await;
         assert!(result.is_ok(), "SHOW DATABASES failed: {:?}", result.err());
 

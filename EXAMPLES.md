@@ -321,96 +321,55 @@ plenum query \
 
 Sets a 5-second timeout for query execution.
 
-### Write Query (INSERT)
+### Attempted Write Query (REJECTED)
+
+Plenum is strictly read-only. Write operations are rejected:
 
 ```bash
 plenum query \
   --name prod-db \
-  --sql "INSERT INTO logs (level, message) VALUES ('INFO', 'Application started')" \
-  --allow-write
+  --sql "INSERT INTO logs (level, message) VALUES ('INFO', 'Application started')"
 ```
 
-**Success Output:**
+**Error Output:**
 ```json
 {
-  "ok": true,
+  "ok": false,
   "engine": "postgres",
   "command": "query",
-  "data": {
-    "columns": [],
-    "rows": [],
-    "rows_affected": 1
-  },
-  "meta": {
-    "execution_ms": 45,
-    "rows_returned": 0
+  "error": {
+    "code": "CAPABILITY_VIOLATION",
+    "message": "Plenum is read-only and cannot execute this query. Please run this query manually:\n\nINSERT INTO logs (level, message) VALUES ('INFO', 'Application started')"
   }
 }
 ```
 
-### Write Query (UPDATE)
+**Agent Workflow:** When a write operation is needed:
+1. Use Plenum to introspect schema and read current data
+2. Construct the SQL statement
+3. Present it to the user for manual execution
+
+### Attempted DDL Query (REJECTED)
+
+DDL operations are also rejected:
 
 ```bash
 plenum query \
   --name prod-db \
-  --sql "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = 42" \
-  --allow-write
+  --sql "CREATE TABLE temp_results (id SERIAL PRIMARY KEY, value TEXT)"
 ```
 
-**Success Output:**
+**Error Output:**
 ```json
 {
-  "ok": true,
+  "ok": false,
   "engine": "postgres",
   "command": "query",
-  "data": {
-    "columns": [],
-    "rows": [],
-    "rows_affected": 1
-  },
-  "meta": {
-    "execution_ms": 52,
-    "rows_returned": 0
+  "error": {
+    "code": "CAPABILITY_VIOLATION",
+    "message": "Plenum is read-only and cannot execute this query. Please run this query manually:\n\nCREATE TABLE temp_results (id SERIAL PRIMARY KEY, value TEXT)"
   }
 }
-```
-
-### Write Query (DELETE)
-
-```bash
-plenum query \
-  --name prod-db \
-  --sql "DELETE FROM temp_cache WHERE created_at < NOW() - INTERVAL '1 hour'" \
-  --allow-write
-```
-
-### DDL Query (CREATE TABLE)
-
-```bash
-plenum query \
-  --name prod-db \
-  --sql "CREATE TABLE temp_results (id SERIAL PRIMARY KEY, value TEXT)" \
-  --allow-ddl
-```
-
-**Note:** `--allow-ddl` implicitly grants write permissions.
-
-### DDL Query (CREATE INDEX)
-
-```bash
-plenum query \
-  --name prod-db \
-  --sql "CREATE INDEX idx_users_created_at ON users(created_at)" \
-  --allow-ddl
-```
-
-### DDL Query (DROP TABLE)
-
-```bash
-plenum query \
-  --name prod-db \
-  --sql "DROP TABLE IF EXISTS temp_results" \
-  --allow-ddl
 ```
 
 ### Query from File
@@ -493,24 +452,21 @@ plenum query --name dest-db \
   --sql "SELECT id, email FROM users WHERE id NOT IN (SELECT id FROM source_users)"
 ```
 
-### Workflow 4: Temporary Table Workflow
+### Workflow 4: Read-Only Analysis
 
 ```bash
-# Create temporary table
-plenum query --name work-db \
-  --sql "CREATE TEMPORARY TABLE analysis_tmp (id INT, score REAL)" \
-  --allow-ddl
+# Plenum is read-only - complex queries should be constructed and run manually
+# Use Plenum to understand the schema first
+plenum introspect --name work-db > schema.json
 
-# Populate it
-plenum query --name work-db \
-  --sql "INSERT INTO analysis_tmp SELECT user_id, AVG(rating) FROM reviews GROUP BY user_id" \
-  --allow-write
+# Then construct your analysis query
+# Present this to the user for manual execution:
+# CREATE TEMPORARY TABLE analysis_tmp (id INT, score REAL);
+# INSERT INTO analysis_tmp SELECT user_id, AVG(rating) FROM reviews GROUP BY user_id;
 
-# Query results
+# After the user runs it manually, use Plenum to query results
 plenum query --name work-db \
   --sql "SELECT * FROM analysis_tmp WHERE score > 4.5"
-
-# No cleanup needed - temporary table drops when connection closes
 ```
 
 ### Workflow 5: Database Discovery (Wildcard Mode)
@@ -682,7 +638,9 @@ plenum introspect --name mysql-discovery
 
 ## Error Handling
 
-### Capability Violation (Missing --allow-write)
+### Read-Only Violation (Write Operation)
+
+Plenum rejects all write operations:
 
 ```bash
 plenum query --name prod-db \
@@ -697,17 +655,18 @@ plenum query --name prod-db \
   "command": "query",
   "error": {
     "code": "CAPABILITY_VIOLATION",
-    "message": "Write operations require --allow-write flag"
+    "message": "Plenum is read-only and cannot execute this query. Please run this query manually:\n\nUPDATE users SET email = 'test@example.com' WHERE id = 1"
   }
 }
 ```
 
-### Capability Violation (Missing --allow-ddl)
+### Read-Only Violation (DDL Operation)
+
+Plenum rejects all DDL operations:
 
 ```bash
 plenum query --name prod-db \
-  --sql "DROP TABLE users" \
-  --allow-write
+  --sql "DROP TABLE users"
 ```
 
 **Error Output:**
@@ -718,7 +677,7 @@ plenum query --name prod-db \
   "command": "query",
   "error": {
     "code": "CAPABILITY_VIOLATION",
-    "message": "DDL operations require --allow-ddl flag"
+    "message": "Plenum is read-only and cannot execute this query. Please run this query manually:\n\nDROP TABLE users"
   }
 }
 ```
@@ -880,7 +839,7 @@ diff source-schema.json dest-schema.json
 3. **Parse JSON output** - All Plenum output is valid JSON
 4. **Sanitize user inputs** - Plenum passes SQL verbatim to the database
 5. **Use named connections** - Avoid repeating connection parameters
-6. **Start read-only** - Only add `--allow-write` or `--allow-ddl` when necessary
+6. **Plenum is read-only** - Use it to introspect and query, then present write/DDL SQL to users for manual execution
 7. **Set max-rows for unknown queries** - Prevent accidentally fetching millions of rows
 8. **Use timeouts for expensive queries** - Protect against long-running operations
 

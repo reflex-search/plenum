@@ -89,12 +89,7 @@ async fn test_large_result_set_with_max_rows() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities {
-        allow_write: false,
-        allow_ddl: false,
-        max_rows: Some(100),
-        timeout_ms: None,
-    };
+    let caps = Capabilities { max_rows: Some(100), timeout_ms: None };
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM large_table", &caps).await;
     assert!(result.is_ok());
@@ -127,7 +122,7 @@ async fn test_very_large_result_set_without_limit() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM large_table", &caps).await;
     assert!(result.is_ok(), "Should handle large result sets");
@@ -170,7 +165,7 @@ async fn test_unicode_characters() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let result =
         SqliteEngine::execute(&config, "SELECT * FROM unicode_test ORDER BY id", &caps).await;
@@ -220,7 +215,7 @@ async fn test_special_sql_characters() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let result =
         SqliteEngine::execute(&config, "SELECT * FROM special_chars ORDER BY id", &caps).await;
@@ -260,7 +255,7 @@ async fn test_binary_blob_data() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM blob_test", &caps).await;
     assert!(result.is_ok(), "Should handle BLOB data");
@@ -308,7 +303,7 @@ async fn test_numeric_extremes() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM numeric_test", &caps).await;
     assert!(result.is_ok(), "Should handle numeric extremes");
@@ -346,7 +341,7 @@ async fn test_empty_string_vs_null() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM null_test ORDER BY id", &caps).await;
     assert!(result.is_ok());
@@ -386,7 +381,7 @@ async fn test_very_long_query() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     // Create a very long WHERE clause
     let mut query = "SELECT * FROM test WHERE id IN (".to_string();
@@ -430,7 +425,7 @@ async fn test_sql_injection_patterns_in_data() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM injection_test", &caps).await;
     assert!(result.is_ok());
@@ -467,8 +462,6 @@ async fn test_timeout_capability() {
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities {
-        allow_write: false,
-        allow_ddl: false,
         max_rows: None,
         timeout_ms: Some(5000), // 5 second timeout
     };
@@ -497,7 +490,7 @@ async fn test_query_with_excessive_whitespace() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     // Query with excessive whitespace
     let query = "  \n\n  SELECT   *   \n  FROM   test   \n\n  WHERE   id   =   1   \n\n  ";
@@ -526,7 +519,7 @@ async fn test_case_sensitivity_in_table_names() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::read_only();
+    let caps = Capabilities::default();
 
     // SQLite is case-insensitive for table names
     let result1 = SqliteEngine::execute(&config, "SELECT * FROM TestTable", &caps).await;

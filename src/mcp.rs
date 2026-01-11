@@ -347,7 +347,7 @@ fn handle_list_tools() -> Result<Value> {
             },
             {
                 "name": "query",
-                "description": "Execute SQL query with explicit capability constraints. CAPABILITY HIERARCHY (must request appropriate level): (1) READ-ONLY (default, no flags): SELECT queries only, (2) WRITE (requires allow_write=true): enables INSERT, UPDATE, DELETE but NOT DDL, (3) DDL (requires allow_ddl=true): enables CREATE, DROP, ALTER, TRUNCATE; DDL implicitly grants write permissions. IMPORTANT SECURITY: You (the AI agent) are responsible for sanitizing all user inputs before constructing SQL - Plenum does NOT validate SQL safety, only enforces capability constraints. Connection resolution works like introspect: use 'connection' for saved connections, explicit parameters, or mix both with overrides. CRITICAL MCP TOKEN LIMITS: MCP responses are limited to 25,000 tokens. Large result sets will cause complete tool failure. ALWAYS use max_rows parameter unless you are certain the table is tiny (< 10 rows). Recommended values: max_rows=10 for initial exploration, max_rows=50-100 for small known tables, max_rows=500+ only after verifying table size. Queries without max_rows on unknown tables will likely fail. Additional safety practices: (1) Use timeout_ms to prevent long-running operations, (2) Start with read-only and only add write/DDL when necessary. Returns JSON with either query results (rows/columns) or rows_affected count. The connection is opened, query is executed, and connection is immediately closed (stateless). Possible error codes: CAPABILITY_VIOLATION (operation not permitted), QUERY_FAILED (SQL error), CONNECTION_FAILED (connection error).",
+                "description": "Execute READ-ONLY SQL queries. **PLENUM IS STRICTLY READ-ONLY** - it will REJECT any write or DDL operations (INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, etc.). When you need to modify data or schema: (1) Use Plenum to introspect the schema and read current data, (2) Construct the appropriate SQL query, (3) Present the query to the user in your response for them to execute manually. NEVER attempt to execute write operations through Plenum - they will always fail. IMPORTANT SECURITY: You (the AI agent) are responsible for sanitizing all user inputs before constructing SQL - Plenum does NOT validate SQL safety. Connection resolution works like introspect: use 'connection' for saved connections, explicit parameters, or mix both with overrides. CRITICAL MCP TOKEN LIMITS: MCP responses are limited to 25,000 tokens. Large result sets will cause complete tool failure. ALWAYS use max_rows parameter unless you are certain the table is tiny (< 10 rows). Recommended values: max_rows=10 for initial exploration, max_rows=50-100 for small known tables, max_rows=500+ only after verifying table size. Queries without max_rows on unknown tables will likely fail. Use timeout_ms to prevent long-running operations. Returns JSON with query results (rows/columns). The connection is opened, query is executed, and connection is immediately closed (stateless). Possible error codes: CAPABILITY_VIOLATION (attempted write/DDL operation), QUERY_FAILED (SQL error), CONNECTION_FAILED (connection error).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -387,14 +387,6 @@ fn handle_list_tools() -> Result<Value> {
                         "file": {
                             "type": "string",
                             "description": "File path to SQLite database file. Required for sqlite engine. Can be relative or absolute path. Example: './app.db', '/var/lib/data.db'."
-                        },
-                        "allow_write": {
-                            "type": "boolean",
-                            "description": "Enable write operations (INSERT, UPDATE, DELETE) but NOT DDL. Default: false (read-only). Set to true for data modifications. DDL operations (CREATE, DROP, ALTER) still blocked - use allow_ddl for those."
-                        },
-                        "allow_ddl": {
-                            "type": "boolean",
-                            "description": "Enable DDL operations (CREATE, DROP, ALTER, TRUNCATE). Default: false. DDL capability implicitly grants write permissions - no need to also set allow_write=true. Use this for schema changes."
                         },
                         "max_rows": {
                             "type": "number",
@@ -502,39 +494,23 @@ async fn tool_introspect(args: &Value) -> Result<Value> {
 
 /// MCP Tool: query
 ///
-/// Executes a SQL query with capability constraints.
+/// Executes a READ-ONLY SQL query.
 async fn tool_query(args: &Value) -> Result<Value> {
     // Extract SQL
     let sql = args["sql"].as_str().ok_or_else(|| anyhow!("Missing required field: sql"))?;
 
     // Resolve connection config
-    let (config, is_readonly) = resolve_connection_from_args(args)?;
+    let (config, _is_readonly) = resolve_connection_from_args(args)?;
 
-    // Extract capability flags from args
-    let allow_write = args.get("allow_write").and_then(serde_json::Value::as_bool).unwrap_or(false);
-    let allow_ddl = args.get("allow_ddl").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    // Extract safety parameters from args
     let max_rows = args.get("max_rows").and_then(serde_json::Value::as_u64).map(|n| n as usize);
     let timeout_ms = args.get("timeout_ms").and_then(serde_json::Value::as_u64);
 
-    // Enforce readonly mode: if connection is readonly, reject write/DDL operations
-    if is_readonly && (allow_write || allow_ddl) {
-        let conn_name = args.get("connection").and_then(|v| v.as_str()).unwrap_or("<unnamed>");
-        return Err(anyhow!(
-            "Connection '{conn_name}' is configured as readonly. Write and DDL operations are not permitted."
-        ));
-    }
+    // Build capabilities (read-only only)
+    let capabilities = Capabilities { max_rows, timeout_ms };
 
-    // Build capabilities (forced to read-only if connection is readonly)
-    let capabilities = if is_readonly {
-        // Force read-only mode, ignore flags
-        Capabilities { allow_write: false, allow_ddl: false, max_rows, timeout_ms }
-    } else {
-        Capabilities { allow_write, allow_ddl, max_rows, timeout_ms }
-    };
-
-    // Validate query against capabilities (pre-execution check)
-    crate::validate_query(sql, &capabilities, config.engine)
-        .map_err(|e| anyhow!("Capability validation failed: {e}"))?;
+    // Validate query is read-only (pre-execution check)
+    crate::validate_query(sql, &capabilities, config.engine).map_err(|e| anyhow!("{e}"))?;
 
     // Execute query (opens and closes connection)
     let query_result = execute_query(&config, sql, &capabilities).await?;
