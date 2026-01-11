@@ -16,7 +16,7 @@
 //! - No explicit schema support (`SQLite` uses catalogs)
 
 use rusqlite::{Connection, OpenFlags, Row};
-use std::collections::HashMap;
+use std::collections::HashMap; // Used for grouping foreign keys during introspection
 use std::time::Instant;
 
 use crate::capability::validate_query;
@@ -403,19 +403,19 @@ fn execute_query(conn: &Connection, query: &str, caps: &Capabilities) -> Result<
     Ok(QueryResult { columns: column_names, rows: rows_data, rows_affected })
 }
 
-/// Convert a `SQLite` row to a JSON-safe `HashMap`
+/// Convert a `SQLite` row to a JSON-safe `Vec`
 fn row_to_json(
     column_names: &[String],
     row: &Row,
-) -> std::result::Result<HashMap<String, serde_json::Value>, rusqlite::Error> {
-    let mut map = HashMap::new();
+) -> std::result::Result<Vec<serde_json::Value>, rusqlite::Error> {
+    let mut values = Vec::with_capacity(column_names.len());
 
-    for (idx, col_name) in column_names.iter().enumerate() {
+    for idx in 0..column_names.len() {
         let value = sqlite_value_to_json(row, idx)?;
-        map.insert(col_name.clone(), value);
+        values.push(value);
     }
 
-    Ok(map)
+    Ok(values)
 }
 
 /// Convert `SQLite` value to JSON value
@@ -724,22 +724,22 @@ mod tests {
 
         let row = &query_result.rows[0];
 
-        // Check INTEGER
-        assert_eq!(row.get("int_col").unwrap(), &serde_json::json!(42));
+        // Check INTEGER (index 0)
+        assert_eq!(row[0], serde_json::json!(42));
 
-        // Check REAL
-        let real_val = row.get("real_col").unwrap();
+        // Check REAL (index 1)
+        let real_val = &row[1];
         assert!(real_val.is_number());
 
-        // Check TEXT
-        assert_eq!(row.get("text_col").unwrap(), &serde_json::json!("hello"));
+        // Check TEXT (index 2)
+        assert_eq!(row[2], serde_json::json!("hello"));
 
-        // Check BLOB (should be base64 encoded)
-        let blob_val = row.get("blob_col").unwrap();
+        // Check BLOB (index 3, should be base64 encoded)
+        let blob_val = &row[3];
         assert!(blob_val.is_string());
 
-        // Check NULL
-        assert_eq!(row.get("null_col").unwrap(), &serde_json::Value::Null);
+        // Check NULL (index 4)
+        assert_eq!(row[4], serde_json::Value::Null);
 
         // Clean up
         let _ = std::fs::remove_file(&temp_file);

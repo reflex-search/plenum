@@ -12,7 +12,6 @@
 //! No shared SQL helpers or cross-engine abstractions.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::error::Result;
@@ -315,8 +314,8 @@ pub struct QueryResult {
     /// Column names in result set
     pub columns: Vec<String>,
 
-    /// Result rows (each row is a map of column name to value)
-    pub rows: Vec<HashMap<String, serde_json::Value>>,
+    /// Result rows (each row is an array of values in column order)
+    pub rows: Vec<Vec<serde_json::Value>>,
 
     /// Number of rows affected (for INSERT/UPDATE/DELETE)
     #[serde(skip_serializing_if = "Option::is_none")]

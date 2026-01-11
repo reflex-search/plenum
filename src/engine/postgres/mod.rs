@@ -18,7 +18,7 @@
 //! - Row limits enforced in application code
 //! - Schema filtering supported (`PostgreSQL` has explicit schemas)
 
-use std::collections::HashMap;
+use std::collections::HashMap; // Used for grouping foreign keys during introspection
 use std::time::{Duration, Instant};
 use tokio_postgres::{Client, Config, NoTls, Row};
 
@@ -503,16 +503,16 @@ async fn execute_query(client: &Client, query: &str, caps: &Capabilities) -> Res
     }
 }
 
-/// Convert a `PostgreSQL` row to a JSON-safe `HashMap`
-fn row_to_json(column_names: &[String], row: &Row) -> Result<HashMap<String, serde_json::Value>> {
-    let mut map = HashMap::new();
+/// Convert a `PostgreSQL` row to a JSON-safe `Vec`
+fn row_to_json(column_names: &[String], row: &Row) -> Result<Vec<serde_json::Value>> {
+    let mut values = Vec::with_capacity(column_names.len());
 
-    for (idx, col_name) in column_names.iter().enumerate() {
+    for idx in 0..column_names.len() {
         let value = postgres_value_to_json(row, idx)?;
-        map.insert(col_name.clone(), value);
+        values.push(value);
     }
 
-    Ok(map)
+    Ok(values)
 }
 
 /// Convert `PostgreSQL` value to JSON value
@@ -801,8 +801,8 @@ mod tests {
         assert_eq!(query_result.rows_affected, None);
 
         let row = &query_result.rows[0];
-        assert_eq!(row.get("num").unwrap(), &serde_json::json!(1));
-        assert_eq!(row.get("str").unwrap(), &serde_json::json!("test"));
+        assert_eq!(row[0], serde_json::json!(1)); // num column
+        assert_eq!(row[1], serde_json::json!("test")); // str column
     }
 
     #[tokio::test]

@@ -20,7 +20,7 @@
 //! - Schema filtering supported (`MySQL` has explicit schemas/databases)
 
 use mysql_async::{prelude::*, Conn, OptsBuilder, Row, Value};
-use std::collections::HashMap;
+use std::collections::HashMap; // Used for grouping foreign keys during introspection
 use std::time::{Duration, Instant};
 
 use crate::capability::validate_query;
@@ -575,17 +575,16 @@ async fn execute_query(conn: &mut Conn, query: &str, caps: &Capabilities) -> Res
     }
 }
 
-/// Convert a `MySQL` row to a JSON-safe `HashMap`
-fn row_to_json(row: &Row) -> Result<HashMap<String, serde_json::Value>> {
-    let mut map = HashMap::new();
+/// Convert a `MySQL` row to a JSON-safe `Vec`
+fn row_to_json(row: &Row) -> Result<Vec<serde_json::Value>> {
+    let mut values = Vec::with_capacity(row.columns_ref().len());
 
-    for (idx, column) in row.columns_ref().iter().enumerate() {
-        let col_name = column.name_str().to_string();
+    for idx in 0..row.columns_ref().len() {
         let value = mysql_value_to_json(row, idx)?;
-        map.insert(col_name, value);
+        values.push(value);
     }
 
-    Ok(map)
+    Ok(values)
 }
 
 /// Convert `MySQL` value to JSON value
