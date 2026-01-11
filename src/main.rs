@@ -627,8 +627,8 @@ async fn handle_introspect(
     let config_result =
         build_connection_config(connection, engine, host, port, user, password, database, file);
 
-    let config = match config_result {
-        Ok(cfg) => cfg,
+    let (config, _is_readonly) = match config_result {
+        Ok(cfg_tuple) => cfg_tuple,
         Err(e) => {
             let envelope = ErrorEnvelope::from_error("", "introspect", &e);
             output_error(&envelope);
@@ -745,10 +745,17 @@ async fn handle_query(
     };
 
     // Resolve connection config
-    let config = match build_connection_config(
-        connection, engine, host, port, user, password, database, file,
+    let (config, is_readonly) = match build_connection_config(
+        connection.clone(),
+        engine,
+        host,
+        port,
+        user,
+        password,
+        database,
+        file,
     ) {
-        Ok(cfg) => cfg,
+        Ok(cfg_tuple) => cfg_tuple,
         Err(e) => {
             let envelope = ErrorEnvelope::from_error("", "query", &e);
             output_error(&envelope);
@@ -756,8 +763,30 @@ async fn handle_query(
         }
     };
 
-    // Build capabilities
-    let capabilities = build_capabilities(allow_write, allow_ddl, max_rows, timeout_ms);
+    // Enforce readonly mode: if connection is readonly, reject write/DDL operations
+    if is_readonly && (allow_write || allow_ddl) {
+        let conn_name = connection.unwrap_or_else(|| "<unnamed>".to_string());
+        let envelope = ErrorEnvelope::new(
+            config.engine.as_str(),
+            "query",
+            plenum::ErrorInfo::new(
+                "READONLY_VIOLATION",
+                format!(
+                    "Connection '{conn_name}' is configured as readonly. Write and DDL operations are not permitted."
+                ),
+            ),
+        );
+        output_error(&envelope);
+        return Err(1);
+    }
+
+    // Build capabilities (forced to read-only if connection is readonly)
+    let capabilities = if is_readonly {
+        // Force read-only mode, ignore flags
+        Capabilities { allow_write: false, allow_ddl: false, max_rows, timeout_ms }
+    } else {
+        build_capabilities(allow_write, allow_ddl, max_rows, timeout_ms)
+    };
 
     // Validate query against capabilities
     match plenum::validate_query(&sql_text, &capabilities, config.engine) {
@@ -877,6 +906,7 @@ where
 ///
 /// This helper resolves a connection from config or builds one from CLI arguments.
 /// Precedence: Named connection → CLI arguments only
+/// Returns a tuple of (`ConnectionConfig`, `is_readonly`).
 fn build_connection_config(
     connection: Option<String>,
     engine: Option<String>,
@@ -886,7 +916,7 @@ fn build_connection_config(
     password: Option<String>,
     database: Option<String>,
     file: Option<PathBuf>,
-) -> Result<ConnectionConfig> {
+) -> Result<(ConnectionConfig, bool)> {
     let has_explicit_args = engine.is_some()
         || host.is_some()
         || port.is_some()
@@ -896,10 +926,12 @@ fn build_connection_config(
         || file.is_some();
 
     // Try to resolve from config if connection name is provided
-    let mut config = if let Some(conn_name) = connection {
+    let mut resolved_connection: Option<(ConnectionConfig, bool)> = if let Some(conn_name) =
+        connection
+    {
         // Named connection provided - load it
         match plenum::resolve_connection(&conn_name) {
-            Ok(cfg) => Some(cfg),
+            Ok(cfg_tuple) => Some(cfg_tuple),
             Err(_) if has_explicit_args => None, // Ignore error if explicit args provided as fallback
             Err(e) => return Err(e),             // Propagate error if no fallback
         }
@@ -913,7 +945,7 @@ fn build_connection_config(
     };
 
     // Apply CLI overrides
-    if let Some(ref mut cfg) = config {
+    if let Some((ref mut cfg, is_readonly)) = resolved_connection {
         // Override engine if provided
         if let Some(eng) = engine {
             cfg.engine = parse_engine(&eng)?;
@@ -937,16 +969,17 @@ fn build_connection_config(
         if file.is_some() {
             cfg.file = file;
         }
-        return Ok(cfg.clone());
+        return Ok((cfg.clone(), is_readonly));
     }
 
     // No config found, build from CLI arguments only
+    // CLI-only connections are never readonly (readonly=false)
     let engine_type = engine.ok_or_else(|| {
         PlenumError::invalid_input("--engine is required when not using --connection")
     })?;
     let engine = parse_engine(&engine_type)?;
 
-    match engine {
+    let config = match engine {
         DatabaseType::Postgres | DatabaseType::MySQL => {
             let host = host.ok_or_else(|| {
                 PlenumError::invalid_input("--host is required for postgres/mysql")
@@ -965,17 +998,19 @@ fn build_connection_config(
             })?;
 
             if engine == DatabaseType::Postgres {
-                Ok(ConnectionConfig::postgres(host, port, user, password, database))
+                ConnectionConfig::postgres(host, port, user, password, database)
             } else {
-                Ok(ConnectionConfig::mysql(host, port, user, password, database))
+                ConnectionConfig::mysql(host, port, user, password, database)
             }
         }
         DatabaseType::SQLite => {
             let file =
                 file.ok_or_else(|| PlenumError::invalid_input("--file is required for sqlite"))?;
-            Ok(ConnectionConfig::sqlite(file))
+            ConnectionConfig::sqlite(file)
         }
-    }
+    };
+
+    Ok((config, false)) // CLI-only connections are never readonly
 }
 
 /// Parse engine string to `DatabaseType`

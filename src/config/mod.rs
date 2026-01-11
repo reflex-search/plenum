@@ -43,11 +43,18 @@ pub struct StoredConnection {
     /// Environment variable name for password (if not storing password directly)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_env: Option<String>,
+
+    /// Whether this connection is readonly (rejects all write/DDL operations)
+    /// Default: false (allows write/DDL if capabilities are provided)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readonly: Option<bool>,
 }
 
 impl StoredConnection {
-    /// Resolve environment variables and return a `ConnectionConfig`
-    pub fn resolve(&self) -> Result<ConnectionConfig> {
+    /// Resolve environment variables and return a `ConnectionConfig` and readonly flag
+    ///
+    /// Returns a tuple of (`ConnectionConfig`, `is_readonly`)
+    pub fn resolve(&self) -> Result<(ConnectionConfig, bool)> {
         let mut config = self.config.clone();
 
         // If password_env is set, resolve the environment variable
@@ -62,7 +69,10 @@ impl StoredConnection {
             }
         }
 
-        Ok(config)
+        // Extract readonly flag (defaults to false if not set)
+        let is_readonly = self.readonly.unwrap_or(false);
+
+        Ok((config, is_readonly))
     }
 }
 
@@ -173,7 +183,8 @@ pub fn load_with_precedence() -> Result<ConnectionRegistry> {
 ///
 /// Searches in merged view (both local and global configs).
 /// Returns an error if the connection is not found.
-pub fn resolve_connection(name: &str) -> Result<ConnectionConfig> {
+/// Returns a tuple of (`ConnectionConfig`, `is_readonly`).
+pub fn resolve_connection(name: &str) -> Result<(ConnectionConfig, bool)> {
     // Search in merged view (both local and global)
     let registry = load_with_precedence()?;
 
@@ -183,7 +194,7 @@ pub fn resolve_connection(name: &str) -> Result<ConnectionConfig> {
         .get(name)
         .ok_or_else(|| PlenumError::config_error(format!("Connection '{name}' not found")))?;
 
-    // Resolve environment variables
+    // Resolve environment variables and get readonly flag
     stored.resolve()
 }
 
@@ -204,7 +215,9 @@ pub fn save_connection(
         if path.exists() { load_registry(&path)? } else { ConnectionRegistry::default() };
 
     // Add or update connection
-    registry.connections.insert(name, StoredConnection { config, password_env: None });
+    registry
+        .connections
+        .insert(name, StoredConnection { config, password_env: None, readonly: None });
 
     // Save registry
     save_registry(&path, &registry)?;
@@ -219,7 +232,7 @@ pub fn list_connections() -> Result<Vec<(String, ConnectionConfig)>> {
     let mut connections = Vec::new();
     for (name, stored) in registry.connections {
         match stored.resolve() {
-            Ok(config) => connections.push((name, config)),
+            Ok((config, _readonly)) => connections.push((name, config)),
             Err(_e) => {
                 // Skip connections that fail to resolve (e.g., missing env vars)
                 // Note: Error details not logged to prevent credential leakage
@@ -250,6 +263,7 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                readonly: None,
             },
         );
 
@@ -269,10 +283,12 @@ mod tests {
                 "db".to_string(),
             ),
             password_env: None,
+            readonly: None,
         };
 
-        let resolved = stored.resolve().unwrap();
+        let (resolved, is_readonly) = stored.resolve().unwrap();
         assert_eq!(resolved.password, Some("pass".to_string()));
+        assert!(!is_readonly);
     }
 
     #[test]
@@ -290,10 +306,12 @@ mod tests {
                 file: None,
             },
             password_env: Some("TEST_PASSWORD".to_string()),
+            readonly: None,
         };
 
-        let resolved = stored.resolve().unwrap();
+        let (resolved, is_readonly) = stored.resolve().unwrap();
         assert_eq!(resolved.password, Some("secret".to_string()));
+        assert!(!is_readonly);
 
         std::env::remove_var("TEST_PASSWORD");
     }
@@ -311,6 +329,7 @@ mod tests {
                 file: None,
             },
             password_env: Some("NONEXISTENT_VAR".to_string()),
+            readonly: None,
         };
 
         let result = stored.resolve();
@@ -342,6 +361,7 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                readonly: None,
             },
         );
 
@@ -351,6 +371,7 @@ mod tests {
             StoredConnection {
                 config: ConnectionConfig::sqlite(PathBuf::from("/tmp/test.db")),
                 password_env: None,
+                readonly: None,
             },
         );
 
@@ -381,6 +402,7 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                readonly: None,
             },
         );
 
@@ -396,6 +418,7 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                readonly: None,
             },
         );
 
@@ -421,6 +444,7 @@ mod tests {
             StoredConnection {
                 config: ConnectionConfig::sqlite(PathBuf::from("/tmp/local.db")),
                 password_env: None,
+                readonly: None,
             },
         );
 
@@ -436,6 +460,7 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                readonly: None,
             },
         );
 
@@ -447,6 +472,112 @@ mod tests {
         assert_eq!(global_registry.connections.len(), 1);
         assert!(global_registry.connections.contains_key("global-conn"));
         assert!(!global_registry.connections.contains_key("local-conn"));
+    }
+
+    #[test]
+    fn test_stored_connection_readonly_true() {
+        let stored = StoredConnection {
+            config: ConnectionConfig::postgres(
+                "localhost".to_string(),
+                5432,
+                "user".to_string(),
+                "pass".to_string(),
+                "db".to_string(),
+            ),
+            password_env: None,
+            readonly: Some(true),
+        };
+
+        let (resolved, is_readonly) = stored.resolve().unwrap();
+        assert_eq!(resolved.password, Some("pass".to_string()));
+        assert!(is_readonly);
+    }
+
+    #[test]
+    fn test_stored_connection_readonly_false() {
+        let stored = StoredConnection {
+            config: ConnectionConfig::postgres(
+                "localhost".to_string(),
+                5432,
+                "user".to_string(),
+                "pass".to_string(),
+                "db".to_string(),
+            ),
+            password_env: None,
+            readonly: Some(false),
+        };
+
+        let (resolved, is_readonly) = stored.resolve().unwrap();
+        assert_eq!(resolved.password, Some("pass".to_string()));
+        assert!(!is_readonly);
+    }
+
+    #[test]
+    fn test_stored_connection_readonly_defaults_to_false() {
+        // When readonly is None, it should default to false
+        let stored = StoredConnection {
+            config: ConnectionConfig::postgres(
+                "localhost".to_string(),
+                5432,
+                "user".to_string(),
+                "pass".to_string(),
+                "db".to_string(),
+            ),
+            password_env: None,
+            readonly: None,
+        };
+
+        let (resolved, is_readonly) = stored.resolve().unwrap();
+        assert_eq!(resolved.password, Some("pass".to_string()));
+        assert!(!is_readonly); // Should default to false
+    }
+
+    #[test]
+    fn test_readonly_serialization() {
+        // Test that readonly field serializes correctly
+        let mut registry = ConnectionRegistry::default();
+        registry.connections.insert(
+            "readonly-conn".to_string(),
+            StoredConnection {
+                config: ConnectionConfig::postgres(
+                    "localhost".to_string(),
+                    5432,
+                    "user".to_string(),
+                    "pass".to_string(),
+                    "db".to_string(),
+                ),
+                password_env: None,
+                readonly: Some(true),
+            },
+        );
+
+        let json = serde_json::to_string_pretty(&registry).unwrap();
+        assert!(json.contains("readonly"));
+        assert!(json.contains("true"));
+    }
+
+    #[test]
+    fn test_readonly_not_serialized_when_none() {
+        // Test that readonly field is omitted when None (backwards compatibility)
+        let mut registry = ConnectionRegistry::default();
+        registry.connections.insert(
+            "normal-conn".to_string(),
+            StoredConnection {
+                config: ConnectionConfig::postgres(
+                    "localhost".to_string(),
+                    5432,
+                    "user".to_string(),
+                    "pass".to_string(),
+                    "db".to_string(),
+                ),
+                password_env: None,
+                readonly: None,
+            },
+        );
+
+        let json = serde_json::to_string_pretty(&registry).unwrap();
+        // readonly field should not be present when it's None
+        assert!(!json.contains("readonly"));
     }
 
     #[test]
@@ -464,6 +595,7 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                readonly: None,
             },
         );
 
@@ -473,6 +605,7 @@ mod tests {
             StoredConnection {
                 config: ConnectionConfig::sqlite(PathBuf::from("/tmp/local.db")),
                 password_env: None,
+                readonly: None,
             },
         );
 

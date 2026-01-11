@@ -89,6 +89,45 @@ struct JsonRpcError {
 }
 
 // ============================================================================
+// MCP Tool Result Structures
+// ============================================================================
+
+/// Text content block for MCP tool results
+#[derive(Debug, Serialize)]
+struct TextContent {
+    #[serde(rename = "type")]
+    content_type: String,
+    text: String,
+}
+
+impl TextContent {
+    /// Create a new text content block
+    fn new(text: String) -> Self {
+        Self { content_type: "text".to_string(), text }
+    }
+}
+
+/// MCP tool call result
+#[derive(Debug, Serialize)]
+struct CallToolResult {
+    content: Vec<TextContent>,
+    #[serde(rename = "isError")]
+    is_error: bool,
+}
+
+impl CallToolResult {
+    /// Create a successful tool result with JSON data
+    fn success(data: impl Serialize) -> Result<Value> {
+        // Serialize data to pretty JSON string
+        let json_text = serde_json::to_string_pretty(&data)?;
+
+        let result = Self { content: vec![TextContent::new(json_text)], is_error: false };
+
+        Ok(serde_json::to_value(result)?)
+    }
+}
+
+// ============================================================================
 // MCP Server
 // ============================================================================
 
@@ -214,7 +253,7 @@ fn handle_list_tools() -> Result<Value> {
         "tools": [
             {
                 "name": "connect",
-                "description": "Validate and save database connection configuration. Use this tool to: (1) Test that connection parameters are valid, (2) Save connection details for later use by name, (3) Validate existing saved connections. The connection is opened, validated, and immediately closed - no persistent connection is maintained. Supports PostgreSQL, MySQL, and SQLite. Save locations: 'local' (.plenum/config.json, team-shareable), 'global' (~/.config/plenum/connections.json, user-private). Common pattern: save connection once with a name, then reference it by name in introspect/query tools.",
+                "description": "Validate and save database connection configuration. Use this tool to: (1) Test that connection parameters are valid, (2) Save connection details for later use by connection name, (3) Validate existing saved connections. The connection is opened, validated, and immediately closed - no persistent connection is maintained. Supports PostgreSQL, MySQL, and SQLite. Save locations: 'local' (.plenum/config.json, team-shareable), 'global' (~/.config/plenum/connections.json, user-private). Common pattern: save connection once with a connection name, then reference it by connection name in introspect/query tools.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -223,7 +262,7 @@ fn handle_list_tools() -> Result<Value> {
                             "enum": ["postgres", "mysql", "sqlite"],
                             "description": "Database engine type"
                         },
-                        "name": {
+                        "connection": {
                             "type": "string",
                             "description": "Connection name (optional)"
                         },
@@ -262,18 +301,18 @@ fn handle_list_tools() -> Result<Value> {
             },
             {
                 "name": "introspect",
-                "description": "Introspect database schema and return structured information about tables, columns, data types, primary keys, foreign keys, and indexes. Use this tool before executing queries to understand the database structure. Connection resolution: (1) Use 'name' to reference a saved connection, (2) Provide explicit connection parameters (engine, host, port, etc.), (3) Mix both - use 'name' and override specific fields. The connection is opened, schema is introspected, and connection is immediately closed (stateless). Optional 'schema' filter limits results to a specific schema (PostgreSQL/MySQL only; SQLite ignores this). Returns JSON with complete schema information suitable for query generation.",
+                "description": "Introspect database schema and return structured information about tables, columns, data types, primary keys, foreign keys, and indexes. Use this tool before executing queries to understand the database structure. Connection resolution: (1) Use 'connection' to reference a saved connection, (2) Provide explicit connection parameters (engine, host, port, etc.), (3) Mix both - use 'connection' and override specific fields. The connection is opened, schema is introspected, and connection is immediately closed (stateless). Optional 'schema' filter limits results to a specific schema (PostgreSQL/MySQL only; SQLite ignores this). Returns JSON with complete schema information suitable for query generation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "name": {
+                        "connection": {
                             "type": "string",
-                            "description": "Name of saved connection to use. Connection must exist in local (.plenum/config.json) or global (~/.config/plenum/connections.json) config. Cannot be used alone with 'engine' - choose one or mix name with overrides."
+                            "description": "Name of saved connection to use. Connection must exist in local (.plenum/config.json) or global (~/.config/plenum/connections.json) config. Cannot be used alone with 'engine' - choose one or mix connection with overrides."
                         },
                         "engine": {
                             "type": "string",
                             "enum": ["postgres", "mysql", "sqlite"],
-                            "description": "Database engine type. Required if not using 'name'. Valid values: 'postgres', 'mysql', 'sqlite'."
+                            "description": "Database engine type. Required if not using 'connection'. Valid values: 'postgres', 'mysql', 'sqlite'."
                         },
                         "host": {
                             "type": "string",
@@ -308,7 +347,7 @@ fn handle_list_tools() -> Result<Value> {
             },
             {
                 "name": "query",
-                "description": "Execute SQL query with explicit capability constraints. CAPABILITY HIERARCHY (must request appropriate level): (1) READ-ONLY (default, no flags): SELECT queries only, (2) WRITE (requires allow_write=true): enables INSERT, UPDATE, DELETE but NOT DDL, (3) DDL (requires allow_ddl=true): enables CREATE, DROP, ALTER, TRUNCATE; DDL implicitly grants write permissions. IMPORTANT SECURITY: You (the AI agent) are responsible for sanitizing all user inputs before constructing SQL - Plenum does NOT validate SQL safety, only enforces capability constraints. Connection resolution works like introspect: use 'name' for saved connections, explicit parameters, or mix both with overrides. Recommended safety practices: (1) Use max_rows to limit result sets for unknown queries, (2) Use timeout_ms to prevent long-running operations, (3) Start with read-only and only add write/DDL when necessary. Returns JSON with either query results (rows/columns) or rows_affected count. The connection is opened, query is executed, and connection is immediately closed (stateless). Possible error codes: CAPABILITY_VIOLATION (operation not permitted), QUERY_FAILED (SQL error), CONNECTION_FAILED (connection error).",
+                "description": "Execute SQL query with explicit capability constraints. CAPABILITY HIERARCHY (must request appropriate level): (1) READ-ONLY (default, no flags): SELECT queries only, (2) WRITE (requires allow_write=true): enables INSERT, UPDATE, DELETE but NOT DDL, (3) DDL (requires allow_ddl=true): enables CREATE, DROP, ALTER, TRUNCATE; DDL implicitly grants write permissions. IMPORTANT SECURITY: You (the AI agent) are responsible for sanitizing all user inputs before constructing SQL - Plenum does NOT validate SQL safety, only enforces capability constraints. Connection resolution works like introspect: use 'connection' for saved connections, explicit parameters, or mix both with overrides. Recommended safety practices: (1) Use max_rows to limit result sets for unknown queries, (2) Use timeout_ms to prevent long-running operations, (3) Start with read-only and only add write/DDL when necessary. Returns JSON with either query results (rows/columns) or rows_affected count. The connection is opened, query is executed, and connection is immediately closed (stateless). Possible error codes: CAPABILITY_VIOLATION (operation not permitted), QUERY_FAILED (SQL error), CONNECTION_FAILED (connection error).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -316,14 +355,14 @@ fn handle_list_tools() -> Result<Value> {
                             "type": "string",
                             "description": "SQL query to execute. REQUIRED. Must be valid, vendor-specific SQL (PostgreSQL SQL ≠ MySQL SQL ≠ SQLite SQL). You (the agent) are responsible for sanitizing user inputs before constructing SQL - Plenum does not validate SQL safety."
                         },
-                        "name": {
+                        "connection": {
                             "type": "string",
-                            "description": "Name of saved connection to use. Connection must exist in local (.plenum/config.json) or global (~/.config/plenum/connections.json) config. Cannot be used alone with 'engine' - choose one or mix name with overrides."
+                            "description": "Name of saved connection to use. Connection must exist in local (.plenum/config.json) or global (~/.config/plenum/connections.json) config. Cannot be used alone with 'engine' - choose one or mix connection with overrides."
                         },
                         "engine": {
                             "type": "string",
                             "enum": ["postgres", "mysql", "sqlite"],
-                            "description": "Database engine type. Required if not using 'name'. Valid values: 'postgres', 'mysql', 'sqlite'."
+                            "description": "Database engine type. Required if not using 'connection'. Valid values: 'postgres', 'mysql', 'sqlite'."
                         },
                         "host": {
                             "type": "string",
@@ -415,28 +454,32 @@ async fn tool_connect(args: &Value) -> Result<Value> {
             _ => return Err(anyhow!("Invalid save location. Must be 'local' or 'global'")),
         };
 
-        let conn_name = args["name"]
+        let conn_name = args["connection"]
             .as_str()
             .map_or_else(|| "default".to_string(), std::string::ToString::to_string);
 
         crate::save_connection(conn_name.clone(), config.clone(), location)
             .map_err(|e| anyhow!("Failed to save connection: {e}"))?;
 
-        Ok(serde_json::json!({
+        let response = serde_json::json!({
             "ok": true,
             "connection_name": conn_name,
             "engine": config.engine.as_str(),
             "saved_to": save_str,
             "connection_info": conn_info,
             "message": format!("Connection '{}' saved successfully", conn_name)
-        }))
+        });
+
+        CallToolResult::success(response)
     } else {
-        Ok(serde_json::json!({
+        let response = serde_json::json!({
             "ok": true,
             "engine": config.engine.as_str(),
             "connection_info": conn_info,
             "message": "Connection validated successfully"
-        }))
+        });
+
+        CallToolResult::success(response)
     }
 }
 
@@ -445,7 +488,7 @@ async fn tool_connect(args: &Value) -> Result<Value> {
 /// Introspects database schema and returns table/column information.
 async fn tool_introspect(args: &Value) -> Result<Value> {
     // Resolve connection config
-    let config = resolve_connection_from_args(args)?;
+    let (config, _is_readonly) = resolve_connection_from_args(args)?;
 
     // Get schema filter
     let schema_filter = args.get("schema").and_then(|v| v.as_str());
@@ -453,7 +496,7 @@ async fn tool_introspect(args: &Value) -> Result<Value> {
     // Call introspect (opens and closes connection)
     let schema_info = introspect_schema(&config, schema_filter).await?;
 
-    Ok(serde_json::to_value(schema_info)?)
+    CallToolResult::success(schema_info)
 }
 
 /// MCP Tool: query
@@ -464,14 +507,28 @@ async fn tool_query(args: &Value) -> Result<Value> {
     let sql = args["sql"].as_str().ok_or_else(|| anyhow!("Missing required field: sql"))?;
 
     // Resolve connection config
-    let config = resolve_connection_from_args(args)?;
+    let (config, is_readonly) = resolve_connection_from_args(args)?;
 
-    // Build capabilities
-    let capabilities = Capabilities {
-        allow_write: args.get("allow_write").and_then(serde_json::Value::as_bool).unwrap_or(false),
-        allow_ddl: args.get("allow_ddl").and_then(serde_json::Value::as_bool).unwrap_or(false),
-        max_rows: args.get("max_rows").and_then(serde_json::Value::as_u64).map(|n| n as usize),
-        timeout_ms: args.get("timeout_ms").and_then(serde_json::Value::as_u64),
+    // Extract capability flags from args
+    let allow_write = args.get("allow_write").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let allow_ddl = args.get("allow_ddl").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let max_rows = args.get("max_rows").and_then(serde_json::Value::as_u64).map(|n| n as usize);
+    let timeout_ms = args.get("timeout_ms").and_then(serde_json::Value::as_u64);
+
+    // Enforce readonly mode: if connection is readonly, reject write/DDL operations
+    if is_readonly && (allow_write || allow_ddl) {
+        let conn_name = args.get("connection").and_then(|v| v.as_str()).unwrap_or("<unnamed>");
+        return Err(anyhow!(
+            "Connection '{conn_name}' is configured as readonly. Write and DDL operations are not permitted."
+        ));
+    }
+
+    // Build capabilities (forced to read-only if connection is readonly)
+    let capabilities = if is_readonly {
+        // Force read-only mode, ignore flags
+        Capabilities { allow_write: false, allow_ddl: false, max_rows, timeout_ms }
+    } else {
+        Capabilities { allow_write, allow_ddl, max_rows, timeout_ms }
     };
 
     // Validate query against capabilities (pre-execution check)
@@ -481,7 +538,7 @@ async fn tool_query(args: &Value) -> Result<Value> {
     // Execute query (opens and closes connection)
     let query_result = execute_query(&config, sql, &capabilities).await?;
 
-    Ok(serde_json::to_value(query_result)?)
+    CallToolResult::success(query_result)
 }
 
 // ============================================================================
@@ -538,11 +595,12 @@ fn build_connection_config_from_args(args: &Value, engine_str: &str) -> Result<C
 /// Resolve connection config from JSON arguments
 ///
 /// This handles both named connections and explicit connection parameters.
-fn resolve_connection_from_args(args: &Value) -> Result<ConnectionConfig> {
+/// Returns a tuple of (`ConnectionConfig`, `is_readonly`).
+fn resolve_connection_from_args(args: &Value) -> Result<(ConnectionConfig, bool)> {
     // Try named connection first
-    if let Some(name) = args.get("name").and_then(|v| v.as_str()) {
-        let mut config = crate::resolve_connection(name)
-            .map_err(|e| anyhow!("Failed to resolve connection '{name}': {e}"))?;
+    if let Some(connection) = args.get("connection").and_then(|v| v.as_str()) {
+        let (mut config, is_readonly) = crate::resolve_connection(connection)
+            .map_err(|e| anyhow!("Failed to resolve connection '{connection}': {e}"))?;
 
         // Apply overrides
         if let Some(eng) = args.get("engine").and_then(|v| v.as_str()) {
@@ -572,14 +630,16 @@ fn resolve_connection_from_args(args: &Value) -> Result<ConnectionConfig> {
             config.file = Some(PathBuf::from(f));
         }
 
-        return Ok(config);
+        return Ok((config, is_readonly));
     }
 
     // No named connection - must have explicit engine
-    let engine_str =
-        args["engine"].as_str().ok_or_else(|| anyhow!("Must provide either 'name' or 'engine'"))?;
+    let engine_str = args["engine"]
+        .as_str()
+        .ok_or_else(|| anyhow!("Must provide either 'connection' or 'engine'"))?;
 
-    build_connection_config_from_args(args, engine_str)
+    let config = build_connection_config_from_args(args, engine_str)?;
+    Ok((config, false)) // Explicit connections are never readonly
 }
 
 /// Validate database connection
