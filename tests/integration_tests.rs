@@ -68,6 +68,19 @@ fn cleanup_sqlite_db(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
 }
 
+/// Helper to get a column value from a row by column name
+fn get_column<'a>(
+    columns: &[String],
+    row: &'a [serde_json::Value],
+    column_name: &str,
+) -> &'a serde_json::Value {
+    let idx = columns
+        .iter()
+        .position(|c| c == column_name)
+        .unwrap_or_else(|| panic!("Column '{column_name}' not found in columns: {columns:?}"));
+    &row[idx]
+}
+
 // ============================================================================
 // Cross-Engine Consistency Tests
 // ============================================================================
@@ -95,9 +108,9 @@ async fn test_cross_engine_select_query_structure() {
 
     // Verify data structure
     let row = &query_result.rows[0];
-    assert!(row.contains_key("name"));
-    assert!(row.contains_key("email"));
-    assert_eq!(row.get("name").unwrap(), &serde_json::json!("Alice"));
+    assert!(query_result.columns.contains(&"name".to_string()));
+    assert!(query_result.columns.contains(&"email".to_string()));
+    assert_eq!(get_column(&query_result.columns, row, "name"), &serde_json::json!("Alice"));
 
     cleanup_sqlite_db(&temp_file);
 }
@@ -198,7 +211,7 @@ async fn test_cross_engine_null_handling() {
 
     let row = &query_result.rows[0];
     assert_eq!(
-        row.get("email").unwrap(),
+        get_column(&query_result.columns, row, "email"),
         &serde_json::Value::Null,
         "NULL should be represented as JSON null"
     );

@@ -54,6 +54,19 @@ fn open_test_conn(path: &PathBuf) -> rusqlite::Connection {
     Connection::open_with_flags(path, flags).expect("Failed to open database")
 }
 
+/// Helper to get a column value from a row by column name
+fn get_column<'a>(
+    columns: &[String],
+    row: &'a [serde_json::Value],
+    column_name: &str,
+) -> &'a serde_json::Value {
+    let idx = columns
+        .iter()
+        .position(|c| c == column_name)
+        .unwrap_or_else(|| panic!("Column '{column_name}' not found in columns: {columns:?}"));
+    &row[idx]
+}
+
 // ============================================================================
 // Large Dataset Tests
 // ============================================================================
@@ -168,7 +181,7 @@ async fn test_unicode_characters() {
 
     // Verify Unicode is preserved
     let row0 = &query_result.rows[0];
-    let text0 = row0.get("text").unwrap().as_str().unwrap();
+    let text0 = get_column(&query_result.columns, row0, "text").as_str().unwrap();
     assert!(text0.contains("世界"));
     assert!(text0.contains("🌍"));
     assert!(text0.contains("Здравствуй"));
@@ -218,7 +231,10 @@ async fn test_special_sql_characters() {
 
     // Verify special characters are preserved
     let row0 = &query_result.rows[0];
-    assert!(row0.get("text").unwrap().as_str().unwrap().contains("'single quotes'"));
+    assert!(get_column(&query_result.columns, row0, "text")
+        .as_str()
+        .unwrap()
+        .contains("'single quotes'"));
 
     cleanup_db(&temp_file);
 }
@@ -254,7 +270,7 @@ async fn test_binary_blob_data() {
 
     // BLOB should be base64 encoded in JSON
     let row = &query_result.rows[0];
-    let blob_value = row.get("data").unwrap();
+    let blob_value = get_column(&query_result.columns, row, "data");
     assert!(blob_value.is_string(), "BLOB should be encoded as string (base64)");
 
     cleanup_db(&temp_file);
@@ -301,9 +317,9 @@ async fn test_numeric_extremes() {
     assert_eq!(query_result.rows.len(), 1);
 
     let row = &query_result.rows[0];
-    assert!(row.get("max_int").unwrap().is_number());
-    assert!(row.get("min_int").unwrap().is_number());
-    assert_eq!(row.get("zero").unwrap().as_i64().unwrap(), 0);
+    assert!(get_column(&query_result.columns, row, "max_int").is_number());
+    assert!(get_column(&query_result.columns, row, "min_int").is_number());
+    assert_eq!(get_column(&query_result.columns, row, "zero").as_i64().unwrap(), 0);
 
     cleanup_db(&temp_file);
 }
@@ -340,11 +356,11 @@ async fn test_empty_string_vs_null() {
 
     // Empty string should be empty string
     let row0 = &query_result.rows[0];
-    assert_eq!(row0.get("value").unwrap().as_str().unwrap(), "");
+    assert_eq!(get_column(&query_result.columns, row0, "value").as_str().unwrap(), "");
 
     // NULL should be JSON null
     let row1 = &query_result.rows[1];
-    assert_eq!(row1.get("value").unwrap(), &serde_json::Value::Null);
+    assert_eq!(get_column(&query_result.columns, row1, "value"), &serde_json::Value::Null);
 
     cleanup_db(&temp_file);
 }
@@ -424,7 +440,10 @@ async fn test_sql_injection_patterns_in_data() {
 
     // Verify SQL-like patterns are stored as-is (not sanitized by Plenum)
     let row0 = &query_result.rows[0];
-    assert_eq!(row0.get("username").unwrap().as_str().unwrap(), "admin' OR '1'='1");
+    assert_eq!(
+        get_column(&query_result.columns, row0, "username").as_str().unwrap(),
+        "admin' OR '1'='1"
+    );
 
     cleanup_db(&temp_file);
 }

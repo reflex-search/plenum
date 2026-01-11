@@ -111,11 +111,8 @@ fn test_error_envelope_structure() {
 fn test_query_result_serializes_to_pure_json() {
     // Verify that QueryResult serializes to pure JSON with no extra content
     use plenum::engine::QueryResult;
-    use std::collections::HashMap;
 
-    let mut row = HashMap::new();
-    row.insert("id".to_string(), serde_json::json!(1));
-    row.insert("name".to_string(), serde_json::json!("Alice"));
+    let row = vec![serde_json::json!(1), serde_json::json!("Alice")];
 
     let result = QueryResult {
         columns: vec!["id".to_string(), "name".to_string()],
