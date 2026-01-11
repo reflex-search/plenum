@@ -40,9 +40,13 @@ struct Cli {
 enum Commands {
     /// Configure and validate database connections
     Connect {
-        /// Connection name (optional)
+        /// Connection name (optional, defaults to "default")
         #[arg(long)]
-        connection: Option<String>,
+        name: Option<String>,
+
+        /// Project path (optional, defaults to current directory)
+        #[arg(long)]
+        project_path: Option<String>,
 
         /// Database engine
         #[arg(long, value_parser = ["postgres", "mysql", "sqlite"])]
@@ -83,9 +87,13 @@ enum Commands {
 
     /// Introspect database schema
     Introspect {
-        /// Named connection
+        /// Connection name (optional, defaults to "default")
         #[arg(long)]
-        connection: Option<String>,
+        name: Option<String>,
+
+        /// Project path (optional, defaults to current directory)
+        #[arg(long)]
+        project_path: Option<String>,
 
         /// Engine override
         #[arg(long, value_parser = ["postgres", "mysql", "sqlite"])]
@@ -122,9 +130,13 @@ enum Commands {
 
     /// Execute constrained SQL queries
     Query {
-        /// Named connection
+        /// Connection name (optional, defaults to "default")
         #[arg(long)]
-        connection: Option<String>,
+        name: Option<String>,
+
+        /// Project path (optional, defaults to current directory)
+        #[arg(long)]
+        project_path: Option<String>,
 
         /// Engine override
         #[arg(long, value_parser = ["postgres", "mysql", "sqlite"])]
@@ -202,7 +214,8 @@ async fn main() {
     // Route to command handlers
     let result = match cli.command {
         Some(Commands::Connect {
-            connection,
+            name,
+            project_path,
             engine,
             host,
             port,
@@ -214,7 +227,8 @@ async fn main() {
             save,
         }) => {
             handle_connect(
-                connection,
+                name,
+                project_path,
                 engine,
                 host,
                 port,
@@ -228,7 +242,8 @@ async fn main() {
             .await
         }
         Some(Commands::Introspect {
-            connection,
+            name,
+            project_path,
             engine,
             host,
             port,
@@ -239,12 +254,22 @@ async fn main() {
             schema,
         }) => {
             handle_introspect(
-                connection, engine, host, port, user, password, database, file, schema,
+                name,
+                project_path,
+                engine,
+                host,
+                port,
+                user,
+                password,
+                database,
+                file,
+                schema,
             )
             .await
         }
         Some(Commands::Query {
-            connection,
+            name,
+            project_path,
             engine,
             host,
             port,
@@ -260,7 +285,8 @@ async fn main() {
             timeout_ms,
         }) => {
             handle_query(
-                connection,
+                name,
+                project_path,
                 engine,
                 host,
                 port,
@@ -304,7 +330,8 @@ async fn main() {
 // ============================================================================
 
 async fn handle_connect(
-    connection: Option<String>,
+    name: Option<String>,
+    project_path: Option<String>,
     engine: Option<String>,
     host: Option<String>,
     port: Option<u16>,
@@ -329,10 +356,11 @@ async fn handle_connect(
         || file.is_some()
         || save.is_some();
 
-    let result: Result<(String, ConnectionConfig, ConfigLocation)> = if has_args {
+    let result: Result<(String, Option<String>, ConnectionConfig, ConfigLocation)> = if has_args {
         // Non-interactive mode: build from args
         non_interactive_connect(
-            connection,
+            name,
+            project_path,
             engine,
             host,
             port,
@@ -350,9 +378,9 @@ async fn handle_connect(
     };
 
     match result {
-        Ok((conn_name, config, location)) => {
+        Ok((conn_name, proj_path, config, location)) => {
             // Save connection
-            match plenum::save_connection(conn_name.clone(), config.clone(), location) {
+            match plenum::save_connection(proj_path, Some(conn_name.clone()), config.clone(), location) {
                 Ok(()) => {
                     // Build success response
                     let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -391,11 +419,14 @@ async fn handle_connect(
 }
 
 /// Interactive connection picker (when no args provided)
-async fn interactive_connect_picker() -> Result<(String, ConnectionConfig, ConfigLocation)> {
+async fn interactive_connect_picker() -> Result<(String, Option<String>, ConnectionConfig, ConfigLocation)> {
     use dialoguer::Select;
 
-    // Load existing connections
-    let connections = plenum::list_connections()?;
+    // Get current project path
+    let current_project_path = plenum::config::get_current_project_path()?;
+
+    // Load existing connections for the current project only
+    let connections = plenum::list_connections_for_project(&current_project_path)?;
 
     if connections.is_empty() {
         // No existing connections, go straight to wizard
@@ -403,12 +434,12 @@ async fn interactive_connect_picker() -> Result<(String, ConnectionConfig, Confi
         return interactive_connect_wizard().await;
     }
 
-    // Build menu
+    // Build menu (without showing project path since we're already in the project)
     let mut items: Vec<String> = connections
         .iter()
         .map(|(name, config)| {
             format!(
-                "{} ({}://{})",
+                "{} - {}://{}",
                 name,
                 config.engine.as_str(),
                 match &config.engine {
@@ -448,12 +479,12 @@ async fn interactive_connect_picker() -> Result<(String, ConnectionConfig, Confi
         // Ask for save location
         let location = prompt_save_location()?;
 
-        Ok((name.clone(), config.clone(), location))
+        Ok((name.clone(), None, config.clone(), location))
     }
 }
 
 /// Interactive connection wizard
-async fn interactive_connect_wizard() -> Result<(String, ConnectionConfig, ConfigLocation)> {
+async fn interactive_connect_wizard() -> Result<(String, Option<String>, ConnectionConfig, ConfigLocation)> {
     use dialoguer::{Input, Select};
 
     eprintln!("\n=== Create New Database Connection ===\n");
@@ -515,7 +546,7 @@ async fn interactive_connect_wizard() -> Result<(String, ConnectionConfig, Confi
 
     // Prompt for connection name
     let name: String = Input::new()
-        .with_prompt("Connection name")
+        .with_prompt("Connection name (defaults to 'default')")
         .default("default".to_string())
         .interact_text()
         .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
@@ -523,12 +554,14 @@ async fn interactive_connect_wizard() -> Result<(String, ConnectionConfig, Confi
     // Prompt for save location
     let location = prompt_save_location()?;
 
-    Ok((name, config, location))
+    // Use None for project_path (will default to current directory)
+    Ok((name, None, config, location))
 }
 
 /// Non-interactive connect (with CLI args)
 async fn non_interactive_connect(
-    connection: Option<String>,
+    name: Option<String>,
+    project_path: Option<String>,
     engine: Option<String>,
     host: Option<String>,
     port: Option<u16>,
@@ -538,7 +571,7 @@ async fn non_interactive_connect(
     database: Option<String>,
     file: Option<PathBuf>,
     save: Option<String>,
-) -> Result<(String, ConnectionConfig, ConfigLocation)> {
+) -> Result<(String, Option<String>, ConnectionConfig, ConfigLocation)> {
     // Validate required arguments
     let engine_str = engine.ok_or_else(|| {
         PlenumError::invalid_input("--engine is required for non-interactive mode")
@@ -577,8 +610,8 @@ async fn non_interactive_connect(
         }
     };
 
-    // Determine connection name
-    let conn_name = connection.unwrap_or_else(|| "default".to_string());
+    // Determine connection name (defaults to "default")
+    let conn_name = name.unwrap_or_else(|| "default".to_string());
 
     // Parse save location
     let location = match save.as_deref() {
@@ -591,7 +624,7 @@ async fn non_interactive_connect(
         }
     };
 
-    Ok((conn_name, config, location))
+    Ok((conn_name, project_path, config, location))
 }
 
 /// Prompt user for save location
@@ -610,7 +643,8 @@ fn prompt_save_location() -> Result<ConfigLocation> {
 }
 
 async fn handle_introspect(
-    connection: Option<String>,
+    name: Option<String>,
+    project_path: Option<String>,
     engine: Option<String>,
     host: Option<String>,
     port: Option<u16>,
@@ -624,8 +658,17 @@ async fn handle_introspect(
     let start = Instant::now();
 
     // Resolve connection config
-    let config_result =
-        build_connection_config(connection, engine, host, port, user, password, database, file);
+    let config_result = build_connection_config(
+        name.as_deref(),
+        project_path.as_deref(),
+        engine,
+        host,
+        port,
+        user,
+        password,
+        database,
+        file,
+    );
 
     let (config, _is_readonly) = match config_result {
         Ok(cfg_tuple) => cfg_tuple,
@@ -687,7 +730,8 @@ async fn handle_introspect(
 }
 
 async fn handle_query(
-    connection: Option<String>,
+    name: Option<String>,
+    project_path: Option<String>,
     engine: Option<String>,
     host: Option<String>,
     port: Option<u16>,
@@ -746,7 +790,8 @@ async fn handle_query(
 
     // Resolve connection config
     let (config, is_readonly) = match build_connection_config(
-        connection.clone(),
+        name.as_deref(),
+        project_path.as_deref(),
         engine,
         host,
         port,
@@ -765,7 +810,7 @@ async fn handle_query(
 
     // Enforce readonly mode: if connection is readonly, reject write/DDL operations
     if is_readonly && (allow_write || allow_ddl) {
-        let conn_name = connection.unwrap_or_else(|| "<unnamed>".to_string());
+        let conn_name = name.unwrap_or_else(|| "default".to_string());
         let envelope = ErrorEnvelope::new(
             config.engine.as_str(),
             "query",
@@ -905,10 +950,11 @@ where
 /// Build connection config from CLI arguments
 ///
 /// This helper resolves a connection from config or builds one from CLI arguments.
-/// Precedence: Named connection → CLI arguments only
+/// Precedence: Named connection at project path → CLI arguments only
 /// Returns a tuple of (`ConnectionConfig`, `is_readonly`).
 fn build_connection_config(
-    connection: Option<String>,
+    name: Option<&str>,
+    project_path: Option<&str>,
     engine: Option<String>,
     host: Option<String>,
     port: Option<u16>,
@@ -925,21 +971,16 @@ fn build_connection_config(
         || database.is_some()
         || file.is_some();
 
-    // Try to resolve from config if connection name is provided
-    let mut resolved_connection: Option<(ConnectionConfig, bool)> = if let Some(conn_name) =
-        connection
-    {
-        // Named connection provided - load it
-        match plenum::resolve_connection(&conn_name) {
+    // Try to resolve from config if name or project_path is provided, or if no explicit args
+    let should_try_resolve = name.is_some() || project_path.is_some() || !has_explicit_args;
+
+    let mut resolved_connection: Option<(ConnectionConfig, bool)> = if should_try_resolve {
+        // Try to load connection from config
+        match plenum::resolve_connection(project_path, name) {
             Ok(cfg_tuple) => Some(cfg_tuple),
             Err(_) if has_explicit_args => None, // Ignore error if explicit args provided as fallback
             Err(e) => return Err(e),             // Propagate error if no fallback
         }
-    } else if !has_explicit_args {
-        // No connection name and no explicit args - error
-        return Err(PlenumError::invalid_input(
-            "Must provide either --connection <name> or explicit connection parameters (--engine, --host, etc.)"
-        ));
     } else {
         None
     };
@@ -975,7 +1016,9 @@ fn build_connection_config(
     // No config found, build from CLI arguments only
     // CLI-only connections are never readonly (readonly=false)
     let engine_type = engine.ok_or_else(|| {
-        PlenumError::invalid_input("--engine is required when not using --connection")
+        PlenumError::invalid_input(
+            "--engine is required when not using a saved connection or explicit connection parameters"
+        )
     })?;
     let engine = parse_engine(&engine_type)?;
 

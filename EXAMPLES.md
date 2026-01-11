@@ -513,6 +513,171 @@ plenum query --name work-db \
 # No cleanup needed - temporary table drops when connection closes
 ```
 
+### Workflow 5: Database Discovery (Wildcard Mode)
+
+The wildcard database feature allows agents to discover available databases before selecting one.
+
+#### MySQL Discovery
+
+```bash
+# Step 1: Create connection with wildcard database
+plenum connect \
+  --name mysql-discovery \
+  --engine mysql \
+  --host localhost \
+  --port 3306 \
+  --user root \
+  --password rootpass \
+  --database "*" \
+  --save local
+
+# Step 2: Discover available databases
+plenum query --name mysql-discovery \
+  --sql "SHOW DATABASES"
+```
+
+**Example Output:**
+```json
+{
+  "ok": true,
+  "engine": "mysql",
+  "command": "query",
+  "data": {
+    "columns": ["Database"],
+    "rows": [
+      ["information_schema"],
+      ["mysql"],
+      ["performance_schema"],
+      ["sys"],
+      ["app_production"],
+      ["app_staging"],
+      ["app_development"]
+    ],
+    "rows_affected": null
+  },
+  "meta": {
+    "execution_ms": 12,
+    "rows_returned": 7
+  }
+}
+```
+
+```bash
+# Step 3: Query a specific database using fully qualified table names
+plenum query --name mysql-discovery \
+  --sql "SELECT * FROM app_production.users LIMIT 10"
+
+# Or use USE statement to select a database
+plenum query --name mysql-discovery \
+  --sql "USE app_production"
+
+# Then query tables in that database
+plenum query --name mysql-discovery \
+  --sql "SELECT COUNT(*) as user_count FROM users"
+```
+
+#### PostgreSQL Discovery
+
+```bash
+# Step 1: Create connection with wildcard database
+plenum connect \
+  --name pg-discovery \
+  --engine postgres \
+  --host localhost \
+  --port 5432 \
+  --user postgres \
+  --password pgpass \
+  --database "*" \
+  --save local
+
+# Step 2: Discover available databases
+plenum query --name pg-discovery \
+  --sql "SELECT datname FROM pg_catalog.pg_database WHERE datistemplate = false"
+```
+
+**Example Output:**
+```json
+{
+  "ok": true,
+  "engine": "postgres",
+  "command": "query",
+  "data": {
+    "columns": ["datname"],
+    "rows": [
+      ["postgres"],
+      ["app_production"],
+      ["app_staging"],
+      ["app_development"]
+    ],
+    "rows_affected": null
+  },
+  "meta": {
+    "execution_ms": 8,
+    "rows_returned": 4
+  }
+}
+```
+
+**Note:** PostgreSQL requires reconnecting to switch databases. Create separate connections for each database:
+
+```bash
+# After discovering databases, create specific connections
+plenum connect \
+  --name app-prod \
+  --engine postgres \
+  --host localhost \
+  --port 5432 \
+  --user postgres \
+  --password pgpass \
+  --database app_production \
+  --save local
+
+plenum connect \
+  --name app-dev \
+  --engine postgres \
+  --host localhost \
+  --port 5432 \
+  --user postgres \
+  --password pgpass \
+  --database app_development \
+  --save local
+```
+
+#### Introspection with Wildcard Database
+
+When using wildcard mode, you must specify the `--schema` parameter for introspection:
+
+**MySQL:**
+```bash
+# Introspect specific database by name
+plenum introspect --name mysql-discovery --schema app_production
+```
+
+**PostgreSQL:**
+```bash
+# Introspect specific schema in the default "postgres" database
+plenum introspect --name pg-discovery --schema public
+```
+
+**Error without schema:**
+```bash
+# This will fail with wildcard database
+plenum introspect --name mysql-discovery
+```
+
+**Error Output:**
+```json
+{
+  "ok": false,
+  "engine": "mysql",
+  "command": "introspect",
+  "error": {
+    "code": "ENGINE_ERROR",
+    "message": "No database selected. When using wildcard database (\"*\"), you must specify --schema parameter."
+  }
+}
+```
+
 ---
 
 ## Error Handling
@@ -725,41 +890,102 @@ diff source-schema.json dest-schema.json
 
 ### Local Configuration (.plenum/config.json)
 
+Connections are organized by project path, with named connections and an explicit default pointer:
+
 ```json
 {
-  "connections": {
-    "default": {
-      "engine": "sqlite",
-      "file": "./app.db"
-    },
-    "prod": {
-      "engine": "postgres",
-      "host": "db.example.com",
-      "port": 5432,
-      "user": "readonly",
-      "password_env": "PROD_DB_PASSWORD",
-      "database": "production"
+  "projects": {
+    "/home/user/myproject": {
+      "connections": {
+        "local": {
+          "engine": "sqlite",
+          "file": "./app.db"
+        },
+        "staging": {
+          "engine": "postgres",
+          "host": "staging.example.com",
+          "port": 5432,
+          "user": "readonly",
+          "password_env": "STAGING_DB_PASSWORD",
+          "database": "staging"
+        },
+        "prod": {
+          "engine": "postgres",
+          "host": "db.example.com",
+          "port": 5432,
+          "user": "readonly",
+          "password_env": "PROD_DB_PASSWORD",
+          "database": "production"
+        }
+      },
+      "default": "local"
     }
-  },
-  "default_connection": "default"
+  }
 }
 ```
 
 ### Global Configuration (~/.config/plenum/connections.json)
 
+The global config uses the same structure, allowing you to store connections for multiple projects:
+
 ```json
 {
-  "connections": {
-    "personal-pg": {
-      "engine": "postgres",
-      "host": "localhost",
-      "port": 5432,
-      "user": "postgres",
-      "password": "localdev",
-      "database": "myapp"
+  "projects": {
+    "/home/user/project1": {
+      "connections": {
+        "dev": {
+          "engine": "postgres",
+          "host": "localhost",
+          "port": 5432,
+          "user": "postgres",
+          "password": "localdev",
+          "database": "project1_dev"
+        }
+      },
+      "default": "dev"
+    },
+    "/home/user/project2": {
+      "connections": {
+        "dev": {
+          "engine": "mysql",
+          "host": "localhost",
+          "port": 3306,
+          "user": "root",
+          "password": "rootpass",
+          "database": "project2_dev"
+        },
+        "prod": {
+          "engine": "mysql",
+          "host": "prod.example.com",
+          "port": 3306,
+          "user": "readonly",
+          "password_env": "MYSQL_PASSWORD",
+          "database": "project2_prod"
+        }
+      },
+      "default": "dev"
     }
   }
 }
+```
+
+### Auto-Discovery Examples
+
+When running commands from within a project directory, Plenum automatically uses the current project path:
+
+```bash
+# From /home/user/myproject directory:
+# Uses the connection specified by the project's default pointer
+plenum query --sql "SELECT * FROM users"
+
+# Use a different named connection within the same project
+plenum query --name staging --sql "SELECT * FROM users"
+
+# Query a different project's connection
+plenum query --project-path /home/user/project2 --sql "SELECT * FROM products"
+
+# Query a specific named connection in a different project
+plenum query --project-path /home/user/project2 --name prod --sql "SELECT * FROM products"
 ```
 
 ---

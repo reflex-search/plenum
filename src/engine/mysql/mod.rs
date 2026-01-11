@@ -76,9 +76,11 @@ impl DatabaseEngine for MySqlEngine {
             })?
             .ok_or_else(|| PlenumError::connection_failed("No database returned".to_string()))?;
 
-        let connected_database: String = db_row.get(0).ok_or_else(|| {
-            PlenumError::connection_failed("Failed to extract database name".to_string())
-        })?;
+        // Handle NULL result when using wildcard database ("*")
+        let connected_database: String = match db_row.get(0) {
+            Some(db) => db,
+            None => "(no database selected)".to_string(),  // Wildcard mode
+        };
 
         // Get current user
         let user_row: Row = conn
@@ -139,8 +141,13 @@ impl DatabaseEngine for MySqlEngine {
                     PlenumError::engine_error("mysql", "No database selected".to_string())
                 })?;
 
-            db_row.get(0).ok_or_else(|| {
-                PlenumError::engine_error("mysql", "Failed to extract database name".to_string())
+            // Check if database is NULL (wildcard mode)
+            let db_name: Option<String> = db_row.get(0);
+            db_name.ok_or_else(|| {
+                PlenumError::engine_error(
+                    "mysql",
+                    "No database selected. When using wildcard database (\"*\"), you must specify --schema parameter.".to_string()
+                )
             })?
         };
 
@@ -223,17 +230,22 @@ fn build_mysql_opts(config: &ConnectionConfig) -> Result<OptsBuilder> {
         .as_ref()
         .ok_or_else(|| PlenumError::invalid_input("MySQL requires 'password' parameter"))?;
 
-    let database = config
-        .database
-        .as_ref()
-        .ok_or_else(|| PlenumError::invalid_input("MySQL requires 'database' parameter"))?;
+    // Database can be "*" for wildcard (no database selected) or a specific database name
+    let database = config.database.as_ref();
+
+    // Check if database is wildcard ("*") - if so, connect without selecting a database
+    let db_name = match database {
+        Some(db) if db == "*" => None,  // Wildcard - no database selected
+        Some(db) => Some(db.as_str()),   // Explicit database
+        None => return Err(PlenumError::invalid_input("MySQL requires 'database' parameter (use \"*\" for no database)")),
+    };
 
     let opts = OptsBuilder::default()
         .ip_or_hostname(host)
         .tcp_port(port)
         .user(Some(user))
         .pass(Some(password))
-        .db_name(Some(database));
+        .db_name(db_name);
 
     Ok(opts)
 }
@@ -658,6 +670,45 @@ mod tests {
     // They are marked with #[ignore] and should be run with:
     // cargo test --features mysql -- --ignored
 
+    #[test]
+    fn test_wildcard_database_config() {
+        // Test that wildcard database is accepted
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "*".to_string(),
+        );
+
+        // Should accept "*" as database
+        assert_eq!(config.database, Some("*".to_string()));
+
+        // Build opts should work with wildcard
+        let result = build_mysql_opts(&config);
+        assert!(result.is_ok(), "Failed to build MySQL opts with wildcard: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_missing_database_error() {
+        // Test that missing database gives helpful error
+        let config = ConnectionConfig {
+            engine: DatabaseType::MySQL,
+            host: Some("localhost".to_string()),
+            port: Some(3306),
+            user: Some("root".to_string()),
+            password: Some("password".to_string()),
+            database: None,
+            file: None,
+        };
+
+        let result = build_mysql_opts(&config);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.message().contains("MySQL requires 'database' parameter"));
+        assert!(error.message().contains("\"*\""));
+    }
+
     #[tokio::test]
     #[ignore = "Requires running MySQL instance"]
     async fn test_validate_connection() {
@@ -675,6 +726,67 @@ mod tests {
         let info = result.unwrap();
         assert!(!info.database_version.is_empty());
         assert!(info.server_info.contains("MySQL") || info.server_info.contains("MariaDB"));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_validate_connection_wildcard() {
+        // Test connection with wildcard database
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "*".to_string(),
+        );
+
+        let result = MySqlEngine::validate_connection(&config).await;
+        assert!(result.is_ok(), "Wildcard connection validation failed: {:?}", result.err());
+
+        let info = result.unwrap();
+        assert!(!info.database_version.is_empty());
+        assert!(info.server_info.contains("MySQL") || info.server_info.contains("MariaDB"));
+        assert_eq!(info.connected_database, "(no database selected)");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_query_show_databases_wildcard() {
+        // Test SHOW DATABASES query with wildcard database
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "*".to_string(),
+        );
+
+        let caps = Capabilities::read_only();
+        let result = MySqlEngine::execute(&config, "SHOW DATABASES", &caps).await;
+        assert!(result.is_ok(), "SHOW DATABASES failed: {:?}", result.err());
+
+        let query_result = result.unwrap();
+        assert_eq!(query_result.columns.len(), 1);
+        assert!(!query_result.rows.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_introspect_without_schema_wildcard() {
+        // Test that introspect fails without schema when using wildcard
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "*".to_string(),
+        );
+
+        let result = MySqlEngine::introspect(&config, None).await;
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.message().contains("wildcard database"));
+        assert!(error.message().contains("--schema"));
     }
 
     #[tokio::test]

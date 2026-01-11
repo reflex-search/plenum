@@ -39,8 +39,8 @@ pub mod output; // JSON output envelopes (Phase 1.2) // MCP server (Phase 7) - M
 // Re-export commonly used types for convenience
 pub use capability::{validate_query, QueryCategory};
 pub use config::{
-    list_connections, resolve_connection, save_connection, ConfigLocation, ConnectionRegistry,
-    StoredConnection,
+    list_connections, list_connections_for_project, resolve_connection, save_connection,
+    ConfigLocation, ConnectionRegistry, StoredConnection,
 };
 pub use engine::{
     Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine, DatabaseType,

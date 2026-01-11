@@ -72,7 +72,14 @@ impl DatabaseEngine for PostgresEngine {
             PlenumError::connection_failed(format!("Failed to query current database: {e}"))
         })?;
 
-        let connected_database: String = db_row.get(0);
+        let current_db: String = db_row.get(0);
+
+        // If using wildcard mode, indicate it in the connection info
+        let connected_database = if config.database.as_deref() == Some("*") {
+            format!("{current_db} (wildcard mode - use --schema to introspect specific database)")
+        } else {
+            current_db
+        };
 
         // Get current user
         let user_row = client.query_one("SELECT current_user", &[]).await.map_err(|e| {
@@ -191,13 +198,18 @@ fn build_pg_config(config: &ConnectionConfig) -> Result<Config> {
         .as_ref()
         .ok_or_else(|| PlenumError::invalid_input("PostgreSQL requires 'password' parameter"))?;
 
-    let database = config
-        .database
-        .as_ref()
-        .ok_or_else(|| PlenumError::invalid_input("PostgreSQL requires 'database' parameter"))?;
+    // Database can be "*" for wildcard (connects to default "postgres" database) or a specific database name
+    let database = config.database.as_ref();
+
+    // Check if database is wildcard ("*") - if so, connect to default "postgres" database
+    let db_name = match database {
+        Some(db) if db == "*" => "postgres",  // Wildcard - use default postgres database
+        Some(db) => db.as_str(),              // Explicit database
+        None => return Err(PlenumError::invalid_input("PostgreSQL requires 'database' parameter (use \"*\" for default database)")),
+    };
 
     let mut pg_config = Config::new();
-    pg_config.host(host).port(port).user(user).password(password).dbname(database);
+    pg_config.host(host).port(port).user(user).password(password).dbname(db_name);
 
     Ok(pg_config)
 }
@@ -677,6 +689,45 @@ mod tests {
     // They are integration tests that should be run with:
     // cargo test --features postgres -- --ignored
 
+    #[test]
+    fn test_wildcard_database_config() {
+        // Test that wildcard database is accepted
+        let config = ConnectionConfig::postgres(
+            "localhost".to_string(),
+            5432,
+            "postgres".to_string(),
+            "postgres".to_string(),
+            "*".to_string(),
+        );
+
+        // Should accept "*" as database
+        assert_eq!(config.database, Some("*".to_string()));
+
+        // Build config should work with wildcard and connect to "postgres" database
+        let result = build_pg_config(&config);
+        assert!(result.is_ok(), "Failed to build Postgres config with wildcard: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_missing_database_error() {
+        // Test that missing database gives helpful error
+        let config = ConnectionConfig {
+            engine: DatabaseType::Postgres,
+            host: Some("localhost".to_string()),
+            port: Some(5432),
+            user: Some("postgres".to_string()),
+            password: Some("postgres".to_string()),
+            database: None,
+            file: None,
+        };
+
+        let result = build_pg_config(&config);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.message().contains("PostgreSQL requires 'database' parameter"));
+        assert!(error.message().contains("\"*\""));
+    }
+
     #[tokio::test]
     #[ignore = "Requires running PostgreSQL instance"]
     async fn test_validate_connection() {
@@ -696,6 +747,54 @@ mod tests {
         assert!(info.server_info.contains("PostgreSQL"));
         assert_eq!(info.connected_database, "postgres");
         assert_eq!(info.user, "postgres");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running PostgreSQL instance"]
+    async fn test_validate_connection_wildcard() {
+        // Test connection with wildcard database
+        let config = ConnectionConfig::postgres(
+            "localhost".to_string(),
+            5432,
+            "postgres".to_string(),
+            "postgres".to_string(),
+            "*".to_string(),
+        );
+
+        let result = PostgresEngine::validate_connection(&config).await;
+        assert!(result.is_ok(), "Wildcard connection validation failed: {:?}", result.err());
+
+        let info = result.unwrap();
+        assert!(!info.database_version.is_empty());
+        assert!(info.server_info.contains("PostgreSQL"));
+        assert!(info.connected_database.contains("wildcard mode"));
+        assert!(info.connected_database.contains("postgres"));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running PostgreSQL instance"]
+    async fn test_query_pg_database_wildcard() {
+        // Test querying pg_catalog.pg_database with wildcard database
+        let config = ConnectionConfig::postgres(
+            "localhost".to_string(),
+            5432,
+            "postgres".to_string(),
+            "postgres".to_string(),
+            "*".to_string(),
+        );
+
+        let caps = Capabilities::read_only();
+        let result = PostgresEngine::execute(
+            &config,
+            "SELECT datname FROM pg_catalog.pg_database WHERE datistemplate = false",
+            &caps,
+        )
+        .await;
+        assert!(result.is_ok(), "pg_database query failed: {:?}", result.err());
+
+        let query_result = result.unwrap();
+        assert_eq!(query_result.columns.len(), 1);
+        assert!(!query_result.rows.is_empty());
     }
 
     #[tokio::test]

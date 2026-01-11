@@ -284,7 +284,7 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "database": {
                             "type": "string",
-                            "description": "Database name (for postgres/mysql)"
+                            "description": "Database name (for postgres/mysql). Use \"*\" for wildcard mode to enable database discovery via SHOW DATABASES (MySQL) or pg_catalog queries (PostgreSQL)."
                         },
                         "file": {
                             "type": "string",
@@ -332,7 +332,7 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "database": {
                             "type": "string",
-                            "description": "Database name (for postgres/mysql). Required for explicit connections or use as override. The specific database to introspect."
+                            "description": "Database name (for postgres/mysql). Required for explicit connections or use as override. The specific database to introspect. Use \"*\" for wildcard mode to enable database discovery - when using \"*\", you must specify the 'schema' parameter to introspect a specific database."
                         },
                         "file": {
                             "type": "string",
@@ -382,7 +382,7 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "database": {
                             "type": "string",
-                            "description": "Database name (for postgres/mysql). Required for explicit connections or use as override. The specific database to query."
+                            "description": "Database name (for postgres/mysql). Required for explicit connections or use as override. The specific database to query. Use \"*\" for wildcard mode to query system catalogs (SHOW DATABASES in MySQL, pg_catalog.pg_database in PostgreSQL) or use fully qualified table names."
                         },
                         "file": {
                             "type": "string",
@@ -458,7 +458,8 @@ async fn tool_connect(args: &Value) -> Result<Value> {
             .as_str()
             .map_or_else(|| "default".to_string(), std::string::ToString::to_string);
 
-        crate::save_connection(conn_name.clone(), config.clone(), location)
+        // Use None for project_path (will default to current directory)
+        crate::save_connection(None, Some(conn_name.clone()), config.clone(), location)
             .map_err(|e| anyhow!("Failed to save connection: {e}"))?;
 
         let response = serde_json::json!({
@@ -599,7 +600,8 @@ fn build_connection_config_from_args(args: &Value, engine_str: &str) -> Result<C
 fn resolve_connection_from_args(args: &Value) -> Result<(ConnectionConfig, bool)> {
     // Try named connection first
     if let Some(connection) = args.get("connection").and_then(|v| v.as_str()) {
-        let (mut config, is_readonly) = crate::resolve_connection(connection)
+        // Use None for project_path (defaults to current directory)
+        let (mut config, is_readonly) = crate::resolve_connection(None, Some(connection))
             .map_err(|e| anyhow!("Failed to resolve connection '{connection}': {e}"))?;
 
         // Apply overrides

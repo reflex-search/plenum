@@ -104,23 +104,56 @@ Connection details can be stored for agent convenience:
 
 **Storage Locations:**
 - Local: `.plenum/config.json` (team-shareable, per-project)
-- Global: `~/.config/plenum/connections.json` (per-user, keyed by project path)
+- Global: `~/.config/plenum/connections.json` (per-user)
+
+**Storage Structure:**
+Connections are organized by project path, with named connections and an explicit default pointer:
+```json
+{
+  "projects": {
+    "/home/user/project1": {
+      "connections": {
+        "local": { ... },
+        "staging": { ... },
+        "prod": { ... }
+      },
+      "default": "local"
+    },
+    "/home/user/project2": {
+      "connections": {
+        "main": { ... }
+      },
+      "default": "main"
+    }
+  }
+}
+```
+
+**Auto-Discovery:**
+- When no `--name` or `--project-path` is specified, Plenum uses the current working directory as the project path
+- Uses the project's default connection if `--name` is not provided
+- The first connection created for a project is automatically set as the default
+- Example: Running `plenum query --sql "SELECT ..."` from `/home/user/project1` automatically uses the connection specified by `/home/user/project1`'s `default` pointer
 
 **Resolution Precedence:**
 1. Explicit CLI flags (highest priority)
-2. Local config file
-3. Global config file
+2. Local config file (`.plenum/config.json`)
+3. Global config file (`~/.config/plenum/connections.json`)
 4. Error if no connection available
 
 **Named Connections:**
-Connections are stored as named profiles (e.g., "local", "dev", "prod").
-Agents can reference connections by name: `plenum query --name prod --sql "..."`
+Connections are organized by project path, with named connections and a default pointer:
+- `plenum query --sql "..."` → uses current project's default connection (specified by `default` pointer)
+- `plenum query --name staging --sql "..."` → uses current project's "staging" connection
+- `plenum query --project-path /other/project --sql "..."` → uses other project's default connection
+- `plenum query --project-path /other/project --name prod --sql "..."` → uses other project's "prod" connection
 
 **Security:**
 - Credentials stored as plain JSON (user responsibility for machine security)
 - Support for environment variable references (`password_env` field)
 - Local configs can be committed to version control for team sharing
 - Global configs remain user-private
+
 
 **Stateless Execution:**
 Despite stored configurations, each command invocation:

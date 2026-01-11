@@ -24,9 +24,12 @@ use plenum::engine::sqlite::SqliteEngine;
 
 /// Create a test `SQLite` database with sample data
 fn create_test_sqlite_db() -> std::path::PathBuf {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let temp_file = std::env::temp_dir().join(format!("test_integration_{timestamp}.db"));
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let thread_id = std::thread::current().id();
+    let temp_file = std::env::temp_dir().join(format!("test_integration_{thread_id:?}_{id}.db"));
     let _ = std::fs::remove_file(&temp_file); // Clean up if exists
 
     {
