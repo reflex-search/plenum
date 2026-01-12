@@ -123,9 +123,60 @@ enum Commands {
         #[arg(long)]
         file: Option<PathBuf>,
 
-        /// Schema filter
+        // ===== OPERATIONS (mutually exclusive) =====
+        /// List all databases (requires wildcard database connection)
+        #[arg(long, conflicts_with_all = ["list_schemas", "list_tables", "list_views", "list_indexes", "table", "view"])]
+        list_databases: bool,
+
+        /// List all schemas (`PostgreSQL` only)
+        #[arg(long, conflicts_with_all = ["list_databases", "list_tables", "list_views", "list_indexes", "table", "view"])]
+        list_schemas: bool,
+
+        /// List all table names
+        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_views", "list_indexes", "table", "view"])]
+        list_tables: bool,
+
+        /// List all view names
+        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_tables", "list_indexes", "table", "view"])]
+        list_views: bool,
+
+        /// List all indexes (optionally filtered by table name)
+        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_tables", "list_views", "table", "view"])]
+        list_indexes: Option<String>,
+
+        /// Get full details for a specific table
+        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_tables", "list_views", "list_indexes", "view"])]
+        table: Option<String>,
+
+        /// Get details for a specific view
+        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_tables", "list_views", "list_indexes", "table"])]
+        view: Option<String>,
+
+        // ===== MODIFIERS =====
+        /// Target database (switch to different database before introspecting)
+        #[arg(long)]
+        target_database: Option<String>,
+
+        /// Schema filter (PostgreSQL/MySQL only)
         #[arg(long)]
         schema: Option<String>,
+
+        // ===== TABLE FIELD SELECTORS (for --table operation) =====
+        /// Include columns in table details (default: true)
+        #[arg(long, requires = "table")]
+        columns: Option<bool>,
+
+        /// Include primary key in table details (default: true)
+        #[arg(long, requires = "table")]
+        primary_key: Option<bool>,
+
+        /// Include foreign keys in table details (default: true)
+        #[arg(long, requires = "table")]
+        foreign_keys: Option<bool>,
+
+        /// Include indexes in table details (default: true)
+        #[arg(long, requires = "table")]
+        indexes: Option<bool>,
     },
 
     /// Execute constrained SQL queries
@@ -243,7 +294,19 @@ async fn main() {
             password,
             database,
             file,
+            list_databases,
+            list_schemas,
+            list_tables,
+            list_views,
+            list_indexes,
+            table,
+            view,
+            target_database,
             schema,
+            columns,
+            primary_key,
+            foreign_keys,
+            indexes,
         }) => {
             handle_introspect(
                 name,
@@ -255,7 +318,19 @@ async fn main() {
                 password,
                 database,
                 file,
+                list_databases,
+                list_schemas,
+                list_tables,
+                list_views,
+                list_indexes,
+                table,
+                view,
+                target_database,
                 schema,
+                columns,
+                primary_key,
+                foreign_keys,
+                indexes,
             )
             .await
         }
@@ -637,6 +712,7 @@ fn prompt_save_location() -> Result<ConfigLocation> {
     Ok(if selection == 0 { ConfigLocation::Local } else { ConfigLocation::Global })
 }
 
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 async fn handle_introspect(
     name: Option<String>,
     project_path: Option<String>,
@@ -647,8 +723,22 @@ async fn handle_introspect(
     password: Option<String>,
     database: Option<String>,
     file: Option<PathBuf>,
+    list_databases: bool,
+    list_schemas: bool,
+    list_tables: bool,
+    list_views: bool,
+    list_indexes: Option<String>,
+    table: Option<String>,
+    view: Option<String>,
+    target_database: Option<String>,
     schema: Option<String>,
+    columns: Option<bool>,
+    primary_key: Option<bool>,
+    foreign_keys: Option<bool>,
+    indexes: Option<bool>,
 ) -> std::result::Result<(), i32> {
+    use plenum::engine::{IntrospectOperation, TableFields};
+
     // Start timing
     let start = Instant::now();
 
@@ -674,43 +764,132 @@ async fn handle_introspect(
         }
     };
 
-    // Call appropriate database engine for introspection
-    let introspect_result = match config.engine {
-        #[cfg(feature = "sqlite")]
-        DatabaseType::SQLite => SqliteEngine::introspect(&config, schema.as_deref()).await,
-        #[cfg(not(feature = "sqlite"))]
-        DatabaseType::SQLite => {
-            Err(PlenumError::invalid_input(
-                "SQLite engine not enabled. Build with --features sqlite to enable SQLite support."
-            ))
+    // Parse introspect operation from CLI args
+    let operation = {
+        // Count how many operations were specified
+        let ops = [
+            list_databases,
+            list_schemas,
+            list_tables,
+            list_views,
+            list_indexes.is_some(),
+            table.is_some(),
+            view.is_some(),
+        ];
+        let op_count = ops.iter().filter(|&&x| x).count();
+
+        if op_count == 0 {
+            let envelope = ErrorEnvelope::new(
+                config.engine.as_str(),
+                "introspect",
+                plenum::ErrorInfo::new(
+                    "INVALID_INPUT",
+                    "No introspect operation specified. Must provide exactly one of: \
+                     --list-databases, --list-schemas, --list-tables, --list-views, --list-indexes, --table, or --view. \
+                     Use --help for more information.",
+                ),
+            );
+            output_error(&envelope);
+            return Err(1);
         }
 
-        #[cfg(feature = "postgres")]
-        DatabaseType::Postgres => PostgresEngine::introspect(&config, schema.as_deref()).await,
-        #[cfg(not(feature = "postgres"))]
-        DatabaseType::Postgres => {
-            Err(PlenumError::invalid_input(
-                "PostgreSQL engine not enabled. Build with --features postgres to enable PostgreSQL support."
-            ))
+        if op_count > 1 {
+            let envelope = ErrorEnvelope::new(
+                config.engine.as_str(),
+                "introspect",
+                plenum::ErrorInfo::new(
+                    "INVALID_INPUT",
+                    "Multiple introspect operations specified. Only one operation allowed per invocation.",
+                ),
+            );
+            output_error(&envelope);
+            return Err(1);
         }
 
-        #[cfg(feature = "mysql")]
-        DatabaseType::MySQL => MySqlEngine::introspect(&config, schema.as_deref()).await,
-        #[cfg(not(feature = "mysql"))]
-        DatabaseType::MySQL => {
-            Err(PlenumError::invalid_input(
-                "MySQL engine not enabled. Build with --features mysql to enable MySQL support."
-            ))
+        // Build the operation
+        if list_databases {
+            IntrospectOperation::ListDatabases
+        } else if list_schemas {
+            IntrospectOperation::ListSchemas
+        } else if list_tables {
+            IntrospectOperation::ListTables
+        } else if list_views {
+            IntrospectOperation::ListViews
+        } else if let Some(table_filter) = list_indexes {
+            let filter = if table_filter.is_empty() { None } else { Some(table_filter) };
+            IntrospectOperation::ListIndexes { table: filter }
+        } else if let Some(table_name) = table {
+            // Parse table field selectors
+            let fields = TableFields {
+                columns: columns.unwrap_or(true),
+                primary_key: primary_key.unwrap_or(true),
+                foreign_keys: foreign_keys.unwrap_or(true),
+                indexes: indexes.unwrap_or(true),
+            };
+
+            IntrospectOperation::TableDetails { name: table_name, fields }
+        } else if let Some(view_name) = view {
+            IntrospectOperation::ViewDetails { name: view_name }
+        } else {
+            unreachable!("Operation validation above ensures we have exactly one operation")
         }
     };
 
+    // Call appropriate database engine for introspection
+    let introspect_result = match config.engine {
+        #[cfg(feature = "sqlite")]
+        DatabaseType::SQLite => {
+            SqliteEngine::introspect(
+                &config,
+                &operation,
+                target_database.as_deref(),
+                schema.as_deref(),
+            )
+            .await
+        }
+        #[cfg(not(feature = "sqlite"))]
+        DatabaseType::SQLite => Err(PlenumError::invalid_input(
+            "SQLite engine not enabled. Build with --features sqlite to enable SQLite support.",
+        )),
+
+        #[cfg(feature = "postgres")]
+        DatabaseType::Postgres => {
+            PostgresEngine::introspect(
+                &config,
+                &operation,
+                target_database.as_deref(),
+                schema.as_deref(),
+            )
+            .await
+        }
+        #[cfg(not(feature = "postgres"))]
+        DatabaseType::Postgres => Err(PlenumError::invalid_input(
+            "PostgreSQL engine not enabled. Build with --features postgres to enable PostgreSQL support.",
+        )),
+
+        #[cfg(feature = "mysql")]
+        DatabaseType::MySQL => {
+            MySqlEngine::introspect(
+                &config,
+                &operation,
+                target_database.as_deref(),
+                schema.as_deref(),
+            )
+            .await
+        }
+        #[cfg(not(feature = "mysql"))]
+        DatabaseType::MySQL => Err(PlenumError::invalid_input(
+            "MySQL engine not enabled. Build with --features mysql to enable MySQL support.",
+        )),
+    };
+
     match introspect_result {
-        Ok(schema_info) => {
+        Ok(introspect_result) => {
             let elapsed_ms = start.elapsed().as_millis() as u64;
             let envelope = SuccessEnvelope::new(
                 config.engine.as_str(),
                 "introspect",
-                schema_info,
+                introspect_result,
                 Metadata::new(elapsed_ms),
             );
             output_success(&envelope);
@@ -938,9 +1117,7 @@ fn build_connection_config(
         || host.is_some()
         || port.is_some()
         || user.is_some()
-        || password.is_some()
-        || database.is_some()
-        || file.is_some();
+        || password.is_some();
 
     // Try to resolve from config if name or project_path is provided, or if no explicit args
     let should_try_resolve = name.is_some() || project_path.is_some() || !has_explicit_args;

@@ -301,46 +301,94 @@ fn handle_list_tools() -> Result<Value> {
             },
             {
                 "name": "introspect",
-                "description": "Introspect database schema and return structured information about tables, columns, data types, primary keys, foreign keys, and indexes. Use this tool before executing queries to understand the database structure. Connection resolution: (1) Use 'connection' to reference a saved connection, (2) Provide explicit connection parameters (engine, host, port, etc.), (3) Mix both - use 'connection' and override specific fields. The connection is opened, schema is introspected, and connection is immediately closed (stateless). Optional 'schema' filter limits results to a specific schema (PostgreSQL/MySQL only; SQLite ignores this). Returns JSON with complete schema information suitable for query generation.",
+                "description": "Introspect database schema with granular operations. NEVER dumps entire schema - requires explicit operation. Connection resolution: (1) Auto-resolve (no params) - uses project's default connection, (2) Named connection ('connection'), (3) Explicit params ('engine' + credentials). Operations (EXACTLY ONE required, mutually exclusive): list_databases (list all DBs), list_schemas (Postgres only), list_tables (table names in schema/DB), list_views (view names), list_indexes (all or filtered by table), table (full details for specific table with optional field filtering), view (view definition + columns). Optional modifiers: 'target_database' (switch to different DB before introspecting - Postgres/MySQL only), 'schema' (filter to specific schema - Postgres/MySQL only). Returns typed JSON specific to operation (DatabaseList, SchemaList, TableList, ViewList, IndexList, TableDetails, or ViewDetails). Stateless - connection opened, operation executed, connection closed.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "connection": {
                             "type": "string",
-                            "description": "Name of saved connection to use. Connection must exist in local (.plenum/config.json) or global (~/.config/plenum/connections.json) config. Cannot be used alone with 'engine' - choose one or mix connection with overrides."
+                            "description": "Optional: Name of saved connection to use. Loads from .plenum/config.json (local) or ~/.config/plenum/connections.json (global). If omitted along with 'engine', auto-resolves project's default connection."
                         },
                         "engine": {
                             "type": "string",
                             "enum": ["postgres", "mysql", "sqlite"],
-                            "description": "Database engine type. Required if not using 'connection'. Valid values: 'postgres', 'mysql', 'sqlite'."
+                            "description": "Optional: Database engine type for explicit connections. If omitted along with 'connection', auto-resolves project's default connection."
                         },
                         "host": {
                             "type": "string",
-                            "description": "Database host (for postgres/mysql). Required for explicit connections or use as override. Example: 'localhost', 'db.example.com'."
+                            "description": "Optional: Database host (postgres/mysql). Required only for explicit connections or as named connection override."
                         },
                         "port": {
                             "type": "number",
-                            "description": "Database port (for postgres/mysql). Required for explicit connections or use as override. Defaults: postgres=5432, mysql=3306."
+                            "description": "Optional: Database port (postgres/mysql). Required only for explicit connections or as override. Defaults: postgres=5432, mysql=3306."
                         },
                         "user": {
                             "type": "string",
-                            "description": "Database username (for postgres/mysql). Required for explicit connections or use as override."
+                            "description": "Optional: Database username (postgres/mysql). Required only for explicit connections or as override."
                         },
                         "password": {
                             "type": "string",
-                            "description": "Database password (for postgres/mysql). Required for explicit connections or use as override. Passed directly - agent responsible for security."
+                            "description": "Optional: Database password (postgres/mysql). Required only for explicit connections or as override."
                         },
                         "database": {
                             "type": "string",
-                            "description": "Database name (for postgres/mysql). Required for explicit connections or use as override. The specific database to introspect. Use \"*\" for wildcard mode to enable database discovery - when using \"*\", you must specify the 'schema' parameter to introspect a specific database."
+                            "description": "Optional: Database name (postgres/mysql). Required only for explicit connections or as override. Use \"*\" for wildcard mode to enable list_databases operation."
                         },
                         "file": {
                             "type": "string",
-                            "description": "File path to SQLite database file. Required for sqlite engine. Can be relative or absolute path. Example: './app.db', '/var/lib/data.db'."
+                            "description": "Optional: SQLite database file path. Required only for sqlite explicit connections or as override."
+                        },
+                        "list_databases": {
+                            "type": "boolean",
+                            "description": "Operation: List all databases. Returns {\"type\": \"database_list\", \"databases\": [\"db1\", \"db2\", ...]}. Requires wildcard connection (database=\"*\"). MySQL/Postgres only. Mutually exclusive with other operations."
+                        },
+                        "list_schemas": {
+                            "type": "boolean",
+                            "description": "Operation: List all schemas in current database. Returns {\"type\": \"schema_list\", \"schemas\": [\"public\", ...]}. PostgreSQL only (MySQL: schema=database, SQLite: no schemas). Mutually exclusive with other operations."
+                        },
+                        "list_tables": {
+                            "type": "boolean",
+                            "description": "Operation: List all table names. Returns {\"type\": \"table_list\", \"tables\": [\"users\", \"posts\", ...]}. Use 'schema' to filter (Postgres/MySQL). Most common operation. Mutually exclusive with other operations."
+                        },
+                        "list_views": {
+                            "type": "boolean",
+                            "description": "Operation: List all view names. Returns {\"type\": \"view_list\", \"views\": [\"active_users\", ...]}. Use 'schema' to filter (Postgres/MySQL). Mutually exclusive with other operations."
+                        },
+                        "list_indexes": {
+                            "type": "string",
+                            "description": "Operation: List all indexes (all tables or filtered by table name). Pass table name as value to filter, or empty string for all. Returns {\"type\": \"index_list\", \"indexes\": [{\"name\": \"idx_email\", \"table\": \"users\", \"unique\": true, \"columns\": [\"email\"]}, ...]}. Mutually exclusive with other operations."
+                        },
+                        "table": {
+                            "type": "string",
+                            "description": "Operation: Get full details for specific table (name as value). Returns {\"type\": \"table_details\", \"table\": {\"name\": \"users\", \"columns\": [...], \"primary_key\": [...], \"foreign_keys\": [...], \"indexes\": [...]}}. Use field selectors (columns, primary_key, foreign_keys, indexes) to filter returned fields. Mutually exclusive with other operations."
+                        },
+                        "view": {
+                            "type": "string",
+                            "description": "Operation: Get view definition and columns (name as value). Returns {\"type\": \"view_details\", \"view\": {\"name\": \"...\", \"definition\": \"CREATE VIEW ...\", \"columns\": [...]}}. Mutually exclusive with other operations."
+                        },
+                        "target_database": {
+                            "type": "string",
+                            "description": "Optional modifier: Switch to different database before introspecting. Reconnects with different DB. Postgres/MySQL only (SQLite uses different files). Example: introspect 'production' DB tables while default connection points to 'staging'."
                         },
                         "schema": {
                             "type": "string",
-                            "description": "Optional: Filter introspection to specific schema. PostgreSQL/MySQL only (SQLite ignores this). Example: 'public', 'analytics'. If omitted, all schemas are introspected."
+                            "description": "Optional modifier: Filter results to specific schema. Works with list_tables, list_views, list_indexes, table, view operations. Postgres/MySQL only (SQLite has no schemas). Defaults to current schema if omitted."
+                        },
+                        "columns": {
+                            "type": "boolean",
+                            "description": "Table field selector: Include columns in table details. Only applies to 'table' operation. Default: true."
+                        },
+                        "primary_key": {
+                            "type": "boolean",
+                            "description": "Table field selector: Include primary key in table details. Only applies to 'table' operation. Default: true."
+                        },
+                        "foreign_keys": {
+                            "type": "boolean",
+                            "description": "Table field selector: Include foreign keys in table details. Only applies to 'table' operation. Default: true."
+                        },
+                        "indexes": {
+                            "type": "boolean",
+                            "description": "Table field selector: Include indexes in table details. Only applies to 'table' operation. Default: true. Note: This filters table detail fields, while 'list_indexes' is a separate operation."
                         }
                     }
                 }
@@ -483,13 +531,126 @@ async fn tool_introspect(args: &Value) -> Result<Value> {
     // Resolve connection config
     let (config, _is_readonly) = resolve_connection_from_args(args)?;
 
-    // Get schema filter
-    let schema_filter = args.get("schema").and_then(|v| v.as_str());
+    // Parse introspect operation from args
+    let operation = parse_introspect_operation(args)?;
 
-    // Call introspect (opens and closes connection)
-    let schema_info = introspect_schema(&config, schema_filter).await?;
+    // Get optional database and schema modifiers
+    let database = args.get("target_database").and_then(|v| v.as_str());
+    let schema = args.get("schema").and_then(|v| v.as_str());
 
-    CallToolResult::success(schema_info)
+    // Call engine's introspect method (opens and closes connection)
+    let result = match config.engine {
+        #[cfg(feature = "sqlite")]
+        DatabaseType::SQLite => {
+            SqliteEngine::introspect(&config, &operation, database, schema)
+                .await
+                .map_err(|e| anyhow!("SQLite introspection failed: {e}"))?
+        }
+        #[cfg(not(feature = "sqlite"))]
+        DatabaseType::SQLite => {
+            return Err(anyhow!("SQLite engine not enabled. Build with --features sqlite"));
+        }
+
+        #[cfg(feature = "postgres")]
+        DatabaseType::Postgres => {
+            PostgresEngine::introspect(&config, &operation, database, schema)
+                .await
+                .map_err(|e| anyhow!("PostgreSQL introspection failed: {e}"))?
+        }
+        #[cfg(not(feature = "postgres"))]
+        DatabaseType::Postgres => {
+            return Err(anyhow!("PostgreSQL engine not enabled. Build with --features postgres"));
+        }
+
+        #[cfg(feature = "mysql")]
+        DatabaseType::MySQL => {
+            MySqlEngine::introspect(&config, &operation, database, schema)
+                .await
+                .map_err(|e| anyhow!("MySQL introspection failed: {e}"))?
+        }
+        #[cfg(not(feature = "mysql"))]
+        DatabaseType::MySQL => {
+            return Err(anyhow!("MySQL engine not enabled. Build with --features mysql"));
+        }
+    };
+
+    CallToolResult::success(result)
+}
+
+/// Parse introspect operation from MCP arguments
+fn parse_introspect_operation(args: &Value) -> Result<crate::engine::IntrospectOperation> {
+    use crate::engine::{IntrospectOperation, TableFields};
+
+    // Check which operation is requested (mutually exclusive)
+    let is_list_databases = args.get("list_databases").and_then(Value::as_bool).unwrap_or(false);
+    let is_list_schemas = args.get("list_schemas").and_then(Value::as_bool).unwrap_or(false);
+    let is_list_tables = args.get("list_tables").and_then(Value::as_bool).unwrap_or(false);
+    let is_list_views = args.get("list_views").and_then(Value::as_bool).unwrap_or(false);
+    let is_list_indexes = args.get("list_indexes").is_some();
+    let table_name = args.get("table").and_then(|v| v.as_str());
+    let view_name = args.get("view").and_then(|v| v.as_str());
+
+    // Count how many operations were specified
+    let op_count = [is_list_databases, is_list_schemas, is_list_tables, is_list_views, is_list_indexes, table_name.is_some(), view_name.is_some()]
+        .iter()
+        .filter(|&&x| x)
+        .count();
+
+    if op_count == 0 {
+        return Err(anyhow!(
+            "No introspect operation specified. Must provide one of: \
+             list_databases, list_schemas, list_tables, list_views, list_indexes, table, or view"
+        ));
+    }
+
+    if op_count > 1 {
+        return Err(anyhow!(
+            "Multiple introspect operations specified. Only one operation allowed per call."
+        ));
+    }
+
+    // Build the operation
+    if is_list_databases {
+        return Ok(IntrospectOperation::ListDatabases);
+    }
+
+    if is_list_schemas {
+        return Ok(IntrospectOperation::ListSchemas);
+    }
+
+    if is_list_tables {
+        return Ok(IntrospectOperation::ListTables);
+    }
+
+    if is_list_views {
+        return Ok(IntrospectOperation::ListViews);
+    }
+
+    if is_list_indexes {
+        let table_filter = args.get("list_indexes").and_then(|v| v.as_str()).map(String::from);
+        return Ok(IntrospectOperation::ListIndexes { table: table_filter });
+    }
+
+    if let Some(name) = table_name {
+        // Parse table field selectors
+        let fields = TableFields {
+            columns: args.get("columns").and_then(Value::as_bool).unwrap_or(true),
+            primary_key: args.get("primary_key").and_then(Value::as_bool).unwrap_or(true),
+            foreign_keys: args.get("foreign_keys").and_then(Value::as_bool).unwrap_or(true),
+            indexes: args.get("indexes").and_then(Value::as_bool).unwrap_or(true),
+        };
+
+        return Ok(IntrospectOperation::TableDetails {
+            name: name.to_string(),
+            fields,
+        });
+    }
+
+    if let Some(name) = view_name {
+        return Ok(IntrospectOperation::ViewDetails { name: name.to_string() });
+    }
+
+    Err(anyhow!("Failed to parse introspect operation"))
 }
 
 /// MCP Tool: query
@@ -571,11 +732,20 @@ fn build_connection_config_from_args(args: &Value, engine_str: &str) -> Result<C
 
 /// Resolve connection config from JSON arguments
 ///
-/// This handles both named connections and explicit connection parameters.
+/// This handles three scenarios:
+/// 1. Named connection: Loads saved connection, optionally with overrides
+/// 2. Explicit parameters: Requires engine and all connection details
+/// 3. Auto-resolve default: When neither connection nor engine provided, uses current project's default connection
+///
 /// Returns a tuple of (`ConnectionConfig`, `is_readonly`).
 fn resolve_connection_from_args(args: &Value) -> Result<(ConnectionConfig, bool)> {
-    // Try named connection first
-    if let Some(connection) = args.get("connection").and_then(|v| v.as_str()) {
+    let has_connection = args.get("connection").and_then(|v| v.as_str()).is_some();
+    let has_engine = args.get("engine").and_then(|v| v.as_str()).is_some();
+
+    // Scenario 1: Named connection (with optional overrides)
+    if has_connection {
+        let connection = args["connection"].as_str().unwrap();
+
         // Use None for project_path (defaults to current directory)
         let (mut config, is_readonly) = crate::resolve_connection(None, Some(connection))
             .map_err(|e| anyhow!("Failed to resolve connection '{connection}': {e}"))?;
@@ -611,13 +781,23 @@ fn resolve_connection_from_args(args: &Value) -> Result<(ConnectionConfig, bool)
         return Ok((config, is_readonly));
     }
 
-    // No named connection - must have explicit engine
-    let engine_str = args["engine"]
-        .as_str()
-        .ok_or_else(|| anyhow!("Must provide either 'connection' or 'engine'"))?;
+    // Scenario 2: Explicit connection parameters
+    if has_engine {
+        let engine_str = args["engine"].as_str().unwrap();
+        let config = build_connection_config_from_args(args, engine_str)?;
+        return Ok((config, false)); // Explicit connections are never readonly
+    }
 
-    let config = build_connection_config_from_args(args, engine_str)?;
-    Ok((config, false)) // Explicit connections are never readonly
+    // Scenario 3: Auto-resolve default connection for current project
+    // Use None for both project_path (current directory) and connection_name (use default)
+    let (config, is_readonly) = crate::resolve_connection(None, None).map_err(|e| {
+        anyhow!(
+            "No connection or engine specified, and failed to auto-resolve default connection: {e}. \
+             Either provide 'connection' (named), 'engine' (explicit), or ensure a default connection exists for this project."
+        )
+    })?;
+
+    Ok((config, is_readonly))
 }
 
 /// Validate database connection
@@ -648,44 +828,6 @@ async fn validate_connection(config: &ConnectionConfig) -> Result<crate::Connect
         DatabaseType::MySQL => MySqlEngine::validate_connection(config)
             .await
             .map_err(|e| anyhow!("MySQL connection failed: {e}")),
-        #[cfg(not(feature = "mysql"))]
-        DatabaseType::MySQL => {
-            Err(anyhow!("MySQL engine not enabled. Build with --features mysql"))
-        }
-    }
-}
-
-/// Introspect database schema
-///
-/// Opens a connection, introspects schema, and immediately closes it.
-/// This function is stateless - no connection persists after it returns.
-async fn introspect_schema(
-    config: &ConnectionConfig,
-    schema_filter: Option<&str>,
-) -> Result<crate::SchemaInfo> {
-    match config.engine {
-        #[cfg(feature = "sqlite")]
-        DatabaseType::SQLite => SqliteEngine::introspect(config, schema_filter)
-            .await
-            .map_err(|e| anyhow!("SQLite introspection failed: {e}")),
-        #[cfg(not(feature = "sqlite"))]
-        DatabaseType::SQLite => {
-            Err(anyhow!("SQLite engine not enabled. Build with --features sqlite"))
-        }
-
-        #[cfg(feature = "postgres")]
-        DatabaseType::Postgres => PostgresEngine::introspect(config, schema_filter)
-            .await
-            .map_err(|e| anyhow!("PostgreSQL introspection failed: {e}")),
-        #[cfg(not(feature = "postgres"))]
-        DatabaseType::Postgres => {
-            Err(anyhow!("PostgreSQL engine not enabled. Build with --features postgres"))
-        }
-
-        #[cfg(feature = "mysql")]
-        DatabaseType::MySQL => MySqlEngine::introspect(config, schema_filter)
-            .await
-            .map_err(|e| anyhow!("MySQL introspection failed: {e}")),
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => {
             Err(anyhow!("MySQL engine not enabled. Build with --features mysql"))

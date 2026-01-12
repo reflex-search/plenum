@@ -22,7 +22,7 @@ use std::time::Instant;
 use crate::capability::validate_query;
 use crate::engine::{
     Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine, DatabaseType,
-    ForeignKeyInfo, IndexInfo, QueryResult, SchemaInfo, TableInfo,
+    ForeignKeyInfo, IndexInfo, IntrospectOperation, IntrospectResult, QueryResult, TableInfo,
 };
 use crate::error::{PlenumError, Result};
 
@@ -74,8 +74,10 @@ impl DatabaseEngine for SqliteEngine {
 
     async fn introspect(
         config: &ConnectionConfig,
-        schema_filter: Option<&str>,
-    ) -> Result<SchemaInfo> {
+        operation: &IntrospectOperation,
+        database: Option<&str>,
+        schema: Option<&str>,
+    ) -> Result<IntrospectResult> {
         // Validate config is for SQLite
         if config.engine != DatabaseType::SQLite {
             return Err(PlenumError::invalid_input(format!(
@@ -94,43 +96,55 @@ impl DatabaseEngine for SqliteEngine {
         let path_str = file_path.to_str().ok_or_else(|| {
             PlenumError::invalid_input("SQLite file path contains invalid UTF-8 characters")
         })?;
+
+        // Note: SQLite doesn't support database override - it's file-based
+        if database.is_some() {
+            return Err(PlenumError::invalid_input(
+                "SQLite does not support --database parameter (use different connection config to target different database file)"
+            ));
+        }
+
+        // Note: SQLite doesn't have schemas like Postgres/MySQL
+        if schema.is_some() {
+            return Err(PlenumError::invalid_input(
+                "SQLite does not support --schema parameter (SQLite has no schema concept)"
+            ));
+        }
+
         let conn = open_connection(path_str, true)?;
 
-        // Note: SQLite doesn't have explicit schemas in the same way as PostgreSQL/MySQL
-        // The schema_filter parameter is ignored for SQLite
-        if schema_filter.is_some() {
-            // Silently ignore - SQLite doesn't have schema filtering
-        }
+        // Route to appropriate operation handler
+        let result = match operation {
+            IntrospectOperation::ListDatabases => {
+                // SQLite doesn't have a database list concept (each file is a database)
+                return Err(PlenumError::invalid_input(
+                    "SQLite does not support ListDatabases operation (each file is a separate database)"
+                ));
+            }
 
-        // Query sqlite_master for all tables (exclude internal tables)
-        let mut stmt = conn
-            .prepare(
-                "SELECT name FROM sqlite_master
-                 WHERE type = 'table'
-                 AND name NOT LIKE 'sqlite_%'
-                 ORDER BY name",
-            )
-            .map_err(|e| {
-                PlenumError::engine_error("sqlite", format!("Failed to query tables: {e}"))
-            })?;
+            IntrospectOperation::ListSchemas => {
+                // SQLite doesn't have schemas
+                return Err(PlenumError::invalid_input(
+                    "SQLite does not support ListSchemas operation (SQLite has no schema concept)"
+                ));
+            }
 
-        let table_names: Vec<String> = stmt
-            .query_map([], |row| row.get(0))
-            .map_err(|e| {
-                PlenumError::engine_error("sqlite", format!("Failed to fetch table names: {e}"))
-            })?
-            .collect::<std::result::Result<Vec<String>, _>>()
-            .map_err(|e| {
-                PlenumError::engine_error("sqlite", format!("Failed to collect table names: {e}"))
-            })?;
+            IntrospectOperation::ListTables => list_tables_sqlite(&conn)?,
 
-        // Introspect each table
-        let mut tables = Vec::new();
-        for table_name in table_names {
-            tables.push(introspect_table(&conn, &table_name)?);
-        }
+            IntrospectOperation::ListViews => list_views_sqlite(&conn)?,
 
-        Ok(SchemaInfo { tables })
+            IntrospectOperation::ListIndexes { table } => {
+                list_indexes_sqlite(&conn, table.as_deref())?
+            }
+
+            IntrospectOperation::TableDetails { name, fields } => {
+                get_table_details_sqlite(&conn, name, fields)?
+            }
+
+            IntrospectOperation::ViewDetails { name } => get_view_details_sqlite(&conn, name)?,
+        };
+
+        Ok(result)
     }
 
     async fn execute(
@@ -187,6 +201,246 @@ fn open_connection(path: &str, read_only: bool) -> Result<Connection> {
 
     Connection::open_with_flags(path, flags)
         .map_err(|e| PlenumError::connection_failed(format!("Failed to open SQLite database: {e}")))
+}
+
+/// List all tables (excludes `SQLite` internal tables)
+fn list_tables_sqlite(conn: &Connection) -> Result<IntrospectResult> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table'
+             AND name NOT LIKE 'sqlite_%'
+             ORDER BY name",
+        )
+        .map_err(|e| PlenumError::engine_error("sqlite", format!("Failed to query tables: {e}")))?;
+
+    let tables: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| {
+            PlenumError::engine_error("sqlite", format!("Failed to fetch table names: {e}"))
+        })?
+        .collect::<std::result::Result<Vec<String>, _>>()
+        .map_err(|e| {
+            PlenumError::engine_error("sqlite", format!("Failed to collect table names: {e}"))
+        })?;
+
+    Ok(IntrospectResult::TableList { tables })
+}
+
+/// List all views
+fn list_views_sqlite(conn: &Connection) -> Result<IntrospectResult> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'view'
+             ORDER BY name",
+        )
+        .map_err(|e| PlenumError::engine_error("sqlite", format!("Failed to query views: {e}")))?;
+
+    let views: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| PlenumError::engine_error("sqlite", format!("Failed to fetch view names: {e}")))?
+        .collect::<std::result::Result<Vec<String>, _>>()
+        .map_err(|e| {
+            PlenumError::engine_error("sqlite", format!("Failed to collect view names: {e}"))
+        })?;
+
+    Ok(IntrospectResult::ViewList { views })
+}
+
+/// List all indexes (optionally filtered by table)
+fn list_indexes_sqlite(conn: &Connection, table_filter: Option<&str>) -> Result<IntrospectResult> {
+    use crate::engine::IndexSummary;
+
+    // Query sqlite_master for all indexes
+    let query = if let Some(table) = table_filter {
+        format!(
+            "SELECT name, tbl_name FROM sqlite_master
+             WHERE type = 'index'
+             AND tbl_name = '{table}'
+             ORDER BY name"
+        )
+    } else {
+        "SELECT name, tbl_name FROM sqlite_master
+         WHERE type = 'index'
+         ORDER BY name"
+            .to_string()
+    };
+
+    let mut stmt = conn
+        .prepare(&query)
+        .map_err(|e| PlenumError::engine_error("sqlite", format!("Failed to query indexes: {e}")))?;
+
+    let index_data: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| {
+            PlenumError::engine_error("sqlite", format!("Failed to fetch index data: {e}"))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| {
+            PlenumError::engine_error("sqlite", format!("Failed to collect index data: {e}"))
+        })?;
+
+    let mut indexes = Vec::new();
+    for (index_name, table_name) in index_data {
+        // Skip auto-created indexes for primary keys
+        if index_name.starts_with("sqlite_autoindex_") {
+            continue;
+        }
+
+        // Get index info using PRAGMA
+        let mut idx_info_stmt = conn
+            .prepare(&format!("PRAGMA index_info({index_name})"))
+            .map_err(|e| {
+                PlenumError::engine_error(
+                    "sqlite",
+                    format!("Failed to prepare index_info for {index_name}: {e}"),
+                )
+            })?;
+
+        let columns: Vec<String> = idx_info_stmt
+            .query_map([], |row| row.get::<_, String>(2))
+            .map_err(|e| {
+                PlenumError::engine_error(
+                    "sqlite",
+                    format!("Failed to query index columns for {index_name}: {e}"),
+                )
+            })?
+            .filter_map(std::result::Result::ok)
+            .collect();
+
+        // Check if index is unique using PRAGMA index_list
+        let mut idx_list_stmt = conn
+            .prepare(&format!("PRAGMA index_list({table_name})"))
+            .map_err(|e| {
+                PlenumError::engine_error(
+                    "sqlite",
+                    format!("Failed to prepare index_list for {table_name}: {e}"),
+                )
+            })?;
+
+        let unique = idx_list_stmt
+            .query_map([], |row| {
+                let name: String = row.get(1)?;
+                let is_unique: i32 = row.get(2)?;
+                Ok((name, is_unique != 0))
+            })
+            .map_err(|e| {
+                PlenumError::engine_error(
+                    "sqlite",
+                    format!("Failed to query index uniqueness for {table_name}: {e}"),
+                )
+            })?
+            .find_map(|r| {
+                if let Ok((name, is_unique)) = r {
+                    if name == index_name {
+                        return Some(is_unique);
+                    }
+                }
+                None
+            })
+            .unwrap_or(false);
+
+        indexes.push(IndexSummary { name: index_name, table: table_name, unique, columns });
+    }
+
+    Ok(IntrospectResult::IndexList { indexes })
+}
+
+/// Get full table details with conditional field retrieval
+fn get_table_details_sqlite(
+    conn: &Connection,
+    table_name: &str,
+    fields: &crate::engine::TableFields,
+) -> Result<IntrospectResult> {
+    // Verify table exists
+    let mut check_stmt = conn
+        .prepare(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = ?",
+        )
+        .map_err(|e| {
+            PlenumError::engine_error("sqlite", format!("Failed to check table existence: {e}"))
+        })?;
+
+    let count: i32 = check_stmt.query_row([table_name], |row| row.get(0)).map_err(|e| {
+        PlenumError::engine_error("sqlite", format!("Failed to query table existence: {e}"))
+    })?;
+
+    if count == 0 {
+        return Err(PlenumError::invalid_input(format!("Table '{table_name}' not found")));
+    }
+
+    // Get full table info (we'll filter fields afterward)
+    let full_table = introspect_table(conn, table_name)?;
+
+    // Filter fields based on selector
+    let table = TableInfo {
+        name: full_table.name,
+        schema: None,
+        columns: if fields.columns { full_table.columns } else { Vec::new() },
+        primary_key: if fields.primary_key { full_table.primary_key } else { None },
+        foreign_keys: if fields.foreign_keys { full_table.foreign_keys } else { Vec::new() },
+        indexes: if fields.indexes { full_table.indexes } else { Vec::new() },
+    };
+
+    Ok(IntrospectResult::TableDetails { table })
+}
+
+/// Get view details including definition and columns
+fn get_view_details_sqlite(conn: &Connection, view_name: &str) -> Result<IntrospectResult> {
+    use crate::engine::ViewInfo;
+
+    // Get view definition from sqlite_master
+    let mut def_stmt = conn
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?")
+        .map_err(|e| {
+            PlenumError::engine_error("sqlite", format!("Failed to prepare view query: {e}"))
+        })?;
+
+    let definition: Option<String> =
+        def_stmt.query_row([view_name], |row| row.get(0)).map_err(|e| {
+            if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                PlenumError::invalid_input(format!("View '{view_name}' not found"))
+            } else {
+                PlenumError::engine_error("sqlite", format!("Failed to query view definition: {e}"))
+            }
+        })?;
+
+    // Get view columns using PRAGMA table_info (works for views too)
+    let mut col_stmt = conn.prepare(&format!("PRAGMA table_info({view_name})")).map_err(|e| {
+        PlenumError::engine_error(
+            "sqlite",
+            format!("Failed to prepare table_info for view {view_name}: {e}"),
+        )
+    })?;
+
+    let columns: Vec<ColumnInfo> = col_stmt
+        .query_map([], |row| {
+            Ok(ColumnInfo {
+                name: row.get::<_, String>(1)?,
+                data_type: row.get::<_, String>(2)?,
+                nullable: row.get::<_, i32>(3)? == 0,
+                default: row.get::<_, Option<String>>(4)?,
+            })
+        })
+        .map_err(|e| {
+            PlenumError::engine_error(
+                "sqlite",
+                format!("Failed to query columns for view {view_name}: {e}"),
+            )
+        })?
+        .collect::<std::result::Result<Vec<ColumnInfo>, _>>()
+        .map_err(|e| {
+            PlenumError::engine_error(
+                "sqlite",
+                format!("Failed to collect columns for view {view_name}: {e}"),
+            )
+        })?;
+
+    let view = ViewInfo { name: view_name.to_string(), schema: None, definition, columns };
+
+    Ok(IntrospectResult::ViewDetails { view })
 }
 
 /// Introspect a single table and return `TableInfo`
@@ -516,13 +770,24 @@ mod tests {
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let result = SqliteEngine::introspect(&config, None).await;
+
+        // Get table details for the users table
+        let result = SqliteEngine::introspect(
+            &config,
+            &IntrospectOperation::TableDetails {
+                name: "users".to_string(),
+                fields: crate::engine::TableFields::all(),
+            },
+            None,
+            None,
+        )
+        .await;
         assert!(result.is_ok());
 
-        let schema = result.unwrap();
-        assert_eq!(schema.tables.len(), 1);
+        let IntrospectResult::TableDetails { table } = result.unwrap() else {
+            panic!("Expected TableDetails result")
+        };
 
-        let table = &schema.tables[0];
         assert_eq!(table.name, "users");
         assert_eq!(table.columns.len(), 3);
 
@@ -581,7 +846,7 @@ mod tests {
             SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &caps).await;
 
         assert!(result.is_err());
-        let error_message = result.unwrap_err().message().to_string();
+        let error_message = result.unwrap_err().message();
         assert!(error_message.contains("Plenum is read-only"));
         assert!(error_message.contains("Please run this query manually"));
 
@@ -609,7 +874,7 @@ mod tests {
                 .await;
 
         assert!(result.is_err());
-        let error_message = result.unwrap_err().message().to_string();
+        let error_message = result.unwrap_err().message();
         assert!(error_message.contains("Plenum is read-only"));
         assert!(error_message.contains("Please run this query manually"));
 
@@ -633,7 +898,7 @@ mod tests {
                 .await;
 
         assert!(result.is_err());
-        let error_message = result.unwrap_err().message().to_string();
+        let error_message = result.unwrap_err().message();
         assert!(error_message.contains("Plenum is read-only"));
         assert!(error_message.contains("Please run this query manually"));
 
@@ -659,7 +924,7 @@ mod tests {
         let result = SqliteEngine::execute(&config, "DELETE FROM users WHERE id = 1", &caps).await;
 
         assert!(result.is_err());
-        let error_message = result.unwrap_err().message().to_string();
+        let error_message = result.unwrap_err().message();
         assert!(error_message.contains("Plenum is read-only"));
         assert!(error_message.contains("Please run this query manually"));
 
@@ -780,12 +1045,23 @@ mod tests {
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let result = SqliteEngine::introspect(&config, None).await;
+
+        // Get details for the posts table
+        let result = SqliteEngine::introspect(
+            &config,
+            &IntrospectOperation::TableDetails {
+                name: "posts".to_string(),
+                fields: crate::engine::TableFields::all(),
+            },
+            None,
+            None,
+        )
+        .await;
         assert!(result.is_ok());
 
-        let schema = result.unwrap();
-        let posts_table =
-            schema.tables.iter().find(|t| t.name == "posts").expect("posts table not found");
+        let IntrospectResult::TableDetails { table: posts_table } = result.unwrap() else {
+            panic!("Expected TableDetails result")
+        };
 
         assert!(!posts_table.foreign_keys.is_empty());
         let fk = &posts_table.foreign_keys[0];
@@ -812,12 +1088,23 @@ mod tests {
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
-        let result = SqliteEngine::introspect(&config, None).await;
+
+        // Get details for the users table
+        let result = SqliteEngine::introspect(
+            &config,
+            &IntrospectOperation::TableDetails {
+                name: "users".to_string(),
+                fields: crate::engine::TableFields::all(),
+            },
+            None,
+            None,
+        )
+        .await;
         assert!(result.is_ok());
 
-        let schema = result.unwrap();
-        let users_table =
-            schema.tables.iter().find(|t| t.name == "users").expect("users table not found");
+        let IntrospectResult::TableDetails { table: users_table } = result.unwrap() else {
+            panic!("Expected TableDetails result")
+        };
 
         // Should have at least 2 indexes (excluding auto-created primary key index)
         assert!(users_table.indexes.len() >= 2);

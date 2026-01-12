@@ -26,7 +26,7 @@ use crate::error::{PlenumError, Result};
 /// Project configuration (per project path)
 ///
 /// Contains named connections and a default pointer for a specific project.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectConfig {
     /// Named connections for this project
     pub connections: HashMap<String, StoredConnection>,
@@ -41,12 +41,6 @@ pub struct ProjectConfig {
 /// This is a type alias for `ProjectConfig` because local configs are already
 /// scoped to a project directory, so they don't need the `projects` wrapper.
 pub type LocalConfig = ProjectConfig;
-
-impl Default for ProjectConfig {
-    fn default() -> Self {
-        Self { connections: HashMap::new(), default: None }
-    }
-}
 
 /// Connection registry (stored in config files)
 ///
@@ -166,8 +160,8 @@ pub fn get_current_project_path() -> Result<String> {
 /// Load connection registry from a config file
 ///
 /// Handles both formats:
-/// - Local format: `{ "connections": {...}, "default": "..." }` (ProjectConfig)
-/// - Global format: `{ "projects": { "/path": {...} } }` (ConnectionRegistry)
+/// - Local format: `{ "connections": {...}, "default": "..." }` (`ProjectConfig`)
+/// - Global format: `{ "projects": { "/path": {...} } }` (`ConnectionRegistry`)
 pub fn load_registry(path: &Path) -> Result<ConnectionRegistry> {
     if !path.exists() {
         // File doesn't exist, return empty registry
@@ -211,8 +205,8 @@ pub fn load_registry(path: &Path) -> Result<ConnectionRegistry> {
 /// Save connection registry to a config file
 ///
 /// Saves in different formats based on config type:
-/// - Local: `{ "connections": {...}, "default": "..." }` (ProjectConfig only)
-/// - Global: `{ "projects": { "/path": {...} } }` (Full ConnectionRegistry)
+/// - Local: `{ "connections": {...}, "default": "..." }` (`ProjectConfig` only)
+/// - Global: `{ "projects": { "/path": {...} } }` (Full `ConnectionRegistry`)
 pub fn save_registry(path: &Path, registry: &ConnectionRegistry) -> Result<()> {
     // Create parent directory if it doesn't exist
     if let Some(parent) = path.parent() {
@@ -240,8 +234,7 @@ pub fn save_registry(path: &Path, registry: &ConnectionRegistry) -> Result<()> {
 
         let project_config = registry.projects.get(&project_path).ok_or_else(|| {
             PlenumError::config_error(format!(
-                "No configuration found for project '{}' in registry",
-                project_path
+                "No configuration found for project '{project_path}' in registry"
             ))
         })?;
 
@@ -354,9 +347,8 @@ pub fn resolve_connection(
                 .ok_or_else(|| {
                     let available: Vec<_> = project.connections.keys().collect();
                     PlenumError::config_error(format!(
-                    "No default connection set for project '{path}'. Available connections: {:?}. \
-                     Specify one with --name or set a default in the config.",
-                    available
+                    "No default connection set for project '{path}'. Available connections: {available:?}. \
+                     Specify one with --name or set a default in the config."
                 ))
                 })?
                 .clone()
@@ -371,8 +363,7 @@ pub fn resolve_connection(
             None => String::new(),
         };
         PlenumError::config_error(format!(
-            "Connection '{conn_name}' not found for project '{path}'. Available connections: {:?}{}",
-            available, default_info
+            "Connection '{conn_name}' not found for project '{path}'. Available connections: {available:?}{default_info}"
         ))
     })?;
 
@@ -416,7 +407,7 @@ pub fn save_connection(
     };
 
     // Get or create project config
-    let project = registry.projects.entry(path.clone()).or_default();
+    let project = registry.projects.entry(path).or_default();
 
     // Check if this is the first connection for the project
     let is_first_connection = project.connections.is_empty();

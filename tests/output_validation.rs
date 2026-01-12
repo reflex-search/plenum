@@ -311,10 +311,12 @@ async fn test_real_query_output_is_valid_json() {
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_real_introspect_output_is_valid_json() {
+    use plenum::engine::IntrospectOperation;
+
     let temp_file = create_test_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let result = SqliteEngine::introspect(&config, None).await;
+    let result = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await;
     assert!(result.is_ok());
 
     // Wrap in success envelope

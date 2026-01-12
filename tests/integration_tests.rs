@@ -135,7 +135,7 @@ async fn test_cross_engine_insert_query_rejected() {
 
     assert!(result.is_err(), "SQLite INSERT query should be rejected (read-only)");
     let err = result.unwrap_err();
-    let error_message = err.message().to_string();
+    let error_message = err.message();
     assert!(error_message.contains("Plenum is read-only"), "Error should mention read-only");
     assert!(
         error_message.contains("Please run this query manually"),
@@ -163,7 +163,7 @@ async fn test_cross_engine_write_operation_rejected() {
 
     assert!(result.is_err(), "Should reject INSERT (Plenum is read-only)");
     let err = result.unwrap_err();
-    let error_message = err.message().to_string();
+    let error_message = err.message();
     assert!(
         error_message.contains("Plenum is read-only"),
         "Error message should mention read-only mode"
@@ -190,7 +190,7 @@ async fn test_cross_engine_ddl_operation_rejected() {
 
     assert!(result.is_err(), "Should reject DDL (Plenum is read-only)");
     let err = result.unwrap_err();
-    let error_message = err.message().to_string();
+    let error_message = err.message();
     assert!(
         error_message.contains("Plenum is read-only"),
         "Error message should mention read-only mode"
@@ -272,18 +272,38 @@ async fn test_cross_engine_empty_result_set() {
 #[cfg(feature = "sqlite")]
 async fn test_cross_engine_schema_introspection_structure() {
     // Test that introspection returns consistent structure across engines
+    use plenum::engine::{IntrospectOperation, IntrospectResult, TableFields};
+
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let result = SqliteEngine::introspect(&config, None).await;
+    // First, list tables to verify there's 1 table
+    let result = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await;
     assert!(result.is_ok());
 
-    let schema = result.unwrap();
+    let IntrospectResult::TableList { tables: table_names } = result.unwrap() else {
+        panic!("Expected TableList result")
+    };
+    assert_eq!(table_names.len(), 1, "Should have 1 table");
+
+    // Now get full details for the users table
+    let table_result = SqliteEngine::introspect(
+        &config,
+        &IntrospectOperation::TableDetails {
+            name: "users".to_string(),
+            fields: TableFields::all(),
+        },
+        None,
+        None,
+    )
+    .await;
+    assert!(table_result.is_ok());
+
+    let IntrospectResult::TableDetails { table } = table_result.unwrap() else {
+        panic!("Expected TableDetails result")
+    };
 
     // Verify structure
-    assert_eq!(schema.tables.len(), 1, "Should have 1 table");
-
-    let table = &schema.tables[0];
     assert_eq!(table.name, "users");
     assert_eq!(table.columns.len(), 4, "Should have 4 columns");
 
@@ -432,25 +452,27 @@ async fn test_json_serialization_of_query_result() {
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_json_serialization_of_schema_info() {
-    // Test that SchemaInfo serializes to valid JSON
+    // Test that IntrospectResult serializes to valid JSON
+    use plenum::engine::IntrospectOperation;
+
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let result = SqliteEngine::introspect(&config, None).await;
+    let result = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await;
     assert!(result.is_ok());
 
-    let schema_info = result.unwrap();
+    let introspect_result = result.unwrap();
 
     // Verify it can be serialized to JSON
-    let json = serde_json::to_string(&schema_info);
-    assert!(json.is_ok(), "SchemaInfo should serialize to JSON");
+    let json = serde_json::to_string(&introspect_result);
+    assert!(json.is_ok(), "IntrospectResult should serialize to JSON");
 
     // Verify structure
     let json_str = json.unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
     assert!(parsed.is_object());
-    assert!(parsed.get("tables").is_some());
+    assert!(parsed.get("tables").is_some(), "Should have 'tables' field for TableList result");
     assert!(parsed.get("tables").unwrap().is_array());
 
     cleanup_sqlite_db(&temp_file);
@@ -485,20 +507,24 @@ async fn test_deterministic_query_results() {
 #[cfg(feature = "sqlite")]
 async fn test_deterministic_introspection() {
     // Test that introspection is deterministic
+    use plenum::engine::{IntrospectOperation, IntrospectResult};
+
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let schema1 = SqliteEngine::introspect(&config, None).await.unwrap();
-    let schema2 = SqliteEngine::introspect(&config, None).await.unwrap();
+    let result1 = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await.unwrap();
+    let result2 = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await.unwrap();
 
-    // Schemas should be identical
-    assert_eq!(schema1.tables.len(), schema2.tables.len(), "Table count should be identical");
+    // Results should be identical
+    let IntrospectResult::TableList { tables: tables1 } = result1 else {
+        panic!("Expected TableList result")
+    };
+    let IntrospectResult::TableList { tables: tables2 } = result2 else {
+        panic!("Expected TableList result")
+    };
 
-    for (t1, t2) in schema1.tables.iter().zip(schema2.tables.iter()) {
-        assert_eq!(t1.name, t2.name, "Table names should be identical");
-        assert_eq!(t1.columns.len(), t2.columns.len(), "Column counts should be identical");
-        assert_eq!(t1.primary_key, t2.primary_key, "Primary keys should be identical");
-    }
+    assert_eq!(tables1.len(), tables2.len(), "Table count should be identical");
+    assert_eq!(tables1, tables2, "Table names should be identical");
 
     cleanup_sqlite_db(&temp_file);
 }

@@ -25,7 +25,7 @@ use tokio_postgres::{Client, Config, NoTls, Row};
 use crate::capability::validate_query;
 use crate::engine::{
     Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine, DatabaseType,
-    ForeignKeyInfo, IndexInfo, QueryResult, SchemaInfo, TableInfo,
+    ForeignKeyInfo, IndexInfo, IntrospectOperation, IntrospectResult, QueryResult, TableInfo,
 };
 use crate::error::{PlenumError, Result};
 
@@ -98,8 +98,10 @@ impl DatabaseEngine for PostgresEngine {
 
     async fn introspect(
         config: &ConnectionConfig,
-        schema_filter: Option<&str>,
-    ) -> Result<SchemaInfo> {
+        operation: &IntrospectOperation,
+        database: Option<&str>,
+        schema: Option<&str>,
+    ) -> Result<IntrospectResult> {
         // Validate config is for PostgreSQL
         if config.engine != DatabaseType::Postgres {
             return Err(PlenumError::invalid_input(format!(
@@ -108,8 +110,14 @@ impl DatabaseEngine for PostgresEngine {
             )));
         }
 
+        // Handle database override by reconnecting
+        let mut effective_config = config.clone();
+        if let Some(db) = database {
+            effective_config.database = Some(db.to_string());
+        }
+
         // Build connection config
-        let pg_config = build_pg_config(config)?;
+        let pg_config = build_pg_config(&effective_config)?;
 
         // Connect to PostgreSQL
         let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
@@ -117,15 +125,43 @@ impl DatabaseEngine for PostgresEngine {
         })?;
 
         // Spawn connection handler
-        // Note: Connection errors are not logged to prevent credential leakage
         tokio::spawn(async move {
             let _ = connection.await;
         });
 
-        // Introspect all tables
-        let tables = introspect_all_tables(&client, schema_filter).await?;
+        // Route to appropriate operation handler
+        let result = match operation {
+            IntrospectOperation::ListDatabases => list_databases_postgres(&client).await?,
 
-        Ok(SchemaInfo { tables })
+            IntrospectOperation::ListSchemas => list_schemas_postgres(&client).await?,
+
+            IntrospectOperation::ListTables => {
+                let target_schema = determine_target_schema(&client, schema).await?;
+                list_tables_postgres(&client, &target_schema).await?
+            }
+
+            IntrospectOperation::ListViews => {
+                let target_schema = determine_target_schema(&client, schema).await?;
+                list_views_postgres(&client, &target_schema).await?
+            }
+
+            IntrospectOperation::ListIndexes { table } => {
+                let target_schema = determine_target_schema(&client, schema).await?;
+                list_indexes_postgres(&client, &target_schema, table.as_deref()).await?
+            }
+
+            IntrospectOperation::TableDetails { name, fields } => {
+                let target_schema = determine_target_schema(&client, schema).await?;
+                get_table_details_postgres(&client, &target_schema, name, fields).await?
+            }
+
+            IntrospectOperation::ViewDetails { name } => {
+                let target_schema = determine_target_schema(&client, schema).await?;
+                get_view_details_postgres(&client, &target_schema, name).await?
+            }
+        };
+
+        Ok(result)
     }
 
     async fn execute(
@@ -218,66 +254,238 @@ fn build_pg_config(config: &ConnectionConfig) -> Result<Config> {
     Ok(pg_config)
 }
 
-/// Introspect all tables in the database
-async fn introspect_all_tables(
+/// Determine target schema from filter or current schema
+async fn determine_target_schema(client: &Client, schema_filter: Option<&str>) -> Result<String> {
+    if let Some(schema) = schema_filter {
+        return Ok(schema.to_string());
+    }
+
+    // Get current schema
+    let row = client.query_one("SELECT current_schema()", &[]).await.map_err(|e| {
+        PlenumError::engine_error("postgres", format!("Failed to query current schema: {e}"))
+    })?;
+
+    let current_schema: String = row.get(0);
+    Ok(current_schema)
+}
+
+/// List all databases (requires wildcard connection or superuser privileges)
+async fn list_databases_postgres(client: &Client) -> Result<IntrospectResult> {
+    let query = "
+        SELECT datname
+        FROM pg_catalog.pg_database
+        WHERE datistemplate = false
+        ORDER BY datname";
+
+    let rows = client.query(query, &[]).await.map_err(|e| {
+        PlenumError::engine_error("postgres", format!("Failed to list databases: {e}"))
+    })?;
+
+    let databases: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+
+    Ok(IntrospectResult::DatabaseList { databases })
+}
+
+/// List all schemas (`PostgreSQL` has true schemas separate from databases)
+async fn list_schemas_postgres(client: &Client) -> Result<IntrospectResult> {
+    let query = "
+        SELECT schema_name
+        FROM information_schema.schemata
+        WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast', 'pg_temp_1', 'pg_toast_temp_1')
+        ORDER BY schema_name";
+
+    let rows = client.query(query, &[]).await.map_err(|e| {
+        PlenumError::engine_error("postgres", format!("Failed to list schemas: {e}"))
+    })?;
+
+    let schemas: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+
+    Ok(IntrospectResult::SchemaList { schemas })
+}
+
+/// List all tables in the target schema
+async fn list_tables_postgres(client: &Client, schema: &str) -> Result<IntrospectResult> {
+    let query = "
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = $1
+        AND table_type = 'BASE TABLE'
+        ORDER BY table_name";
+
+    let rows = client.query(query, &[&schema]).await.map_err(|e| {
+        PlenumError::engine_error("postgres", format!("Failed to list tables in schema '{schema}': {e}"))
+    })?;
+
+    let tables: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+
+    Ok(IntrospectResult::TableList { tables })
+}
+
+/// List all views in the target schema
+async fn list_views_postgres(client: &Client, schema: &str) -> Result<IntrospectResult> {
+    let query = "
+        SELECT table_name
+        FROM information_schema.views
+        WHERE table_schema = $1
+        ORDER BY table_name";
+
+    let rows = client.query(query, &[&schema]).await.map_err(|e| {
+        PlenumError::engine_error("postgres", format!("Failed to list views in schema '{schema}': {e}"))
+    })?;
+
+    let views: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+
+    Ok(IntrospectResult::ViewList { views })
+}
+
+/// List all indexes in the target schema (optionally filtered by table)
+async fn list_indexes_postgres(
     client: &Client,
-    schema_filter: Option<&str>,
-) -> Result<Vec<TableInfo>> {
-    // Query information_schema.tables
-    // Exclude system schemas (pg_catalog, information_schema, pg_toast)
-    let query = if let Some(schema) = schema_filter {
+    schema: &str,
+    table_filter: Option<&str>,
+) -> Result<IntrospectResult> {
+    use crate::engine::IndexSummary;
+
+    let query = if let Some(table) = table_filter {
         format!(
-            "SELECT table_schema, table_name
-             FROM information_schema.tables
-             WHERE table_schema = '{schema}'
-             AND table_type = 'BASE TABLE'
-             ORDER BY table_schema, table_name"
+            "SELECT indexname, tablename, indexdef
+             FROM pg_indexes
+             WHERE schemaname = $1 AND tablename = '{table}'
+             ORDER BY indexname"
         )
     } else {
-        "SELECT table_schema, table_name
-         FROM information_schema.tables
-         WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-         AND table_type = 'BASE TABLE'
-         ORDER BY table_schema, table_name"
+        "SELECT indexname, tablename, indexdef
+         FROM pg_indexes
+         WHERE schemaname = $1
+         ORDER BY indexname"
             .to_string()
     };
 
-    let rows = client.query(&query, &[]).await.map_err(|e| {
-        PlenumError::engine_error("postgres", format!("Failed to query tables: {e}"))
+    let rows = client.query(&query, &[&schema]).await.map_err(|e| {
+        PlenumError::engine_error("postgres", format!("Failed to list indexes in schema '{schema}': {e}"))
     })?;
 
-    let mut tables = Vec::new();
+    let mut indexes = Vec::new();
     for row in rows {
-        let schema: String = row.get(0);
+        let index_name: String = row.get(0);
         let table_name: String = row.get(1);
-        tables.push(introspect_table(client, &schema, &table_name).await?);
+        let index_def: String = row.get(2);
+
+        // Skip primary key indexes (they're part of table details)
+        if index_name.ends_with("_pkey") {
+            continue;
+        }
+
+        // Determine if index is unique
+        let unique = index_def.contains("UNIQUE INDEX");
+
+        // Extract column names from index definition
+        let columns = extract_index_columns(&index_def);
+
+        indexes.push(IndexSummary { name: index_name, table: table_name, unique, columns });
     }
 
-    Ok(tables)
+    Ok(IntrospectResult::IndexList { indexes })
 }
 
-/// Introspect a single table
-async fn introspect_table(client: &Client, schema: &str, table_name: &str) -> Result<TableInfo> {
-    // Get columns
-    let columns = introspect_columns(client, schema, table_name).await?;
+/// Get full table details with conditional field retrieval
+async fn get_table_details_postgres(
+    client: &Client,
+    schema: &str,
+    table_name: &str,
+    fields: &crate::engine::TableFields,
+) -> Result<IntrospectResult> {
+    // Verify table exists
+    let check_query = "
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_schema = $1 AND table_name = $2 AND table_type = 'BASE TABLE'";
 
-    // Get primary key
-    let primary_key = introspect_primary_key(client, schema, table_name).await?;
+    let row = client.query_one(check_query, &[&schema, &table_name]).await.map_err(|e| {
+        PlenumError::engine_error("postgres", format!("Failed to check table existence: {e}"))
+    })?;
 
-    // Get foreign keys
-    let foreign_keys = introspect_foreign_keys(client, schema, table_name).await?;
+    let count: i64 = row.get(0);
+    if count == 0 {
+        return Err(PlenumError::invalid_input(format!(
+            "Table '{table_name}' not found in schema '{schema}'"
+        )));
+    }
 
-    // Get indexes
-    let indexes = introspect_indexes(client, schema, table_name).await?;
+    // Conditionally retrieve fields
+    let columns = if fields.columns {
+        introspect_columns(client, schema, table_name).await?
+    } else {
+        Vec::new()
+    };
 
-    Ok(TableInfo {
+    let primary_key = if fields.primary_key {
+        introspect_primary_key(client, schema, table_name).await?
+    } else {
+        None
+    };
+
+    let foreign_keys = if fields.foreign_keys {
+        introspect_foreign_keys(client, schema, table_name).await?
+    } else {
+        Vec::new()
+    };
+
+    let indexes = if fields.indexes {
+        introspect_indexes(client, schema, table_name).await?
+    } else {
+        Vec::new()
+    };
+
+    let table = TableInfo {
         name: table_name.to_string(),
         schema: Some(schema.to_string()),
         columns,
         primary_key,
         foreign_keys,
         indexes,
-    })
+    };
+
+    Ok(IntrospectResult::TableDetails { table })
+}
+
+/// Get view details including definition and columns
+async fn get_view_details_postgres(
+    client: &Client,
+    schema: &str,
+    view_name: &str,
+) -> Result<IntrospectResult> {
+    use crate::engine::ViewInfo;
+
+    // Get view definition
+    let def_query = "
+        SELECT definition
+        FROM information_schema.views
+        WHERE table_schema = $1 AND table_name = $2";
+
+    let def_row = client.query_opt(def_query, &[&schema, &view_name]).await.map_err(|e| {
+        PlenumError::engine_error("postgres", format!("Failed to query view definition: {e}"))
+    })?;
+
+    if def_row.is_none() {
+        return Err(PlenumError::invalid_input(format!(
+            "View '{view_name}' not found in schema '{schema}'"
+        )));
+    }
+
+    let definition: Option<String> = def_row.unwrap().get(0);
+
+    // Get view columns
+    let columns = introspect_columns(client, schema, view_name).await?;
+
+    let view = ViewInfo {
+        name: view_name.to_string(),
+        schema: Some(schema.to_string()),
+        definition,
+        columns,
+    };
+
+    Ok(IntrospectResult::ViewDetails { view })
 }
 
 /// Introspect table columns
@@ -865,14 +1073,23 @@ mod tests {
         .await;
 
         // Introspect
-        let result = PostgresEngine::introspect(&config, Some("public")).await;
+        let result = PostgresEngine::introspect(
+            &config,
+            &IntrospectOperation::TableDetails {
+                name: "test_users".to_string(),
+                fields: crate::engine::TableFields::all(),
+            },
+            None,
+            Some("public"),
+        )
+        .await;
         assert!(result.is_ok(), "Introspection failed: {:?}", result.err());
 
-        let schema = result.unwrap();
-        let test_table = schema.tables.iter().find(|t| t.name == "test_users");
-        assert!(test_table.is_some(), "test_users table not found");
+        let IntrospectResult::TableDetails { table } = result.unwrap() else {
+            panic!("Expected TableDetails result")
+        };
 
-        let table = test_table.unwrap();
+        assert_eq!(table.name, "test_users");
         assert_eq!(table.schema, Some("public".to_string()));
         assert!(table.columns.len() >= 3);
 

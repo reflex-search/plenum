@@ -282,6 +282,167 @@ pub struct QueryResult {
     pub rows_affected: Option<u64>,
 }
 
+/// Introspection operation types
+///
+/// Defines the type of introspection operation to perform.
+/// Each operation returns different data (see `IntrospectResult`).
+#[derive(Debug, Clone)]
+pub enum IntrospectOperation {
+    /// List all databases (requires wildcard connection)
+    ListDatabases,
+
+    /// List all schemas (Postgres only - `MySQL` uses database=schema, `SQLite` has none)
+    ListSchemas,
+
+    /// List all table names
+    ListTables,
+
+    /// List all view names
+    ListViews,
+
+    /// List all indexes (optionally filtered to a specific table)
+    ListIndexes {
+        /// Optional table name to filter indexes
+        table: Option<String>,
+    },
+
+    /// Get full details for a specific table
+    TableDetails {
+        /// Table name to introspect
+        name: String,
+        /// Which fields to include in the result
+        fields: TableFields,
+    },
+
+    /// Get details for a specific view
+    ViewDetails {
+        /// View name to introspect
+        name: String,
+    },
+}
+
+/// Table detail field selectors
+///
+/// Controls which fields are included when introspecting a specific table.
+/// Default (all true) returns complete table information.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone)]
+pub struct TableFields {
+    /// Include column information
+    pub columns: bool,
+    /// Include primary key
+    pub primary_key: bool,
+    /// Include foreign keys
+    pub foreign_keys: bool,
+    /// Include indexes
+    pub indexes: bool,
+}
+
+impl Default for TableFields {
+    fn default() -> Self {
+        Self { columns: true, primary_key: true, foreign_keys: true, indexes: true }
+    }
+}
+
+impl TableFields {
+    /// Create field selectors with all fields enabled
+    #[must_use]
+    pub const fn all() -> Self {
+        Self { columns: true, primary_key: true, foreign_keys: true, indexes: true }
+    }
+
+    /// Create field selectors with specific fields enabled
+    #[must_use]
+    #[allow(clippy::fn_params_excessive_bools)]
+    pub const fn new(columns: bool, primary_key: bool, foreign_keys: bool, indexes: bool) -> Self {
+        Self { columns, primary_key, foreign_keys, indexes }
+    }
+}
+
+/// Introspection result
+///
+/// The result type depends on which `IntrospectOperation` was requested.
+/// Only the relevant variant will be populated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum IntrospectResult {
+    /// List of database names
+    DatabaseList {
+        /// Database names
+        databases: Vec<String>,
+    },
+
+    /// List of schema names
+    SchemaList {
+        /// Schema names
+        schemas: Vec<String>,
+    },
+
+    /// List of table names
+    TableList {
+        /// Table names
+        tables: Vec<String>,
+    },
+
+    /// List of view names
+    ViewList {
+        /// View names
+        views: Vec<String>,
+    },
+
+    /// List of indexes
+    IndexList {
+        /// Index summaries
+        indexes: Vec<IndexSummary>,
+    },
+
+    /// Full table details
+    TableDetails {
+        /// Table information
+        table: TableInfo,
+    },
+
+    /// View details
+    ViewDetails {
+        /// View information
+        view: ViewInfo,
+    },
+}
+
+/// Index summary (used in `ListIndexes` operation)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexSummary {
+    /// Index name
+    pub name: String,
+
+    /// Table the index belongs to
+    pub table: String,
+
+    /// Whether this is a unique index
+    pub unique: bool,
+
+    /// Column names included in the index
+    pub columns: Vec<String>,
+}
+
+/// View information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewInfo {
+    /// View name
+    pub name: String,
+
+    /// Schema name (for engines that support schemas)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+
+    /// View definition (SQL source, if available)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub definition: Option<String>,
+
+    /// View columns
+    pub columns: Vec<ColumnInfo>,
+}
+
 /// Database engine trait
 ///
 /// All database engines implement this trait.
@@ -304,15 +465,27 @@ pub trait DatabaseEngine {
     ///
     /// This method:
     /// 1. Opens a connection
-    /// 2. Queries schema information (tables, columns, keys, indexes)
+    /// 2. Performs the requested introspection operation
     /// 3. Closes the connection
-    /// 4. Returns schema info or error
+    /// 4. Returns operation-specific results or error
     ///
-    /// If `schema_filter` is provided, only tables in that schema are returned.
+    /// # Parameters
+    /// - `config`: Database connection configuration
+    /// - `operation`: The type of introspection to perform
+    /// - `database`: Optional database override (reconnects with different database)
+    /// - `schema`: Optional schema filter (Postgres/MySQL only, ignored by `SQLite`)
+    ///
+    /// # Errors
+    /// - Operation not supported by engine (e.g., `ListSchemas` on MySQL/SQLite)
+    /// - Connection failure
+    /// - Table/view not found (for detail operations)
+    /// - Query execution failure
     fn introspect(
         config: &ConnectionConfig,
-        schema_filter: Option<&str>,
-    ) -> impl std::future::Future<Output = Result<SchemaInfo>> + Send;
+        operation: &IntrospectOperation,
+        database: Option<&str>,
+        schema: Option<&str>,
+    ) -> impl std::future::Future<Output = Result<IntrospectResult>> + Send;
 
     /// Execute a query with capability constraints
     ///

@@ -26,7 +26,8 @@ use std::time::{Duration, Instant};
 use crate::capability::validate_query;
 use crate::engine::{
     Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine, DatabaseType,
-    ForeignKeyInfo, IndexInfo, QueryResult, SchemaInfo, TableInfo,
+    ForeignKeyInfo, IndexInfo, IndexSummary, IntrospectOperation, IntrospectResult, QueryResult,
+    TableFields, TableInfo, ViewInfo,
 };
 use crate::error::{PlenumError, Result};
 
@@ -105,8 +106,10 @@ impl DatabaseEngine for MySqlEngine {
 
     async fn introspect(
         config: &ConnectionConfig,
-        schema_filter: Option<&str>,
-    ) -> Result<SchemaInfo> {
+        operation: &IntrospectOperation,
+        database: Option<&str>,
+        schema: Option<&str>,
+    ) -> Result<IntrospectResult> {
         // Validate config is for MySQL
         if config.engine != DatabaseType::MySQL {
             return Err(PlenumError::invalid_input(format!(
@@ -115,51 +118,65 @@ impl DatabaseEngine for MySqlEngine {
             )));
         }
 
+        // Handle database override by modifying config
+        let mut effective_config = config.clone();
+        if let Some(db) = database {
+            effective_config.database = Some(db.to_string());
+        }
+
         // Build connection options
-        let opts = build_mysql_opts(config)?;
+        let opts = build_mysql_opts(&effective_config)?;
 
         // Connect to MySQL
         let mut conn = Conn::new(opts).await.map_err(|e| {
             PlenumError::connection_failed(format!("Failed to connect to MySQL: {e}"))
         })?;
 
-        // Get current database if no schema filter provided
-        let target_schema = if let Some(schema) = schema_filter {
-            schema.to_string()
-        } else {
-            // Use current database
-            let db_row: Row = conn
-                .query_first("SELECT DATABASE()")
-                .await
-                .map_err(|e| {
-                    PlenumError::engine_error(
-                        "mysql",
-                        format!("Failed to query current database: {e}"),
-                    )
-                })?
-                .ok_or_else(|| {
-                    PlenumError::engine_error("mysql", "No database selected".to_string())
-                })?;
+        // Route to appropriate handler based on operation
+        let result = match operation {
+            IntrospectOperation::ListDatabases => {
+                list_databases_mysql(&mut conn).await?
+            }
 
-            // Check if database is NULL (wildcard mode)
-            let db_name: Option<String> = db_row.get(0);
-            db_name.ok_or_else(|| {
-                PlenumError::engine_error(
-                    "mysql",
-                    "No database selected. When using wildcard database (\"*\"), you must specify --schema parameter.".to_string()
-                )
-            })?
+            IntrospectOperation::ListSchemas => {
+                // MySQL doesn't have separate schemas - database = schema
+                return Err(PlenumError::invalid_input(
+                    "MySQL does not have separate schemas. In MySQL, databases and schemas are synonymous. Use --list-databases instead."
+                ));
+            }
+
+            IntrospectOperation::ListTables => {
+                let target_schema = determine_target_schema(&mut conn, schema).await?;
+                list_tables_mysql(&mut conn, &target_schema).await?
+            }
+
+            IntrospectOperation::ListViews => {
+                let target_schema = determine_target_schema(&mut conn, schema).await?;
+                list_views_mysql(&mut conn, &target_schema).await?
+            }
+
+            IntrospectOperation::ListIndexes { table } => {
+                let target_schema = determine_target_schema(&mut conn, schema).await?;
+                list_indexes_mysql(&mut conn, &target_schema, table.as_deref()).await?
+            }
+
+            IntrospectOperation::TableDetails { name, fields } => {
+                let target_schema = determine_target_schema(&mut conn, schema).await?;
+                get_table_details_mysql(&mut conn, &target_schema, name, fields).await?
+            }
+
+            IntrospectOperation::ViewDetails { name } => {
+                let target_schema = determine_target_schema(&mut conn, schema).await?;
+                get_view_details_mysql(&mut conn, &target_schema, name).await?
+            }
         };
-
-        // Introspect all tables in the schema
-        let tables = introspect_all_tables(&mut conn, &target_schema).await?;
 
         // Close connection
         conn.disconnect().await.map_err(|e| {
             PlenumError::engine_error("mysql", format!("Failed to disconnect: {e}"))
         })?;
 
-        Ok(SchemaInfo { tables })
+        Ok(result)
     }
 
     async fn execute(
@@ -271,7 +288,244 @@ fn parse_mysql_version(version_string: &str) -> (String, String) {
     }
 }
 
-/// Introspect all tables in the database
+// ============================================================================
+// Introspection Operation Handlers
+// ============================================================================
+
+/// Determine target schema/database for operations
+///
+/// If `schema_filter` is provided, use it.
+/// Otherwise, use the current database from the connection.
+async fn determine_target_schema(conn: &mut Conn, schema_filter: Option<&str>) -> Result<String> {
+    if let Some(schema) = schema_filter {
+        return Ok(schema.to_string());
+    }
+
+    // Get current database
+    let db_row: Row = conn
+        .query_first("SELECT DATABASE()")
+        .await
+        .map_err(|e| {
+            PlenumError::engine_error("mysql", format!("Failed to query current database: {e}"))
+        })?
+        .ok_or_else(|| PlenumError::engine_error("mysql", "No database selected".to_string()))?;
+
+    // Check if database is NULL (wildcard mode)
+    let db_name: Option<String> = db_row.get(0);
+    db_name.ok_or_else(|| {
+        PlenumError::engine_error(
+            "mysql",
+            "No database selected. When using wildcard database connection (\"*\"), you must specify --schema or --database parameter.".to_string()
+        )
+    })
+}
+
+/// List all databases
+async fn list_databases_mysql(conn: &mut Conn) -> Result<IntrospectResult> {
+    let rows: Vec<Row> = conn
+        .query("SHOW DATABASES")
+        .await
+        .map_err(|e| PlenumError::engine_error("mysql", format!("Failed to list databases: {e}")))?;
+
+    let databases: Vec<String> = rows
+        .into_iter()
+        .filter_map(|row| row.get(0))
+        .collect();
+
+    Ok(IntrospectResult::DatabaseList { databases })
+}
+
+/// List all table names in a schema
+async fn list_tables_mysql(conn: &mut Conn, schema: &str) -> Result<IntrospectResult> {
+    let query = "SELECT table_name
+                 FROM information_schema.tables
+                 WHERE table_schema = ?
+                 AND table_type = 'BASE TABLE'
+                 ORDER BY table_name";
+
+    let rows: Vec<Row> = conn
+        .exec(query, (schema,))
+        .await
+        .map_err(|e| PlenumError::engine_error("mysql", format!("Failed to list tables: {e}")))?;
+
+    let tables: Vec<String> = rows
+        .into_iter()
+        .filter_map(|row| row.get(0))
+        .collect();
+
+    Ok(IntrospectResult::TableList { tables })
+}
+
+/// List all view names in a schema
+async fn list_views_mysql(conn: &mut Conn, schema: &str) -> Result<IntrospectResult> {
+    let query = "SELECT table_name
+                 FROM information_schema.views
+                 WHERE table_schema = ?
+                 ORDER BY table_name";
+
+    let rows: Vec<Row> = conn
+        .exec(query, (schema,))
+        .await
+        .map_err(|e| PlenumError::engine_error("mysql", format!("Failed to list views: {e}")))?;
+
+    let views: Vec<String> = rows
+        .into_iter()
+        .filter_map(|row| row.get(0))
+        .collect();
+
+    Ok(IntrospectResult::ViewList { views })
+}
+
+/// List all indexes (optionally filtered by table)
+async fn list_indexes_mysql(
+    conn: &mut Conn,
+    schema: &str,
+    table_filter: Option<&str>,
+) -> Result<IntrospectResult> {
+    let query = if table_filter.is_some() {
+        "SELECT DISTINCT
+            index_name,
+            table_name,
+            non_unique,
+            GROUP_CONCAT(column_name ORDER BY seq_in_index) as columns
+         FROM information_schema.statistics
+         WHERE table_schema = ? AND table_name = ?
+         AND index_name != 'PRIMARY'
+         GROUP BY index_name, table_name, non_unique
+         ORDER BY table_name, index_name"
+    } else {
+        "SELECT DISTINCT
+            index_name,
+            table_name,
+            non_unique,
+            GROUP_CONCAT(column_name ORDER BY seq_in_index) as columns
+         FROM information_schema.statistics
+         WHERE table_schema = ?
+         AND index_name != 'PRIMARY'
+         GROUP BY index_name, table_name, non_unique
+         ORDER BY table_name, index_name"
+    };
+
+    let rows: Vec<Row> = if let Some(table) = table_filter {
+        conn.exec(query, (schema, table)).await
+    } else {
+        conn.exec(query, (schema,)).await
+    }
+    .map_err(|e| PlenumError::engine_error("mysql", format!("Failed to list indexes: {e}")))?;
+
+    let mut indexes = Vec::new();
+    for row in rows {
+        let name: String = row.get(0).ok_or_else(|| {
+            PlenumError::engine_error("mysql", "Failed to extract index name".to_string())
+        })?;
+        let table: String = row.get(1).ok_or_else(|| {
+            PlenumError::engine_error("mysql", "Failed to extract table name".to_string())
+        })?;
+        let non_unique: i64 = row.get(2).ok_or_else(|| {
+            PlenumError::engine_error("mysql", "Failed to extract non_unique flag".to_string())
+        })?;
+        let columns_str: String = row.get(3).ok_or_else(|| {
+            PlenumError::engine_error("mysql", "Failed to extract columns".to_string())
+        })?;
+
+        let columns: Vec<String> = columns_str.split(',').map(ToString::to_string).collect();
+
+        indexes.push(IndexSummary {
+            name,
+            table,
+            unique: non_unique == 0,
+            columns,
+        });
+    }
+
+    Ok(IntrospectResult::IndexList { indexes })
+}
+
+/// Get full details for a specific table (with field filtering)
+async fn get_table_details_mysql(
+    conn: &mut Conn,
+    schema: &str,
+    table_name: &str,
+    fields: &TableFields,
+) -> Result<IntrospectResult> {
+    // Get requested fields
+    let columns = if fields.columns {
+        introspect_columns(conn, schema, table_name).await?
+    } else {
+        Vec::new()
+    };
+
+    let primary_key = if fields.primary_key {
+        introspect_primary_key(conn, schema, table_name).await?
+    } else {
+        None
+    };
+
+    let foreign_keys = if fields.foreign_keys {
+        introspect_foreign_keys(conn, schema, table_name).await?
+    } else {
+        Vec::new()
+    };
+
+    let indexes = if fields.indexes {
+        introspect_indexes(conn, schema, table_name).await?
+    } else {
+        Vec::new()
+    };
+
+    let table = TableInfo {
+        name: table_name.to_string(),
+        schema: Some(schema.to_string()),
+        columns,
+        primary_key,
+        foreign_keys,
+        indexes,
+    };
+
+    Ok(IntrospectResult::TableDetails { table })
+}
+
+/// Get details for a specific view
+async fn get_view_details_mysql(
+    conn: &mut Conn,
+    schema: &str,
+    view_name: &str,
+) -> Result<IntrospectResult> {
+    // Get view definition
+    let def_query = "SELECT view_definition
+                     FROM information_schema.views
+                     WHERE table_schema = ? AND table_name = ?";
+
+    let def_row: Option<Row> = conn
+        .exec_first(def_query, (schema, view_name))
+        .await
+        .map_err(|e| {
+            PlenumError::engine_error("mysql", format!("Failed to query view definition: {e}"))
+        })?;
+
+    let definition: Option<String> = def_row.and_then(|row| row.get(0));
+
+    if definition.is_none() {
+        return Err(PlenumError::engine_error(
+            "mysql",
+            format!("View '{view_name}' not found in schema '{schema}'"),
+        ));
+    }
+
+    // Get view columns (same query as for tables)
+    let columns = introspect_columns(conn, schema, view_name).await?;
+
+    let view = ViewInfo {
+        name: view_name.to_string(),
+        schema: Some(schema.to_string()),
+        definition,
+        columns,
+    };
+
+    Ok(IntrospectResult::ViewDetails { view })
+}
+
+/// Introspect all tables in the database (DEPRECATED - kept for backward compatibility)
 async fn introspect_all_tables(conn: &mut Conn, schema: &str) -> Result<Vec<TableInfo>> {
     // Query information_schema.tables for table list
     let query = "SELECT table_name
@@ -786,7 +1040,13 @@ mod tests {
             "*".to_string(),
         );
 
-        let result = MySqlEngine::introspect(&config, None).await;
+        let result = MySqlEngine::introspect(
+            &config,
+            &IntrospectOperation::ListTables,
+            None,
+            None,
+        )
+        .await;
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert!(error.message().contains("wildcard database"));

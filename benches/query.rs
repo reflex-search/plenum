@@ -112,7 +112,7 @@ fn bench_sqlite_insert(c: &mut Criterion) {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities::with_write();
+    let caps = Capabilities::default(); // Plenum is read-only; INSERT will be rejected
 
     let mut counter = 0;
 

@@ -41,7 +41,13 @@ fn bench_sqlite_introspection_simple(c: &mut Criterion) {
 
     c.bench_function("sqlite_introspect_single_table", |b| {
         b.iter(|| {
-            let result = runtime.block_on(SqliteEngine::introspect(black_box(&config), None));
+            use plenum::engine::IntrospectOperation;
+            let result = runtime.block_on(SqliteEngine::introspect(
+                black_box(&config),
+                &IntrospectOperation::ListTables,
+                None,
+                None,
+            ));
             assert!(result.is_ok());
             result
         });
@@ -111,7 +117,13 @@ fn bench_sqlite_introspection_complex(c: &mut Criterion) {
 
     c.bench_function("sqlite_introspect_multiple_tables", |b| {
         b.iter(|| {
-            let result = runtime.block_on(SqliteEngine::introspect(black_box(&config), None));
+            use plenum::engine::IntrospectOperation;
+            let result = runtime.block_on(SqliteEngine::introspect(
+                black_box(&config),
+                &IntrospectOperation::ListTables,
+                None,
+                None,
+            ));
             assert!(result.is_ok());
             result
         });

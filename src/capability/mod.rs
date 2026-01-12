@@ -19,7 +19,7 @@ use crate::error::{PlenumError, Result};
 ///
 /// # Arguments
 /// * `sql` - The SQL query to validate
-/// * `_caps` - Capabilities (currently only used for max_rows/timeout, not for permission checks)
+/// * `_caps` - Capabilities (currently only used for `max_rows`/`timeout`, not for permission checks)
 /// * `engine` - Database engine type
 ///
 /// # Returns
@@ -35,8 +35,7 @@ pub fn validate_query(sql: &str, _caps: &Capabilities, engine: DatabaseType) -> 
     } else {
         // Reject with helpful error message
         Err(PlenumError::capability_violation(format!(
-            "Plenum is read-only and cannot execute this query. Please run this query manually:\n\n{}",
-            sql
+            "Plenum is read-only and cannot execute this query. Please run this query manually:\n\n{sql}"
         )))
     }
 }
@@ -272,7 +271,7 @@ mod tests {
             DatabaseType::Postgres,
         );
         assert!(result.is_err());
-        let error_message = result.unwrap_err().message().to_string();
+        let error_message = result.unwrap_err().message();
         assert!(error_message.contains("Plenum is read-only"));
         assert!(error_message.contains("Please run this query manually"));
     }
