@@ -253,7 +253,7 @@ fn handle_list_tools() -> Result<Value> {
         "tools": [
             {
                 "name": "connect",
-                "description": "Validate and save database connection configuration. Use this tool to: (1) Test that connection parameters are valid, (2) Save connection details for later use by connection name, (3) Validate existing saved connections. The connection is opened, validated, and immediately closed - no persistent connection is maintained. Supports PostgreSQL, MySQL, and SQLite. Save locations: 'local' (.plenum/config.json, team-shareable), 'global' (~/.config/plenum/connections.json, user-private). Common pattern: save connection once with a connection name, then reference it by connection name in introspect/query tools.",
+                "description": "ONE-TIME SETUP: Validate and save database connection configuration. IMPORTANT: (1) NEVER guess or invent credentials (e.g., 'root'/'root'). If the user hasn't provided credentials, ASK the user for them. (2) This tool is for INITIAL SETUP only - do NOT call this repeatedly. (3) After saving a connection once, use its connection name in introspect/query tools. Use cases: initial project setup, adding new connections, validating existing credentials. The connection is opened, validated, and immediately closed - no persistent connection is maintained. Supports PostgreSQL, MySQL, and SQLite. Save locations: 'local' (.plenum/config.json, team-shareable), 'global' (~/.config/plenum/connections.json, user-private). WORKFLOW: (1) Save connection once with this tool, (2) Reference by connection name in all subsequent introspect/query calls, (3) Never pass explicit credentials repeatedly.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -276,11 +276,11 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "user": {
                             "type": "string",
-                            "description": "Username (for postgres/mysql)"
+                            "description": "Username (for postgres/mysql). NEVER guess or invent - if not provided by user, ASK for it."
                         },
                         "password": {
                             "type": "string",
-                            "description": "Password (for postgres/mysql)"
+                            "description": "Password (for postgres/mysql). NEVER guess or invent - if not provided by user, ASK for it."
                         },
                         "database": {
                             "type": "string",
@@ -301,42 +301,42 @@ fn handle_list_tools() -> Result<Value> {
             },
             {
                 "name": "introspect",
-                "description": "Introspect database schema with granular operations. NEVER dumps entire schema - requires explicit operation. Connection resolution: (1) Auto-resolve (no params) - uses project's default connection, (2) Named connection ('connection'), (3) Explicit params ('engine' + credentials). Operations (EXACTLY ONE required, mutually exclusive): list_databases (list all DBs), list_schemas (Postgres only), list_tables (table names in schema/DB), list_views (view names), list_indexes (all or filtered by table), table (full details for specific table with optional field filtering), view (view definition + columns). Optional modifiers: 'target_database' (switch to different DB before introspecting - Postgres/MySQL only), 'schema' (filter to specific schema - Postgres/MySQL only). Returns typed JSON specific to operation (DatabaseList, SchemaList, TableList, ViewList, IndexList, TableDetails, or ViewDetails). Stateless - connection opened, operation executed, connection closed.",
+                "description": "Introspect database schema with granular operations. NEVER dumps entire schema - requires explicit operation. IMPORTANT CONNECTION WORKFLOW: (1) RECOMMENDED: Auto-resolve (omit all connection params) - uses project's default saved connection, (2) COMMON: Named connection (use 'connection' param only) - references saved connection by name, (3) DISCOURAGED: Explicit credentials (engine + host/user/password) - ONLY for one-off scenarios, NOT for regular use. DO NOT pass credentials repeatedly - use saved connections instead. Before using explicit credentials, check if a saved connection exists. Operations (EXACTLY ONE required, mutually exclusive): list_databases (list all DBs), list_schemas (Postgres only), list_tables (table names in schema/DB), list_views (view names), list_indexes (all or filtered by table), table (full details for specific table with optional field filtering), view (view definition + columns). Optional modifiers: 'target_database' (switch to different DB before introspecting - Postgres/MySQL only), 'schema' (filter to specific schema - Postgres/MySQL only). Returns typed JSON specific to operation (DatabaseList, SchemaList, TableList, ViewList, IndexList, TableDetails, or ViewDetails). Stateless - connection opened, operation executed, connection closed.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "connection": {
                             "type": "string",
-                            "description": "Optional: Name of saved connection to use. Loads from .plenum/config.json (local) or ~/.config/plenum/connections.json (global). If omitted along with 'engine', auto-resolves project's default connection."
+                            "description": "RECOMMENDED: Name of saved connection to use. Loads from .plenum/config.json (local) or ~/.config/plenum/connections.json (global). If omitted along with 'engine', auto-resolves project's default connection (BEST PRACTICE)."
                         },
                         "engine": {
                             "type": "string",
                             "enum": ["postgres", "mysql", "sqlite"],
-                            "description": "Optional: Database engine type for explicit connections. If omitted along with 'connection', auto-resolves project's default connection."
+                            "description": "DISCOURAGED: Database engine type for explicit one-off connections. Only use if no saved connection exists. If omitted along with 'connection', auto-resolves project's default connection (RECOMMENDED)."
                         },
                         "host": {
                             "type": "string",
-                            "description": "Optional: Database host (postgres/mysql). Required only for explicit connections or as named connection override."
+                            "description": "DISCOURAGED: Database host (postgres/mysql). Only for one-off explicit connections or as named connection override. Prefer using saved connections instead."
                         },
                         "port": {
                             "type": "number",
-                            "description": "Optional: Database port (postgres/mysql). Required only for explicit connections or as override. Defaults: postgres=5432, mysql=3306."
+                            "description": "DISCOURAGED: Database port (postgres/mysql). Only for one-off explicit connections or as override. Defaults: postgres=5432, mysql=3306. Prefer using saved connections."
                         },
                         "user": {
                             "type": "string",
-                            "description": "Optional: Database username (postgres/mysql). Required only for explicit connections or as override."
+                            "description": "DISCOURAGED: Database username (postgres/mysql). Only for one-off explicit connections or as override. DO NOT pass repeatedly - use saved connections instead."
                         },
                         "password": {
                             "type": "string",
-                            "description": "Optional: Database password (postgres/mysql). Required only for explicit connections or as override."
+                            "description": "DISCOURAGED: Database password (postgres/mysql). Only for one-off explicit connections or as override. DO NOT pass repeatedly - use saved connections instead."
                         },
                         "database": {
                             "type": "string",
-                            "description": "Optional: Database name (postgres/mysql). Required only for explicit connections or as override. Use \"*\" for wildcard mode to enable list_databases operation."
+                            "description": "DISCOURAGED: Database name (postgres/mysql). Only for one-off explicit connections or as override. Use \"*\" for wildcard mode to enable list_databases operation. Prefer using saved connections."
                         },
                         "file": {
                             "type": "string",
-                            "description": "Optional: SQLite database file path. Required only for sqlite explicit connections or as override."
+                            "description": "DISCOURAGED: SQLite database file path. Only for one-off sqlite explicit connections or as override. Prefer using saved connections."
                         },
                         "list_databases": {
                             "type": "boolean",
@@ -395,7 +395,7 @@ fn handle_list_tools() -> Result<Value> {
             },
             {
                 "name": "query",
-                "description": "Execute READ-ONLY SQL queries. **PLENUM IS STRICTLY READ-ONLY** - it will REJECT any write or DDL operations (INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, etc.). When you need to modify data or schema: (1) Use Plenum to introspect the schema and read current data, (2) Construct the appropriate SQL query, (3) Present the query to the user in your response for them to execute manually. NEVER attempt to execute write operations through Plenum - they will always fail. IMPORTANT SECURITY: You (the AI agent) are responsible for sanitizing all user inputs before constructing SQL - Plenum does NOT validate SQL safety. Connection resolution works like introspect: use 'connection' for saved connections, explicit parameters, or mix both with overrides. CRITICAL MCP TOKEN LIMITS: MCP responses are limited to 25,000 tokens. Large result sets will cause complete tool failure. ALWAYS use max_rows parameter unless you are certain the table is tiny (< 10 rows). Recommended values: max_rows=10 for initial exploration, max_rows=50-100 for small known tables, max_rows=500+ only after verifying table size. Queries without max_rows on unknown tables will likely fail. Use timeout_ms to prevent long-running operations. Returns JSON with query results (rows/columns). The connection is opened, query is executed, and connection is immediately closed (stateless). Possible error codes: CAPABILITY_VIOLATION (attempted write/DDL operation), QUERY_FAILED (SQL error), CONNECTION_FAILED (connection error).",
+                "description": "Execute READ-ONLY SQL queries. **PLENUM IS STRICTLY READ-ONLY** - it will REJECT any write or DDL operations (INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, etc.). When you need to modify data or schema: (1) Use Plenum to introspect the schema and read current data, (2) Construct the appropriate SQL query, (3) Present the query to the user in your response for them to execute manually. NEVER attempt to execute write operations through Plenum - they will always fail. IMPORTANT SECURITY: You (the AI agent) are responsible for sanitizing all user inputs before constructing SQL - Plenum does NOT validate SQL safety. IMPORTANT CONNECTION WORKFLOW: (1) RECOMMENDED: Auto-resolve (omit all connection params) - uses project's default saved connection, (2) COMMON: Named connection (use 'connection' param only) - references saved connection by name, (3) DISCOURAGED: Explicit credentials (engine + host/user/password) - ONLY for one-off scenarios, NOT for regular use. DO NOT pass credentials repeatedly - use saved connections instead. Typical pattern: call 'connect' tool once to save credentials, then use 'query' with auto-resolution or connection name for all subsequent queries. CRITICAL MCP TOKEN LIMITS: MCP responses are limited to 25,000 tokens. Large result sets will cause complete tool failure. ALWAYS use max_rows parameter unless you are certain the table is tiny (< 10 rows). Recommended values: max_rows=10 for initial exploration, max_rows=50-100 for small known tables, max_rows=500+ only after verifying table size. Queries without max_rows on unknown tables will likely fail. Use timeout_ms to prevent long-running operations. Returns JSON with query results (rows/columns). The connection is opened, query is executed, and connection is immediately closed (stateless). Possible error codes: CAPABILITY_VIOLATION (attempted write/DDL operation), QUERY_FAILED (SQL error), CONNECTION_FAILED (connection error).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -405,36 +405,36 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "connection": {
                             "type": "string",
-                            "description": "Name of saved connection to use. Connection must exist in local (.plenum/config.json) or global (~/.config/plenum/connections.json) config. Cannot be used alone with 'engine' - choose one or mix connection with overrides."
+                            "description": "RECOMMENDED: Name of saved connection to use. Connection must exist in local (.plenum/config.json) or global (~/.config/plenum/connections.json) config. If omitted along with 'engine', auto-resolves to project's default connection (BEST PRACTICE)."
                         },
                         "engine": {
                             "type": "string",
                             "enum": ["postgres", "mysql", "sqlite"],
-                            "description": "Database engine type. Required if not using 'connection'. Valid values: 'postgres', 'mysql', 'sqlite'."
+                            "description": "DISCOURAGED: Database engine type for explicit one-off connections. Only use if no saved connection exists. Valid values: 'postgres', 'mysql', 'sqlite'. If omitted along with 'connection', auto-resolves project's default connection (RECOMMENDED)."
                         },
                         "host": {
                             "type": "string",
-                            "description": "Database host (for postgres/mysql). Required for explicit connections or use as override. Example: 'localhost', 'db.example.com'."
+                            "description": "DISCOURAGED: Database host (for postgres/mysql). Only for one-off explicit connections or as override. DO NOT pass repeatedly - use saved connections instead. Example: 'localhost', 'db.example.com'."
                         },
                         "port": {
                             "type": "number",
-                            "description": "Database port (for postgres/mysql). Required for explicit connections or use as override. Defaults: postgres=5432, mysql=3306."
+                            "description": "DISCOURAGED: Database port (for postgres/mysql). Only for one-off explicit connections or as override. Defaults: postgres=5432, mysql=3306. Prefer using saved connections."
                         },
                         "user": {
                             "type": "string",
-                            "description": "Database username (for postgres/mysql). Required for explicit connections or use as override."
+                            "description": "DISCOURAGED: Database username (for postgres/mysql). Only for one-off explicit connections or as override. DO NOT pass repeatedly - use saved connections instead."
                         },
                         "password": {
                             "type": "string",
-                            "description": "Database password (for postgres/mysql). Required for explicit connections or use as override. Passed directly - agent responsible for security."
+                            "description": "DISCOURAGED: Database password (for postgres/mysql). Only for one-off explicit connections or as override. DO NOT pass repeatedly - use saved connections instead. Passed directly - agent responsible for security."
                         },
                         "database": {
                             "type": "string",
-                            "description": "Database name (for postgres/mysql). Required for explicit connections or use as override. The specific database to query. Use \"*\" for wildcard mode to query system catalogs (SHOW DATABASES in MySQL, pg_catalog.pg_database in PostgreSQL) or use fully qualified table names."
+                            "description": "DISCOURAGED: Database name (for postgres/mysql). Only for one-off explicit connections or as override. The specific database to query. Use \"*\" for wildcard mode to query system catalogs (SHOW DATABASES in MySQL, pg_catalog.pg_database in PostgreSQL) or use fully qualified table names. Prefer using saved connections."
                         },
                         "file": {
                             "type": "string",
-                            "description": "File path to SQLite database file. Required for sqlite engine. Can be relative or absolute path. Example: './app.db', '/var/lib/data.db'."
+                            "description": "DISCOURAGED: File path to SQLite database file. Only for one-off sqlite explicit connections. Can be relative or absolute path. Example: './app.db', '/var/lib/data.db'. Prefer using saved connections."
                         },
                         "max_rows": {
                             "type": "number",
