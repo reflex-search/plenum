@@ -18,9 +18,11 @@
 //!
 //! # MCP Tools
 //!
-//! - `connect` - Validate and save database connections
 //! - `introspect` - Introspect database schema
 //! - `query` - Execute constrained SQL queries
+//!
+//! Connection management is handled via the `plenum connect` CLI command or by
+//! directly editing configuration files (`.plenum/config.json` or `~/.config/plenum/connections.json`).
 //!
 //! # Usage
 //!
@@ -44,7 +46,7 @@ use serde_json::Value;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
-use crate::{Capabilities, ConfigLocation, ConnectionConfig, DatabaseEngine, DatabaseType};
+use crate::{Capabilities, ConnectionConfig, DatabaseEngine, DatabaseType};
 
 // Import database engines
 #[cfg(feature = "mysql")]
@@ -252,54 +254,6 @@ fn handle_list_tools() -> Result<Value> {
     Ok(serde_json::json!({
         "tools": [
             {
-                "name": "connect",
-                "description": "ONE-TIME SETUP: Validate and save database connection configuration. IMPORTANT: (1) NEVER guess or invent credentials (e.g., 'root'/'root'). If the user hasn't provided credentials, ASK the user for them. (2) This tool is for INITIAL SETUP only - do NOT call this repeatedly. (3) After saving a connection once, use its connection name in introspect/query tools. Use cases: initial project setup, adding new connections, validating existing credentials. The connection is opened, validated, and immediately closed - no persistent connection is maintained. Supports PostgreSQL, MySQL, and SQLite. Save locations: 'local' (.plenum/config.json, team-shareable), 'global' (~/.config/plenum/connections.json, user-private). WORKFLOW: (1) Save connection once with this tool, (2) Reference by connection name in all subsequent introspect/query calls, (3) Never pass explicit credentials repeatedly.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "engine": {
-                            "type": "string",
-                            "enum": ["postgres", "mysql", "sqlite"],
-                            "description": "Database engine type"
-                        },
-                        "connection": {
-                            "type": "string",
-                            "description": "Connection name (optional)"
-                        },
-                        "host": {
-                            "type": "string",
-                            "description": "Host (for postgres/mysql)"
-                        },
-                        "port": {
-                            "type": "number",
-                            "description": "Port (for postgres/mysql)"
-                        },
-                        "user": {
-                            "type": "string",
-                            "description": "Username (for postgres/mysql). NEVER guess or invent - if not provided by user, ASK for it."
-                        },
-                        "password": {
-                            "type": "string",
-                            "description": "Password (for postgres/mysql). NEVER guess or invent - if not provided by user, ASK for it."
-                        },
-                        "database": {
-                            "type": "string",
-                            "description": "Database name (for postgres/mysql). Use \"*\" for wildcard mode to enable database discovery via SHOW DATABASES (MySQL) or pg_catalog queries (PostgreSQL)."
-                        },
-                        "file": {
-                            "type": "string",
-                            "description": "File path (for sqlite)"
-                        },
-                        "save": {
-                            "type": "string",
-                            "enum": ["local", "global"],
-                            "description": "Optional: Where to save the connection. 'local' saves to .plenum/config.json (team-shareable, project-specific), 'global' saves to ~/.config/plenum/connections.json (user-private, cross-project). If omitted, connection is validated but not saved."
-                        }
-                    },
-                    "required": ["engine"]
-                }
-            },
-            {
                 "name": "introspect",
                 "description": "Introspect database schema with granular operations. NEVER dumps entire schema - requires explicit operation. IMPORTANT CONNECTION WORKFLOW: (1) RECOMMENDED: Auto-resolve (omit all connection params) - uses project's default saved connection, (2) COMMON: Named connection (use 'connection' param only) - references saved connection by name, (3) DISCOURAGED: Explicit credentials (engine + host/user/password) - ONLY for one-off scenarios, NOT for regular use. DO NOT pass credentials repeatedly - use saved connections instead. Before using explicit credentials, check if a saved connection exists. Operations (EXACTLY ONE required, mutually exclusive): list_databases (list all DBs), list_schemas (Postgres only), list_tables (table names in schema/DB), list_views (view names), list_indexes (all or filtered by table), table (full details for specific table with optional field filtering), view (view definition + columns). Optional modifiers: 'target_database' (switch to different DB before introspecting - Postgres/MySQL only), 'schema' (filter to specific schema - Postgres/MySQL only). Returns typed JSON specific to operation (DatabaseList, SchemaList, TableList, ViewList, IndexList, TableDetails, or ViewDetails). Stateless - connection opened, operation executed, connection closed.",
                 "inputSchema": {
@@ -443,6 +397,10 @@ fn handle_list_tools() -> Result<Value> {
                         "timeout_ms": {
                             "type": "number",
                             "description": "Optional: Query execution timeout in milliseconds. Recommended for potentially expensive queries to prevent long-running operations. Example: 5000 (5 seconds). No timeout if omitted."
+                        },
+                        "target_database": {
+                            "type": "string",
+                            "description": "Optional modifier: Switch to different database before executing query. Reconnects with different DB. Postgres/MySQL only (SQLite uses different files). Example: query 'production' DB while default connection points to 'staging'. This parameter overrides the database specified in the connection config."
                         }
                     },
                     "required": ["sql"]
@@ -461,7 +419,6 @@ async fn handle_call_tool(params: Option<Value>) -> Result<Value> {
     let arguments = &params["arguments"];
 
     match name {
-        "connect" => tool_connect(arguments).await,
         "introspect" => tool_introspect(arguments).await,
         "query" => tool_query(arguments).await,
         _ => Err(anyhow!("Unknown tool: {name}")),
@@ -471,58 +428,6 @@ async fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 // ============================================================================
 // Tool Implementations
 // ============================================================================
-
-/// MCP Tool: connect
-///
-/// Validates and optionally saves a database connection configuration.
-async fn tool_connect(args: &Value) -> Result<Value> {
-    // Extract engine
-    let engine_str =
-        args["engine"].as_str().ok_or_else(|| anyhow!("Missing required field: engine"))?;
-
-    // Build ConnectionConfig
-    let config = build_connection_config_from_args(args, engine_str)?;
-
-    // Validate connection (opens and immediately closes)
-    let conn_info = validate_connection(&config).await?;
-
-    // Save if requested
-    if let Some(save_str) = args.get("save").and_then(|v| v.as_str()) {
-        let location = match save_str {
-            "local" => ConfigLocation::Local,
-            "global" => ConfigLocation::Global,
-            _ => return Err(anyhow!("Invalid save location. Must be 'local' or 'global'")),
-        };
-
-        let conn_name = args["connection"]
-            .as_str()
-            .map_or_else(|| "default".to_string(), std::string::ToString::to_string);
-
-        // Use None for project_path (will default to current directory)
-        crate::save_connection(None, Some(conn_name.clone()), config.clone(), location)
-            .map_err(|e| anyhow!("Failed to save connection: {e}"))?;
-
-        let response = serde_json::json!({
-            "ok": true,
-            "connection_name": conn_name,
-            "engine": config.engine.as_str(),
-            "saved_to": save_str,
-            "connection_info": conn_info,
-            "message": format!("Connection '{}' saved successfully", conn_name)
-        });
-
-        CallToolResult::success(response)
-    } else {
-        let response = serde_json::json!({
-            "ok": true,
-            "engine": config.engine.as_str(),
-            "connection_info": conn_info,
-            "message": "Connection validated successfully"
-        });
-
-        CallToolResult::success(response)
-    }
-}
 
 /// MCP Tool: introspect
 ///
@@ -661,7 +566,12 @@ async fn tool_query(args: &Value) -> Result<Value> {
     let sql = args["sql"].as_str().ok_or_else(|| anyhow!("Missing required field: sql"))?;
 
     // Resolve connection config
-    let (config, _is_readonly) = resolve_connection_from_args(args)?;
+    let (mut config, _is_readonly) = resolve_connection_from_args(args)?;
+
+    // Apply target_database override if provided
+    if let Some(target_db) = args.get("target_database").and_then(|v| v.as_str()) {
+        config.database = Some(target_db.to_string());
+    }
 
     // Extract safety parameters from args
     let max_rows = args.get("max_rows").and_then(serde_json::Value::as_u64).map(|n| n as usize);
