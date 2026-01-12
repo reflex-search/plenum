@@ -280,6 +280,9 @@ pub struct QueryResult {
     /// Number of rows affected (for INSERT/UPDATE/DELETE)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows_affected: Option<u64>,
+
+    /// Query execution time in milliseconds
+    pub execution_ms: u64,
 }
 
 /// Introspection operation types

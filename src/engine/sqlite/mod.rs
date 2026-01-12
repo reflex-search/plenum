@@ -184,8 +184,9 @@ impl DatabaseEngine for SqliteEngine {
 
         // Execute query
         let start = Instant::now();
-        let result = execute_query(&conn, query, caps)?;
-        let _elapsed = start.elapsed();
+        let mut result = execute_query(&conn, query, caps)?;
+        let elapsed = start.elapsed();
+        result.execution_ms = elapsed.as_millis() as u64;
 
         Ok(result)
     }
@@ -654,7 +655,7 @@ fn execute_query(conn: &Connection, query: &str, caps: &Capabilities) -> Result<
         }
     }
 
-    Ok(QueryResult { columns: column_names, rows: rows_data, rows_affected })
+    Ok(QueryResult { columns: column_names, rows: rows_data, rows_affected, execution_ms: 0 })
 }
 
 /// Convert a `SQLite` row to a JSON-safe `Vec`

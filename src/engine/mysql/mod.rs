@@ -205,7 +205,7 @@ impl DatabaseEngine for MySqlEngine {
 
         // Execute with optional timeout
         let start = Instant::now();
-        let query_result = if let Some(timeout_ms) = caps.timeout_ms {
+        let mut query_result = if let Some(timeout_ms) = caps.timeout_ms {
             let timeout_duration = Duration::from_millis(timeout_ms);
             tokio::time::timeout(timeout_duration, execute_query(&mut conn, query, caps))
                 .await
@@ -216,7 +216,8 @@ impl DatabaseEngine for MySqlEngine {
             execute_query(&mut conn, query, caps).await?
         };
 
-        let _elapsed = start.elapsed();
+        let elapsed = start.elapsed();
+        query_result.execution_ms = elapsed.as_millis() as u64;
 
         // Close connection
         conn.disconnect().await.map_err(|e| {
@@ -824,7 +825,7 @@ async fn execute_query(conn: &mut Conn, query: &str, caps: &Capabilities) -> Res
             }
         }
 
-        Ok(QueryResult { columns: column_names, rows: rows_data, rows_affected: None })
+        Ok(QueryResult { columns: column_names, rows: rows_data, rows_affected: None, execution_ms: 0 })
     } else {
         // Query does not return rows (INSERT, UPDATE, DELETE, DDL)
         let result = conn
@@ -841,6 +842,7 @@ async fn execute_query(conn: &mut Conn, query: &str, caps: &Capabilities) -> Res
             columns: Vec::new(),
             rows: Vec::new(),
             rows_affected: Some(rows_affected),
+            execution_ms: 0,
         })
     }
 }

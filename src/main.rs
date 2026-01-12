@@ -918,9 +918,6 @@ async fn handle_query(
     max_rows: Option<usize>,
     timeout_ms: Option<u64>,
 ) -> std::result::Result<(), i32> {
-    // Start timing
-    let start = Instant::now();
-
     // Resolve SQL input
     let sql_text = match (sql, sql_file) {
         (Some(s), None) => s,
@@ -1027,13 +1024,13 @@ async fn handle_query(
 
     match execute_result {
         Ok(query_result) => {
-            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let execution_ms = query_result.execution_ms;
             let row_count = query_result.rows.len();
             let envelope = SuccessEnvelope::new(
                 config.engine.as_str(),
                 "query",
                 query_result,
-                Metadata::with_rows(elapsed_ms, row_count),
+                Metadata::with_rows(execution_ms, row_count),
             );
             output_success(&envelope);
             Ok(())
