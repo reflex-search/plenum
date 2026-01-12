@@ -118,6 +118,7 @@ fn test_query_result_serializes_to_pure_json() {
         columns: vec!["id".to_string(), "name".to_string()],
         rows: vec![row],
         rows_affected: None,
+        execution_ms: 0,
     };
 
     let json_str = serde_json::to_string(&result).expect("Should serialize");
