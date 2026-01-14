@@ -285,6 +285,16 @@ pub struct QueryResult {
     pub execution_ms: u64,
 }
 
+/// Time-only query result (for benchmarking without token consumption)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeOnlyResult {
+    /// Query execution time in milliseconds
+    pub execution_ms: u64,
+
+    /// Number of rows that matched the query
+    pub rows_matched: usize,
+}
+
 /// Introspection operation types
 ///
 /// Defines the type of introspection operation to perform.

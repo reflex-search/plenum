@@ -232,6 +232,10 @@ enum Commands {
         /// Query timeout in milliseconds
         #[arg(long)]
         timeout_ms: Option<u64>,
+
+        /// Return only timing information (excludes result data for benchmarking)
+        #[arg(long)]
+        time_only: bool,
     },
 
     /// Start MCP server (hidden from help, for AI agent integration)
@@ -348,6 +352,7 @@ async fn main() {
             sql_file,
             max_rows,
             timeout_ms,
+            time_only,
         }) => {
             handle_query(
                 name,
@@ -363,6 +368,7 @@ async fn main() {
                 sql_file,
                 max_rows,
                 timeout_ms,
+                time_only,
             )
             .await
         }
@@ -917,6 +923,7 @@ async fn handle_query(
     sql_file: Option<PathBuf>,
     max_rows: Option<usize>,
     timeout_ms: Option<u64>,
+    time_only: bool,
 ) -> std::result::Result<(), i32> {
     // Resolve SQL input
     let sql_text = match (sql, sql_file) {
@@ -1026,13 +1033,30 @@ async fn handle_query(
         Ok(query_result) => {
             let execution_ms = query_result.execution_ms;
             let row_count = query_result.rows.len();
-            let envelope = SuccessEnvelope::new(
-                config.engine.as_str(),
-                "query",
-                query_result,
-                Metadata::with_rows(execution_ms, row_count),
-            );
-            output_success(&envelope);
+
+            if time_only {
+                // Return only timing information (for benchmarking)
+                let time_only_result = plenum::TimeOnlyResult {
+                    execution_ms,
+                    rows_matched: row_count,
+                };
+                let envelope = SuccessEnvelope::new(
+                    config.engine.as_str(),
+                    "query",
+                    time_only_result,
+                    Metadata::with_rows(execution_ms, row_count),
+                );
+                output_success(&envelope);
+            } else {
+                // Return full query results
+                let envelope = SuccessEnvelope::new(
+                    config.engine.as_str(),
+                    "query",
+                    query_result,
+                    Metadata::with_rows(execution_ms, row_count),
+                );
+                output_success(&envelope);
+            }
             Ok(())
         }
         Err(e) => {

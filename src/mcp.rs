@@ -401,6 +401,10 @@ fn handle_list_tools() -> Result<Value> {
                         "target_database": {
                             "type": "string",
                             "description": "Optional modifier: Switch to different database before executing query. Reconnects with different DB. Postgres/MySQL only (SQLite uses different files). Example: query 'production' DB while default connection points to 'staging'. This parameter overrides the database specified in the connection config."
+                        },
+                        "time_only": {
+                            "type": "boolean",
+                            "description": "Optional: Return only execution timing information (excludes result data). Useful for benchmarking queries without consuming MCP response tokens. The query still executes fully to measure realistic performance. Returns execution_ms and rows_matched count instead of full result set. Default: false."
                         }
                     },
                     "required": ["sql"]
@@ -576,6 +580,7 @@ async fn tool_query(args: &Value) -> Result<Value> {
     // Extract safety parameters from args
     let max_rows = args.get("max_rows").and_then(serde_json::Value::as_u64).map(|n| n as usize);
     let timeout_ms = args.get("timeout_ms").and_then(serde_json::Value::as_u64);
+    let time_only = args.get("time_only").and_then(serde_json::Value::as_bool).unwrap_or(false);
 
     // Build capabilities (read-only only)
     let capabilities = Capabilities { max_rows, timeout_ms };
@@ -586,7 +591,16 @@ async fn tool_query(args: &Value) -> Result<Value> {
     // Execute query (opens and closes connection)
     let query_result = execute_query(&config, sql, &capabilities).await?;
 
-    CallToolResult::success(query_result)
+    // Return time-only result if requested (for benchmarking)
+    if time_only {
+        let time_only_result = crate::TimeOnlyResult {
+            execution_ms: query_result.execution_ms,
+            rows_matched: query_result.rows.len(),
+        };
+        CallToolResult::success(time_only_result)
+    } else {
+        CallToolResult::success(query_result)
+    }
 }
 
 // ============================================================================
