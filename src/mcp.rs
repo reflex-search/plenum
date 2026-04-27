@@ -74,6 +74,11 @@ struct JsonRpcRequest {
 #[derive(Debug, Serialize)]
 struct JsonRpcResponse {
     jsonrpc: String,
+    // Per JSON-RPC 2.0, Notifications must omit `id` entirely (not set it to null).
+    // We never construct a JsonRpcResponse for a Notification, but skip_serializing_if
+    // is a defensive guard against ever emitting `"id": null`, which strict clients
+    // (e.g. Claude Code's Zod validators) reject.
+    #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<Value>,
@@ -162,32 +167,21 @@ pub async fn serve() -> Result<()> {
             continue;
         }
 
-        // Parse JSON-RPC request
-        let request: JsonRpcRequest = match serde_json::from_str(&line) {
-            Ok(req) => req,
-            Err(e) => {
-                // Send parse error response
-                let error_response = JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: None,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32700, // Parse error
-                        message: format!("Parse error: {e}"),
-                        data: None,
-                    }),
-                };
-                let response_json = serde_json::to_string(&error_response)?;
-                writeln!(stdout, "{response_json}")?;
-                stdout.flush()?;
-                continue;
-            }
+        // Parse JSON-RPC request. Unparseable input is silently skipped: we have
+        // no id to attach to a response, and emitting one with id: null violates
+        // strict JSON-RPC 2.0 validators (e.g. the MCP TypeScript SDK's Zod schemas).
+        let Ok(request) = serde_json::from_str::<JsonRpcRequest>(&line) else {
+            continue;
         };
 
-        // Handle request
-        let response = handle_request(request).await;
+        // JSON-RPC 2.0: a Notification has no id and MUST NOT receive a response.
+        // The MCP handshake sends `notifications/initialized` between `initialize`
+        // and `tools/list`; replying to it breaks strict clients.
+        if request.id.is_none() {
+            continue;
+        }
 
-        // Write response
+        let response = handle_request(request).await;
         let response_json = serde_json::to_string(&response)?;
         writeln!(stdout, "{response_json}")?;
         stdout.flush()?;
