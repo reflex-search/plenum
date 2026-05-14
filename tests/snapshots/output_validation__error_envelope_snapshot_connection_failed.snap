@@ -1,0 +1,13 @@
+---
+source: tests/output_validation.rs
+expression: json_str
+---
+{
+  "ok": false,
+  "engine": "postgres",
+  "command": "connect",
+  "error": {
+    "code": "CONNECTION_FAILED",
+    "message": "Connection failed: could not connect to server"
+  }
+}

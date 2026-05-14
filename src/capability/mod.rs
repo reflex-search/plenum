@@ -435,4 +435,49 @@ mod tests {
         );
         assert!(result.is_ok());
     }
+
+    // Multi-statement rejection through the public `validate_query` API.
+    // Multi-statement preprocessing is engine-agnostic, but agents reach it
+    // through engine-specific code paths — assert all three engines reject
+    // identically so a future engine-specific bypass would be caught here.
+
+    fn assert_multi_statement_rejected(sql: &str, engine: DatabaseType) {
+        let caps = Capabilities::default();
+        let result = validate_query(sql, &caps, engine);
+        assert!(
+            result.is_err(),
+            "expected {engine:?} to reject multi-statement query: {sql}"
+        );
+        let err = result.unwrap_err();
+        assert_eq!(err.error_code(), "INVALID_INPUT", "engine={engine:?}");
+        assert!(
+            err.message().contains("Multi-statement queries are not supported"),
+            "engine={engine:?} message={}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_multi_statement_rejected_postgres() {
+        assert_multi_statement_rejected("SELECT 1; SELECT 2", DatabaseType::Postgres);
+    }
+
+    #[test]
+    fn test_multi_statement_rejected_mysql() {
+        assert_multi_statement_rejected("SELECT 1; SELECT 2", DatabaseType::MySQL);
+    }
+
+    #[test]
+    fn test_multi_statement_rejected_sqlite() {
+        assert_multi_statement_rejected("SELECT 1; SELECT 2", DatabaseType::SQLite);
+    }
+
+    #[test]
+    fn test_multi_statement_with_ddl_rejected_all_engines() {
+        // Classic SQL-injection-style payload: read followed by DDL.
+        // All three engines must reject before any engine-specific dispatch.
+        for engine in [DatabaseType::Postgres, DatabaseType::MySQL, DatabaseType::SQLite] {
+            assert_multi_statement_rejected("SELECT * FROM users; DROP TABLE users", engine);
+        }
+    }
 }

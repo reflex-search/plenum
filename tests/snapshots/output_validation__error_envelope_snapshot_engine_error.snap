@@ -1,0 +1,13 @@
+---
+source: tests/output_validation.rs
+expression: json_str
+---
+{
+  "ok": false,
+  "engine": "mysql",
+  "command": "query",
+  "error": {
+    "code": "ENGINE_ERROR",
+    "message": "Engine error (mysql): lost connection to server"
+  }
+}

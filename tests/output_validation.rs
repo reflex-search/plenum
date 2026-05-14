@@ -244,6 +244,63 @@ fn test_error_envelope_snapshot() {
     insta::assert_snapshot!(json_str);
 }
 
+// ----------------------------------------------------------------------------
+// Per-variant error envelope snapshots
+//
+// Locks down the JSON contract emitted for each `PlenumError` variant. If a
+// variant's `error_code()` or `Display` representation changes, the snapshot
+// breaks and forces an explicit `cargo insta review` decision rather than
+// silently shifting the agent-facing wire format.
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_error_envelope_snapshot_capability_violation() {
+    let err = plenum::PlenumError::capability_violation("DDL operations are not permitted");
+    let envelope = ErrorEnvelope::from_error("postgres", "query", &err);
+    let json_str = serde_json::to_string_pretty(&envelope).expect("Should serialize");
+    insta::assert_snapshot!(json_str);
+}
+
+#[test]
+fn test_error_envelope_snapshot_connection_failed() {
+    let err = plenum::PlenumError::connection_failed("could not connect to server");
+    let envelope = ErrorEnvelope::from_error("postgres", "connect", &err);
+    let json_str = serde_json::to_string_pretty(&envelope).expect("Should serialize");
+    insta::assert_snapshot!(json_str);
+}
+
+#[test]
+fn test_error_envelope_snapshot_query_failed() {
+    let err = plenum::PlenumError::query_failed("relation \"users\" does not exist");
+    let envelope = ErrorEnvelope::from_error("postgres", "query", &err);
+    let json_str = serde_json::to_string_pretty(&envelope).expect("Should serialize");
+    insta::assert_snapshot!(json_str);
+}
+
+#[test]
+fn test_error_envelope_snapshot_invalid_input() {
+    let err = plenum::PlenumError::invalid_input("Query cannot be empty");
+    let envelope = ErrorEnvelope::from_error("", "query", &err);
+    let json_str = serde_json::to_string_pretty(&envelope).expect("Should serialize");
+    insta::assert_snapshot!(json_str);
+}
+
+#[test]
+fn test_error_envelope_snapshot_engine_error() {
+    let err = plenum::PlenumError::engine_error("mysql", "lost connection to server");
+    let envelope = ErrorEnvelope::from_error("mysql", "query", &err);
+    let json_str = serde_json::to_string_pretty(&envelope).expect("Should serialize");
+    insta::assert_snapshot!(json_str);
+}
+
+#[test]
+fn test_error_envelope_snapshot_config_error() {
+    let err = plenum::PlenumError::config_error("connection 'prod' not found");
+    let envelope = ErrorEnvelope::from_error("", "connect", &err);
+    let json_str = serde_json::to_string_pretty(&envelope).expect("Should serialize");
+    insta::assert_snapshot!(json_str);
+}
+
 // Note: Removed query_result_snapshot test due to non-deterministic HashMap ordering
 // QueryResult structure is validated by:
 // - test_json_serialization_of_query_result

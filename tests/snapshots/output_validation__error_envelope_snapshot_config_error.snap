@@ -1,0 +1,13 @@
+---
+source: tests/output_validation.rs
+expression: json_str
+---
+{
+  "ok": false,
+  "engine": "",
+  "command": "connect",
+  "error": {
+    "code": "CONFIG_ERROR",
+    "message": "Configuration error: connection 'prod' not found"
+  }
+}
