@@ -249,8 +249,21 @@ fn is_read_only_postgres(sql: &str) -> bool {
     let sql = strip_explain_prefix(sql);
     let sql = sql.trim();
 
-    sql.starts_with("SELECT ")
-        || is_safe_cte_query(sql)
+    if sql.starts_with("SELECT ") {
+        // PostgreSQL `SELECT ... INTO new_table` (incl. INTO TEMP /
+        // TEMPORARY / UNLOGGED [TABLE] variants) is shorthand for
+        // `CREATE TABLE AS SELECT` — a DDL write that the bare SELECT
+        // prefix would otherwise admit (REF-42). Reuse the same
+        // quote-aware DML/DDL keyword scan that protects WITH-CTE
+        // queries (REF-41) so both read prefixes share one line of
+        // defense against hidden writes. `INTO` is listed in
+        // WRITE_KEYWORDS, and the scanner walks past `'...'` and
+        // `"..."` quoted regions so `INTO` inside a string literal
+        // or quoted identifier is not a false positive.
+        return scan_for_write_keyword(sql).is_none();
+    }
+
+    is_safe_cte_query(sql)
         || sql.starts_with("BEGIN")
         || sql.starts_with("COMMIT")
         || sql.starts_with("ROLLBACK")
@@ -265,7 +278,7 @@ fn is_read_only_mysql(sql: &str) -> bool {
     let sql = strip_explain_prefix(sql);
     let sql = sql.trim();
 
-    sql.starts_with("SELECT ")
+    let allowed_prefix = sql.starts_with("SELECT ")
         || is_safe_cte_query(sql)
         || sql.starts_with("SHOW ")
         || sql.starts_with("DESCRIBE ")
@@ -275,7 +288,144 @@ fn is_read_only_mysql(sql: &str) -> bool {
         || sql.starts_with("ROLLBACK")
         || sql.starts_with("START TRANSACTION")
         || sql.starts_with("SAVEPOINT")
-        || sql.starts_with("RELEASE")
+        || sql.starts_with("RELEASE");
+
+    if !allowed_prefix {
+        return false;
+    }
+
+    // `SELECT ... INTO OUTFILE` / `INTO DUMPFILE` writes query results to the
+    // MySQL server's filesystem; `SELECT ... INTO @var` assigns to a session
+    // variable. All three pass the `SELECT ` prefix check above but are not
+    // read-only (REF-43). The `WITH`-CTE path is already covered by
+    // `is_safe_cte_query`'s `INTO` keyword scan (REF-41), so we only need to
+    // patch the bare `SELECT ` path here.
+    if sql.starts_with("SELECT ") {
+        let normalized = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+        if normalized.contains(" INTO OUTFILE")
+            || normalized.contains(" INTO DUMPFILE")
+            || normalized.contains(" INTO @")
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// SQLite PRAGMAs that are read-only when invoked in argument form
+/// (`PRAGMA name(arg)`). These either always require an argument
+/// (e.g. `table_info`) or treat the argument as a query parameter rather than
+/// a setter value, so the parenthesized form does not write state.
+///
+/// Names are uppercase to match the preprocessed SQL produced by
+/// `preprocess_sql`. See REF-44.
+const READ_ONLY_SQLITE_PRAGMAS_WITH_ARGS: &[&str] = &[
+    "TABLE_INFO",
+    "TABLE_XINFO",
+    "INDEX_LIST",
+    "INDEX_INFO",
+    "INDEX_XINFO",
+    "FOREIGN_KEY_LIST",
+    "FOREIGN_KEY_CHECK",
+    "INTEGRITY_CHECK",
+    "QUICK_CHECK",
+];
+
+/// SQLite PRAGMAs whose bare form (`PRAGMA name`) is a pure read.
+///
+/// Several entries (`JOURNAL_MODE`, `USER_VERSION`, `PAGE_SIZE`, …) are
+/// settable PRAGMAs: their `= value` and `(value)` invocation forms mutate
+/// state. Only the bare query form is admitted here; the assignment form is
+/// rejected by `is_safe_pragma`, and the parenthesized form is rejected
+/// because these names are not in `READ_ONLY_SQLITE_PRAGMAS_WITH_ARGS`.
+///
+/// See REF-44.
+const READ_ONLY_SQLITE_PRAGMAS_BARE: &[&str] = &[
+    // Pure introspection
+    "TABLE_LIST",
+    "DATABASE_LIST",
+    "SCHEMA_VERSION",
+    "DATA_VERSION",
+    "COMPILE_OPTIONS",
+    "COLLATION_LIST",
+    "FUNCTION_LIST",
+    "MODULE_LIST",
+    "PRAGMA_LIST",
+    "INTEGRITY_CHECK",
+    "QUICK_CHECK",
+    "FREELIST_COUNT",
+    "PAGE_COUNT",
+    // Settable PRAGMAs — read-only only in the bare form
+    "JOURNAL_MODE",
+    "USER_VERSION",
+    "APPLICATION_ID",
+    "ENCODING",
+    "PAGE_SIZE",
+    "AUTO_VACUUM",
+    "MAX_PAGE_COUNT",
+    "FOREIGN_KEYS",
+    "SYNCHRONOUS",
+    "CACHE_SIZE",
+];
+
+/// Validate a `PRAGMA …` statement against the SQLite read-only allowlist.
+///
+/// Closes the write-PRAGMA bypass (REF-44) where the previous blanket
+/// `starts_with("PRAGMA ")` check admitted destructive PRAGMAs such as
+/// `PRAGMA writable_schema = 1`, `PRAGMA wal_checkpoint`, `PRAGMA optimize`,
+/// and `PRAGMA page_size = 4096`.
+///
+/// Accepts only:
+/// * `PRAGMA name` — bare read form where `name` is in
+///   [`READ_ONLY_SQLITE_PRAGMAS_BARE`].
+/// * `PRAGMA name(arg)` — argument form where `name` is in
+///   [`READ_ONLY_SQLITE_PRAGMAS_WITH_ARGS`].
+///
+/// Rejects:
+/// * Any query containing `=` (the `PRAGMA name = value` setter, including
+///   `writable_schema = 1`, `journal_mode = WAL`, `auto_vacuum = FULL`).
+/// * `PRAGMA name(arg)` for any name outside the argument-form allowlist
+///   (e.g. `wal_checkpoint(TRUNCATE)`, `journal_mode(WAL)`).
+/// * Any name not present in either allowlist (e.g. `wal_checkpoint`,
+///   `optimize`, `incremental_vacuum`).
+fn is_safe_pragma(sql: &str) -> bool {
+    let Some(rest) = sql.strip_prefix("PRAGMA ") else {
+        return false;
+    };
+    let rest = rest.trim().trim_end_matches(';').trim();
+    if rest.is_empty() {
+        return false;
+    }
+
+    // `=` always indicates the assignment / setter form. Reject unconditionally
+    // — there are no read-only PRAGMAs that use `=` in their syntax.
+    if rest.contains('=') {
+        return false;
+    }
+
+    // Split into `name` and optional `(args)`.
+    let (name, has_args) = match rest.find('(') {
+        Some(open) => {
+            if !rest.ends_with(')') {
+                return false;
+            }
+            (rest[..open].trim(), true)
+        }
+        None => (rest, false),
+    };
+
+    // The PRAGMA name must be a single identifier — anything else (trailing
+    // tokens like `PRAGMA journal_mode WAL`) is rejected.
+    if name.is_empty() || name.contains(|c: char| c.is_whitespace()) {
+        return false;
+    }
+
+    if has_args {
+        READ_ONLY_SQLITE_PRAGMAS_WITH_ARGS.contains(&name)
+    } else {
+        READ_ONLY_SQLITE_PRAGMAS_BARE.contains(&name)
+    }
 }
 
 // SQLite read-only check
@@ -286,7 +436,7 @@ fn is_read_only_sqlite(sql: &str) -> bool {
 
     sql.starts_with("SELECT ")
         || is_safe_cte_query(sql)
-        || sql.starts_with("PRAGMA ")
+        || is_safe_pragma(sql)
         || sql.starts_with("BEGIN")
         || sql.starts_with("COMMIT")
         || sql.starts_with("ROLLBACK")
@@ -448,6 +598,90 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    // REF-42: PostgreSQL `SELECT ... INTO new_table` is a DDL shorthand for
+    // `CREATE TABLE AS SELECT`. The bare `SELECT ` prefix check previously
+    // admitted it. Verify all documented variants (plain, TEMP, TEMPORARY,
+    // UNLOGGED, with the optional TABLE keyword) are rejected.
+
+    fn assert_postgres_rejected_as_read_only(sql: &str) {
+        let caps = Capabilities::default();
+        let result = validate_query(sql, &caps, DatabaseType::Postgres);
+        assert!(result.is_err(), "expected rejection: {sql}");
+        assert!(
+            result.unwrap_err().message().contains("Plenum is read-only"),
+            "wrong error message for: {sql}"
+        );
+    }
+
+    #[test]
+    fn test_postgres_select_into_rejected() {
+        assert_postgres_rejected_as_read_only("SELECT * FROM users INTO backup");
+    }
+
+    #[test]
+    fn test_postgres_select_into_temp_rejected() {
+        assert_postgres_rejected_as_read_only("SELECT id FROM users INTO TEMP backup");
+    }
+
+    #[test]
+    fn test_postgres_select_into_temporary_rejected() {
+        assert_postgres_rejected_as_read_only("SELECT id FROM users INTO TEMPORARY backup");
+    }
+
+    #[test]
+    fn test_postgres_select_into_unlogged_rejected() {
+        assert_postgres_rejected_as_read_only("SELECT id FROM users INTO UNLOGGED backup");
+    }
+
+    #[test]
+    fn test_postgres_select_into_temp_table_rejected() {
+        // Multi-word variant: INTO TEMP TABLE. Tokenized scan still finds INTO.
+        assert_postgres_rejected_as_read_only("SELECT * FROM users INTO TEMP TABLE temp_users");
+    }
+
+    #[test]
+    fn test_postgres_select_into_column_filtered_rejected() {
+        assert_postgres_rejected_as_read_only("SELECT id, email FROM users INTO email_dump");
+    }
+
+    // Acceptance criteria: a subquery-style `IN (SELECT ...)` is not a SELECT
+    // INTO and must remain accepted. The token `IN` is distinct from `INTO`,
+    // so the scan must not false-positive here.
+    #[test]
+    fn test_postgres_subquery_in_select_allowed() {
+        let caps = Capabilities::default();
+        let result = validate_query(
+            "SELECT * FROM users WHERE id IN (SELECT id FROM admins)",
+            &caps,
+            DatabaseType::Postgres,
+        );
+        assert!(result.is_ok());
+    }
+
+    // INTO embedded inside a string literal is not a real INTO clause. The
+    // quote-aware scanner must skip it to avoid rejecting legitimate reads.
+    #[test]
+    fn test_postgres_select_into_inside_string_literal_allowed() {
+        let caps = Capabilities::default();
+        let result = validate_query(
+            "SELECT 'data flowing into target' FROM events",
+            &caps,
+            DatabaseType::Postgres,
+        );
+        assert!(result.is_ok());
+    }
+
+    // Defense in depth: a CTE wrapper must not launder a SELECT INTO. The
+    // `WITH`-prefix path is handled by `is_safe_cte_query` (REF-41), which
+    // also scans for `INTO` — assert it explicitly here so a future
+    // refactor that splits the two paths can't silently regress this.
+    #[test]
+    fn test_postgres_with_cte_select_into_rejected() {
+        assert_postgres_rejected_as_read_only(
+            "WITH cte AS (SELECT * FROM users) SELECT * FROM cte INTO backup",
+        );
+    }
+
     // MySQL read-only tests
 
     #[test]
@@ -484,6 +718,99 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    // REF-43: `SELECT ... INTO OUTFILE` writes query results to the MySQL
+    // server's filesystem. It passes the bare `SELECT ` prefix check but is
+    // not a read-only operation.
+    #[test]
+    fn test_mysql_select_into_outfile_rejected() {
+        let caps = Capabilities::default();
+        let result = validate_query(
+            "SELECT * FROM users INTO OUTFILE '/tmp/users_dump.csv'",
+            &caps,
+            DatabaseType::MySQL,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
+    }
+
+    // `SELECT ... INTO OUTFILE` is commonly split across lines with field/line
+    // delimiter clauses. Whitespace normalization must catch the multi-line
+    // form too.
+    #[test]
+    fn test_mysql_select_into_outfile_multiline_rejected() {
+        let caps = Capabilities::default();
+        let sql = "SELECT id, email FROM users\n  INTO OUTFILE '/var/lib/mysql-files/dump.csv'\n  FIELDS TERMINATED BY ','";
+        let result = validate_query(sql, &caps, DatabaseType::MySQL);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
+    }
+
+    // `SELECT ... INTO DUMPFILE` writes a single row to the server's
+    // filesystem as a binary blob.
+    #[test]
+    fn test_mysql_select_into_dumpfile_rejected() {
+        let caps = Capabilities::default();
+        let result = validate_query(
+            "SELECT col FROM t WHERE id = 1 INTO DUMPFILE '/tmp/blob.bin'",
+            &caps,
+            DatabaseType::MySQL,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
+    }
+
+    // `SELECT ... INTO @var` assigns the query result to a session variable.
+    // Lower severity than file writes, but still a session-scoped write.
+    #[test]
+    fn test_mysql_select_into_user_variable_rejected() {
+        let caps = Capabilities::default();
+        let result = validate_query(
+            "SELECT COUNT(*) INTO @user_count FROM users",
+            &caps,
+            DatabaseType::MySQL,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
+    }
+
+    // Case-insensitivity sanity: lower-case `into outfile` must still trip
+    // the check, because preprocessing uppercases the query.
+    #[test]
+    fn test_mysql_select_into_outfile_lowercase_rejected() {
+        let caps = Capabilities::default();
+        let result = validate_query(
+            "select * from users into outfile '/tmp/x'",
+            &caps,
+            DatabaseType::MySQL,
+        );
+        assert!(result.is_err());
+    }
+
+    // Regression guard: a normal SELECT against a table named `outfile`
+    // (no INTO clause) must still be permitted.
+    #[test]
+    fn test_mysql_plain_select_still_allowed() {
+        let caps = Capabilities::default();
+        assert!(validate_query("SELECT * FROM users", &caps, DatabaseType::MySQL).is_ok());
+        assert!(
+            validate_query("SELECT * FROM outfile_log", &caps, DatabaseType::MySQL).is_ok()
+        );
+    }
+
+    // WITH-CTE path is covered by `is_safe_cte_query`'s INTO keyword scan
+    // (REF-41), but pin the behavior here for the MySQL OUTFILE flavor so a
+    // future refactor of the CTE check can't silently re-open this bypass.
+    #[test]
+    fn test_mysql_with_cte_into_outfile_rejected() {
+        let caps = Capabilities::default();
+        let result = validate_query(
+            "WITH cte AS (SELECT * FROM users) SELECT * FROM cte INTO OUTFILE '/tmp/x'",
+            &caps,
+            DatabaseType::MySQL,
+        );
+        assert!(result.is_err());
+    }
+
     // SQLite read-only tests
 
     #[test]
@@ -515,6 +842,211 @@ mod tests {
             validate_query("INSERT INTO users (name) VALUES ('test')", &caps, DatabaseType::SQLite);
         assert!(result.is_err());
         assert!(result.unwrap_err().message().contains("Plenum is read-only"));
+    }
+
+    // SQLite PRAGMA allowlist tests (REF-44).
+    //
+    // The blanket `starts_with("PRAGMA ")` check used to admit any PRAGMA,
+    // including `writable_schema = 1` (the classic sqlite_master escape) and
+    // `wal_checkpoint`/`optimize` (state-mutating PRAGMAs). The fix tightens
+    // SQLite read-only validation to a two-form allowlist; these tests pin the
+    // exact bypasses called out in the issue.
+
+    fn assert_sqlite_rejected(sql: &str) {
+        let caps = Capabilities::default();
+        let result = validate_query(sql, &caps, DatabaseType::SQLite);
+        assert!(result.is_err(), "expected SQLite to reject: {sql}");
+        let err = result.unwrap_err();
+        assert!(
+            err.message().contains("Plenum is read-only"),
+            "expected read-only rejection for {sql}, got: {}",
+            err.message()
+        );
+    }
+
+    fn assert_sqlite_allowed(sql: &str) {
+        let caps = Capabilities::default();
+        let result = validate_query(sql, &caps, DatabaseType::SQLite);
+        assert!(
+            result.is_ok(),
+            "expected SQLite to allow: {sql}, got: {}",
+            result.unwrap_err().message()
+        );
+    }
+
+    // --- Accepted: read-only PRAGMAs (must keep working) ---
+
+    #[test]
+    fn test_sqlite_pragma_table_info_allowed() {
+        assert_sqlite_allowed("PRAGMA table_info(users)");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_database_list_allowed() {
+        assert_sqlite_allowed("PRAGMA database_list");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_table_list_allowed() {
+        assert_sqlite_allowed("PRAGMA table_list");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_index_list_allowed() {
+        assert_sqlite_allowed("PRAGMA index_list(users)");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_foreign_key_list_allowed() {
+        assert_sqlite_allowed("PRAGMA foreign_key_list(users)");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_integrity_check_allowed() {
+        assert_sqlite_allowed("PRAGMA integrity_check");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_compile_options_allowed() {
+        assert_sqlite_allowed("PRAGMA compile_options");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_journal_mode_bare_allowed() {
+        // Bare query form: returns current journal mode, does not set it.
+        assert_sqlite_allowed("PRAGMA journal_mode");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_user_version_bare_allowed() {
+        assert_sqlite_allowed("PRAGMA user_version");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_schema_version_bare_allowed() {
+        assert_sqlite_allowed("PRAGMA schema_version");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_case_insensitive_allowed() {
+        // preprocess_sql uppercases the entire query, so lowercase PRAGMA
+        // names must still flow through the allowlist correctly.
+        assert_sqlite_allowed("pragma table_info(users)");
+    }
+
+    // --- Rejected: writable_schema (the most dangerous bypass) ---
+
+    #[test]
+    fn test_sqlite_pragma_writable_schema_eq_1_rejected() {
+        // The classic sqlite_master escape: enables arbitrary modification of
+        // the schema table on the next query. Must be rejected.
+        assert_sqlite_rejected("PRAGMA writable_schema = 1");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_writable_schema_eq_on_rejected() {
+        assert_sqlite_rejected("PRAGMA writable_schema = ON");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_writable_schema_eq_0_rejected() {
+        // Even resetting writable_schema requires write capability we don't grant.
+        assert_sqlite_rejected("PRAGMA writable_schema = 0");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_writable_schema_paren_rejected() {
+        // Parenthesized setter form is also a write.
+        assert_sqlite_rejected("PRAGMA writable_schema(1)");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_writable_schema_bare_rejected() {
+        // Not in the bare allowlist — even querying it shouldn't be needed
+        // and is rejected by default-deny.
+        assert_sqlite_rejected("PRAGMA writable_schema");
+    }
+
+    // --- Rejected: wal_checkpoint (modifies the -wal file) ---
+
+    #[test]
+    fn test_sqlite_pragma_wal_checkpoint_bare_rejected() {
+        assert_sqlite_rejected("PRAGMA wal_checkpoint");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_wal_checkpoint_full_rejected() {
+        assert_sqlite_rejected("PRAGMA wal_checkpoint(FULL)");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_wal_checkpoint_restart_rejected() {
+        assert_sqlite_rejected("PRAGMA wal_checkpoint(RESTART)");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_wal_checkpoint_truncate_rejected() {
+        assert_sqlite_rejected("PRAGMA wal_checkpoint(TRUNCATE)");
+    }
+
+    // --- Rejected: optimize and vacuum-adjacent PRAGMAs ---
+
+    #[test]
+    fn test_sqlite_pragma_optimize_rejected() {
+        assert_sqlite_rejected("PRAGMA optimize");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_incremental_vacuum_rejected() {
+        assert_sqlite_rejected("PRAGMA incremental_vacuum");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_auto_vacuum_eq_full_rejected() {
+        assert_sqlite_rejected("PRAGMA auto_vacuum = FULL");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_page_size_eq_rejected() {
+        assert_sqlite_rejected("PRAGMA page_size = 4096");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_journal_mode_eq_wal_rejected() {
+        // Settable PRAGMAs: bare form is allowed (read), `= value` and `(value)` are not.
+        assert_sqlite_rejected("PRAGMA journal_mode = WAL");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_journal_mode_paren_wal_rejected() {
+        assert_sqlite_rejected("PRAGMA journal_mode(WAL)");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_user_version_eq_rejected() {
+        assert_sqlite_rejected("PRAGMA user_version = 42");
+    }
+
+    // --- Rejected: unknown / fail-safe default ---
+
+    #[test]
+    fn test_sqlite_pragma_unknown_name_rejected() {
+        // Fail-safe default: anything not on the allowlist is rejected, so
+        // future SQLite versions that introduce new write PRAGMAs are safe
+        // until the allowlist is explicitly updated.
+        assert_sqlite_rejected("PRAGMA something_that_does_not_exist");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_empty_rejected() {
+        assert_sqlite_rejected("PRAGMA ");
+    }
+
+    #[test]
+    fn test_sqlite_pragma_trailing_token_rejected() {
+        // `PRAGMA journal_mode WAL` (no `=`, no parens) is malformed in SQLite
+        // syntactically but also clearly an attempt to set; reject it.
+        assert_sqlite_rejected("PRAGMA journal_mode WAL");
     }
 
     // Edge case tests
@@ -734,7 +1266,7 @@ mod tests {
     // Defense in depth: a CTE that smuggles a `SELECT ... INTO new_table` write
     // (Postgres CTAS-via-INTO) must be rejected too. The `INTO` token is in
     // `WRITE_KEYWORDS` so `is_safe_cte_query` rejects this regardless of
-    // engine-level INTO-OUTFILE special cases.
+    // engine-level INTO-OUTFILE special cases (REF-42 / REF-43).
     #[test]
     fn test_cte_with_select_into_rejected_postgres() {
         let sql = "WITH cte AS (SELECT * FROM users) SELECT * INTO archive FROM cte";
