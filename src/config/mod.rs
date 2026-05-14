@@ -377,11 +377,14 @@ pub fn resolve_connection(
 /// - `project_path`: Optional project path. If None, uses current working directory.
 /// - `name`: Connection name. If this is the first connection for the project, it will be set as default.
 /// - `config`: The connection configuration to save.
+/// - `password_env`: Optional environment variable name from which to resolve the password at use time.
+///   When `Some`, the literal password should be omitted from `config` and the variable name persisted instead.
 /// - `location`: Where to save (Local or Global).
 pub fn save_connection(
     project_path: Option<String>,
     name: Option<String>,
     config: ConnectionConfig,
+    password_env: Option<String>,
     location: ConfigLocation,
 ) -> Result<()> {
     // Determine project path (use provided or get current)
@@ -415,7 +418,7 @@ pub fn save_connection(
     // Add or update connection
     project
         .connections
-        .insert(conn_name.clone(), StoredConnection { config, password_env: None, readonly: None });
+        .insert(conn_name.clone(), StoredConnection { config, password_env, readonly: None });
 
     // Auto-set as default if this is the first connection
     if is_first_connection {
@@ -914,4 +917,73 @@ mod tests {
         assert!(merged.projects.contains_key("/project1"));
         assert!(merged.projects.contains_key("/project2"));
     }
+
+    #[test]
+    fn test_password_env_serialization_roundtrip() {
+        let stored = StoredConnection {
+            config: ConnectionConfig {
+                engine: DatabaseType::Postgres,
+                host: Some("localhost".to_string()),
+                port: Some(5432),
+                user: Some("user".to_string()),
+                password: None,
+                database: Some("db".to_string()),
+                file: None,
+            },
+            password_env: Some("MY_DB_PASS".to_string()),
+            readonly: None,
+        };
+
+        let json = serde_json::to_string(&stored).unwrap();
+        assert!(json.contains("\"password_env\":\"MY_DB_PASS\""));
+        // password field should be omitted when None
+        assert!(!json.contains("\"password\":"));
+
+        let parsed: StoredConnection = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.password_env.as_deref(), Some("MY_DB_PASS"));
+        assert!(parsed.config.password.is_none());
+    }
+
+    #[test]
+    fn test_password_env_not_serialized_when_none() {
+        let stored = StoredConnection {
+            config: ConnectionConfig::postgres(
+                "localhost".to_string(),
+                5432,
+                "user".to_string(),
+                "pass".to_string(),
+                "db".to_string(),
+            ),
+            password_env: None,
+            readonly: None,
+        };
+
+        let json = serde_json::to_string(&stored).unwrap();
+        assert!(!json.contains("password_env"));
+    }
+
+    #[test]
+    fn test_password_env_overrides_inline_password_on_resolve() {
+        // When both password and password_env are set on a stored connection,
+        // resolve() should overwrite the inline password with the env var value.
+        std::env::set_var("PLENUM_TEST_PWD_OVERRIDE", "from-env");
+
+        let stored = StoredConnection {
+            config: ConnectionConfig::postgres(
+                "localhost".to_string(),
+                5432,
+                "user".to_string(),
+                "inline-value".to_string(),
+                "db".to_string(),
+            ),
+            password_env: Some("PLENUM_TEST_PWD_OVERRIDE".to_string()),
+            readonly: None,
+        };
+
+        let (resolved, _) = stored.resolve().unwrap();
+        assert_eq!(resolved.password.as_deref(), Some("from-env"));
+
+        std::env::remove_var("PLENUM_TEST_PWD_OVERRIDE");
+    }
+
 }

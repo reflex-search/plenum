@@ -26,6 +26,10 @@ use plenum::engine::postgres::PostgresEngine;
 #[cfg(feature = "sqlite")]
 use plenum::engine::sqlite::SqliteEngine;
 
+/// Resolved arguments for `plenum connect`:
+/// connection name, project path, config, optional `password_env` reference, save location.
+type ConnectArgs = (String, Option<String>, ConnectionConfig, Option<String>, ConfigLocation);
+
 /// Plenum - Agent-First Database Control CLI
 #[derive(Parser)]
 #[command(name = "plenum")]
@@ -425,7 +429,7 @@ async fn handle_connect(
         || file.is_some()
         || save.is_some();
 
-    let result: Result<(String, Option<String>, ConnectionConfig, ConfigLocation)> = if has_args {
+    let result: Result<ConnectArgs> = if has_args {
         // Non-interactive mode: build from args
         non_interactive_connect(
             name,
@@ -443,16 +447,17 @@ async fn handle_connect(
         .await
     } else {
         // Interactive mode: show picker
-        interactive_connect_picker().await
+        interactive_connect_picker().await.map(|(n, p, c, l)| (n, p, c, None, l))
     };
 
     match result {
-        Ok((conn_name, proj_path, config, location)) => {
+        Ok((conn_name, proj_path, config, password_env, location)) => {
             // Save connection
             match plenum::save_connection(
                 proj_path,
                 Some(conn_name.clone()),
                 config.clone(),
+                password_env,
                 location,
             ) {
                 Ok(()) => {
@@ -643,16 +648,48 @@ async fn non_interactive_connect(
     port: Option<u16>,
     user: Option<String>,
     password: Option<String>,
-    _password_env: Option<String>, // TODO: Implement password_env support
+    password_env: Option<String>,
     database: Option<String>,
     file: Option<PathBuf>,
     save: Option<String>,
-) -> Result<(String, Option<String>, ConnectionConfig, ConfigLocation)> {
+) -> Result<ConnectArgs> {
     // Validate required arguments
     let engine_str = engine.ok_or_else(|| {
         PlenumError::invalid_input("--engine is required for non-interactive mode")
     })?;
     let engine_type = parse_engine(&engine_str)?;
+
+    // --password and --password-env are mutually exclusive
+    if password.is_some() && password_env.is_some() {
+        return Err(PlenumError::invalid_input(
+            "--password and --password-env are mutually exclusive",
+        ));
+    }
+
+    // If --password-env is provided, validate that the env var resolves at connect time.
+    // The literal password value is NOT persisted; only the env var name is stored.
+    if let Some(env_var) = password_env.as_deref() {
+        match std::env::var(env_var) {
+            Ok(value) if value.is_empty() => {
+                return Err(PlenumError::invalid_input(format!(
+                    "Environment variable {env_var} is set but empty"
+                )));
+            }
+            Ok(_) => {}
+            Err(_) => {
+                return Err(PlenumError::invalid_input(format!(
+                    "Environment variable {env_var} is not set"
+                )));
+            }
+        }
+    }
+
+    // password_env is only meaningful for engines that use passwords.
+    if engine_type == DatabaseType::SQLite && password_env.is_some() {
+        return Err(PlenumError::invalid_input(
+            "--password-env is not applicable to sqlite (no authentication)",
+        ));
+    }
 
     // Build config based on engine
     let config = match engine_type {
@@ -666,17 +703,31 @@ async fn non_interactive_connect(
             let user = user.ok_or_else(|| {
                 PlenumError::invalid_input("--user is required for postgres/mysql")
             })?;
-            let password = password.ok_or_else(|| {
-                PlenumError::invalid_input("--password is required for postgres/mysql")
-            })?;
             let database = database.ok_or_else(|| {
                 PlenumError::invalid_input("--database is required for postgres/mysql")
             })?;
 
-            if engine_type == DatabaseType::Postgres {
-                ConnectionConfig::postgres(host, port, user, password, database)
-            } else {
-                ConnectionConfig::mysql(host, port, user, password, database)
+            // Password is supplied either inline (--password) or by reference (--password-env).
+            // Exactly one must be provided.
+            let stored_password = match (&password, &password_env) {
+                (Some(p), None) => Some(p.clone()),
+                (None, Some(_)) => None,
+                (None, None) => {
+                    return Err(PlenumError::invalid_input(
+                        "--password or --password-env is required for postgres/mysql",
+                    ));
+                }
+                (Some(_), Some(_)) => unreachable!("checked above"),
+            };
+
+            ConnectionConfig {
+                engine: engine_type,
+                host: Some(host),
+                port: Some(port),
+                user: Some(user),
+                password: stored_password,
+                database: Some(database),
+                file: None,
             }
         }
         DatabaseType::SQLite => {
@@ -700,7 +751,7 @@ async fn non_interactive_connect(
         }
     };
 
-    Ok((conn_name, project_path, config, location))
+    Ok((conn_name, project_path, config, password_env, location))
 }
 
 /// Prompt user for save location
