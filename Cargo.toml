@@ -70,6 +70,7 @@ all-engines = ["postgres", "mysql", "sqlite"]
 pretty_assertions = "1.4"  # Better test output formatting
 insta = "1.34"             # Snapshot testing for JSON output validation
 criterion = "0.5"          # Benchmarking framework
+rusqlite = { version = "0.32", features = ["bundled"] }  # Create SQLite test fixtures
 
 # The profile that 'dist' will build with
 [profile.dist]
