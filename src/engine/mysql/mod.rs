@@ -19,7 +19,7 @@
 //! - Row limits enforced in application code
 //! - Schema filtering supported (`MySQL` has explicit schemas/databases)
 
-use mysql_async::{prelude::*, Conn, OptsBuilder, Row, Value};
+use mysql_async::{prelude::*, Conn, OptsBuilder, Params, Row, Value};
 use std::collections::HashMap; // Used for grouping foreign keys during introspection
 use std::time::{Duration, Instant};
 
@@ -182,6 +182,7 @@ impl DatabaseEngine for MySqlEngine {
     async fn execute(
         config: &ConnectionConfig,
         query: &str,
+        params: &[serde_json::Value],
         caps: &Capabilities,
     ) -> Result<QueryResult> {
         // Validate config is for MySQL
@@ -203,17 +204,44 @@ impl DatabaseEngine for MySqlEngine {
             PlenumError::connection_failed(format!("Failed to connect to MySQL: {e}"))
         })?;
 
-        // Execute with optional timeout
+        // Defense in depth: enforce session-level read-only at the database layer.
+        // This rejects DML writes even if the SQL parser is somehow bypassed (REF-261).
+        // Note: MySQL DDL (CREATE/DROP/ALTER) causes implicit commits and is not covered
+        // by transaction read-only mode — that class is already blocked by the parser.
+        conn.exec_drop("SET SESSION TRANSACTION READ ONLY", ()).await.map_err(|e| {
+            PlenumError::engine_error(
+                "mysql",
+                format!("Failed to enforce session read-only mode: {e}"),
+            )
+        })?;
+
+        // Set server-side MAX_EXECUTION_TIME so MySQL cancels the query if it exceeds the
+        // limit. Only applies to SELECT statements in MySQL; the client-side guard backstops
+        // other statement types.
+        if let Some(timeout_ms) = caps.timeout_ms {
+            conn.exec_drop(format!("SET SESSION MAX_EXECUTION_TIME = {timeout_ms}"), ())
+                .await
+                .map_err(|e| {
+                    PlenumError::engine_error(
+                        "mysql",
+                        format!("Failed to set MAX_EXECUTION_TIME: {e}"),
+                    )
+                })?;
+        }
+
+        // Execute with client-side tokio timeout as a backstop for unresponsive servers
         let start = Instant::now();
         let mut query_result = if let Some(timeout_ms) = caps.timeout_ms {
             let timeout_duration = Duration::from_millis(timeout_ms);
-            tokio::time::timeout(timeout_duration, execute_query(&mut conn, query, caps))
+            tokio::time::timeout(timeout_duration, execute_query(&mut conn, query, params, caps))
                 .await
                 .map_err(|_| {
-                PlenumError::query_failed(format!("Query exceeded timeout of {timeout_ms}ms"))
-            })??
+                    PlenumError::query_failed(format!(
+                        "Client-side timeout of {timeout_ms}ms exceeded (server-side MAX_EXECUTION_TIME should have fired first)"
+                    ))
+                })??
         } else {
-            execute_query(&mut conn, query, caps).await?
+            execute_query(&mut conn, query, params, caps).await?
         };
 
         let elapsed = start.elapsed();
@@ -474,6 +502,8 @@ async fn get_table_details_mysql(
         Vec::new()
     };
 
+    let (comment, row_estimate) = introspect_table_meta(conn, schema, table_name).await?;
+
     let table = TableInfo {
         name: table_name.to_string(),
         schema: Some(schema.to_string()),
@@ -481,6 +511,8 @@ async fn get_table_details_mysql(
         primary_key,
         foreign_keys,
         indexes,
+        comment,
+        row_estimate,
     };
 
     Ok(IntrospectResult::TableDetails { table })
@@ -572,6 +604,8 @@ async fn introspect_table(conn: &mut Conn, schema: &str, table_name: &str) -> Re
         primary_key,
         foreign_keys,
         indexes,
+        comment: None,
+        row_estimate: None,
     })
 }
 
@@ -584,13 +618,13 @@ fn get_optional_string(row: &Row, idx: usize) -> Option<String> {
     }
 }
 
-/// Introspect table columns
+/// Introspect table columns (includes column comments from information_schema)
 async fn introspect_columns(
     conn: &mut Conn,
     schema: &str,
     table_name: &str,
 ) -> Result<Vec<ColumnInfo>> {
-    let query = "SELECT column_name, data_type, is_nullable, column_default
+    let query = "SELECT column_name, data_type, is_nullable, column_default, column_comment
                  FROM information_schema.columns
                  WHERE table_schema = ? AND table_name = ?
                  ORDER BY ordinal_position";
@@ -614,16 +648,46 @@ async fn introspect_columns(
             PlenumError::engine_error("mysql", "Failed to extract nullable status".to_string())
         })?;
         let default: Option<String> = get_optional_string(&row, 3);
+        // MySQL stores empty string when no comment is set; normalise to None
+        let comment: Option<String> = get_optional_string(&row, 4).filter(|s| !s.is_empty());
 
         columns.push(ColumnInfo {
             name: column_name,
             data_type,
             nullable: is_nullable == "YES",
             default,
+            comment,
         });
     }
 
     Ok(columns)
+}
+
+/// Fetch table-level comment and row estimate from information_schema.tables
+async fn introspect_table_meta(
+    conn: &mut Conn,
+    schema: &str,
+    table_name: &str,
+) -> Result<(Option<String>, Option<i64>)> {
+    let query = "SELECT table_comment, table_rows
+                 FROM information_schema.tables
+                 WHERE table_schema = ? AND table_name = ?";
+
+    let row: Option<Row> = conn.exec_first(query, (schema, table_name)).await.map_err(|e| {
+        PlenumError::engine_error(
+            "mysql",
+            format!("Failed to query table metadata for {schema}.{table_name}: {e}"),
+        )
+    })?;
+
+    match row {
+        None => Ok((None, None)),
+        Some(r) => {
+            let comment = get_optional_string(&r, 0).filter(|s| !s.is_empty());
+            let row_estimate: Option<i64> = r.get(1);
+            Ok((comment, row_estimate))
+        }
+    }
 }
 
 /// Introspect primary key
@@ -783,12 +847,42 @@ async fn get_index_columns(
     Ok(columns)
 }
 
-/// Execute query and return `QueryResult`
-async fn execute_query(conn: &mut Conn, query: &str, caps: &Capabilities) -> Result<QueryResult> {
-    // Execute query and determine if it returns rows
-    // MySQL async doesn't have a prepare-then-check pattern like tokio-postgres
-    // We'll use a heuristic: if query starts with SELECT (after preprocessing), expect rows
+/// Convert a JSON value to a `mysql_async` native `Value` for parameter binding.
+/// Uses `?` MySQL placeholders.
+fn json_to_mysql_value(val: &serde_json::Value) -> Value {
+    match val {
+        serde_json::Value::Null => Value::NULL,
+        serde_json::Value::Bool(b) => Value::Int(i64::from(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else {
+                Value::Double(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => Value::Bytes(s.as_bytes().to_vec()),
+        v => Value::Bytes(v.to_string().into_bytes()),
+    }
+}
 
+/// Returns true when a mysql_async error is a server-side MAX_EXECUTION_TIME timeout (error 3024).
+fn is_mysql_statement_timeout(e: &mysql_async::Error) -> bool {
+    match e {
+        mysql_async::Error::Server(ref server_err) => server_err.code == 3024,
+        _ => false,
+    }
+}
+
+/// Execute query and return `QueryResult`
+async fn execute_query(
+    conn: &mut Conn,
+    query: &str,
+    params: &[serde_json::Value],
+    caps: &Capabilities,
+) -> Result<QueryResult> {
+    // Execute query and determine if it returns rows.
+    // MySQL async doesn't have a prepare-then-check pattern like tokio-postgres;
+    // use a keyword heuristic for statement classification.
     let query_upper = query.trim().to_uppercase();
     let is_select = query_upper.starts_with("SELECT")
         || query_upper.starts_with("SHOW")
@@ -796,46 +890,70 @@ async fn execute_query(conn: &mut Conn, query: &str, caps: &Capabilities) -> Res
         || query_upper.starts_with("DESC")
         || (query_upper.starts_with("WITH") && query_upper.contains("SELECT"));
 
+    // Convert JSON params → mysql_async positional params
+    let mysql_params: Params = if params.is_empty() {
+        Params::Empty
+    } else {
+        Params::Positional(params.iter().map(json_to_mysql_value).collect())
+    };
+
     if is_select {
-        // Query returns rows
+        // Query returns rows — use exec() to support bound params
         let rows: Vec<Row> = conn
-            .query(query)
+            .exec(query, mysql_params)
             .await
-            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {e}")))?;
+            .map_err(|e| {
+                if is_mysql_statement_timeout(&e) {
+                    PlenumError::query_timeout(format!(
+                        "Query cancelled by MySQL server-side MAX_EXECUTION_TIME: {e}"
+                    ))
+                } else {
+                    PlenumError::query_failed(format!("Failed to execute query: {e}"))
+                }
+            })?;
 
         // Get column names from first row (if any)
         let column_names: Vec<String> = if let Some(first_row) = rows.first() {
             first_row.columns_ref().iter().map(|col| col.name_str().to_string()).collect()
         } else {
-            // No rows, try to get column names from a LIMIT 0 query
-            // For empty result sets, we may not have column info
             Vec::new()
         };
 
-        // Convert rows to JSON
-        let mut rows_data = Vec::new();
-        for row in rows {
-            rows_data.push(row_to_json(&row)?);
+        // Apply offset and max_rows with truncation detection
+        let offset = caps.offset.unwrap_or(0);
+        let effective = if offset <= rows.len() { &rows[offset..] } else { &[][..] };
+        let max = caps.max_rows.unwrap_or(usize::MAX);
+        let rows_truncated = effective.len() > max;
+        let take = effective.len().min(max);
 
-            // Enforce max_rows limit
-            if let Some(max_rows) = caps.max_rows {
-                if rows_data.len() >= max_rows {
-                    break;
-                }
-            }
+        let mut rows_data = Vec::new();
+        for row in &effective[..take] {
+            rows_data.push(row_to_json(row)?);
         }
 
-        Ok(QueryResult { columns: column_names, rows: rows_data, rows_affected: None, execution_ms: 0 })
+        Ok(QueryResult {
+            columns: column_names,
+            rows: rows_data,
+            rows_affected: None,
+            execution_ms: 0,
+            rows_truncated,
+        })
     } else {
-        // Query does not return rows (INSERT, UPDATE, DELETE, DDL)
+        // Non-SELECT query — use exec_iter() to support bound params
         let result = conn
-            .query_iter(query)
+            .exec_iter(query, mysql_params)
             .await
-            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {e}")))?;
+            .map_err(|e| {
+                if is_mysql_statement_timeout(&e) {
+                    PlenumError::query_timeout(format!(
+                        "Query cancelled by MySQL server-side MAX_EXECUTION_TIME: {e}"
+                    ))
+                } else {
+                    PlenumError::query_failed(format!("Failed to execute query: {e}"))
+                }
+            })?;
 
         let rows_affected = result.affected_rows();
-
-        // Drop the result to close it
         drop(result);
 
         Ok(QueryResult {
@@ -843,6 +961,7 @@ async fn execute_query(conn: &mut Conn, query: &str, caps: &Capabilities) -> Res
             rows: Vec::new(),
             rows_affected: Some(rows_affected),
             execution_ms: 0,
+            rows_truncated: false,
         })
     }
 }
@@ -1022,7 +1141,7 @@ mod tests {
         );
 
         let caps = Capabilities::default();
-        let result = MySqlEngine::execute(&config, "SHOW DATABASES", &caps).await;
+        let result = MySqlEngine::execute(&config, "SHOW DATABASES", &[], &caps).await;
         assert!(result.is_ok(), "SHOW DATABASES failed: {:?}", result.err());
 
         let query_result = result.unwrap();
@@ -1090,4 +1209,175 @@ mod tests {
 
     // Additional integration tests would follow the pattern from postgres/mod.rs
     // Testing introspection, query execution, capability enforcement, etc.
+
+    /// Prove that DML writes fail at the MySQL session layer independently of the parser.
+    ///
+    /// Applies `SET SESSION TRANSACTION READ ONLY` (same as `execute()` does), then
+    /// attempts a direct DML write without going through Plenum's `validate_query`.
+    /// The write must be rejected by MySQL itself (REF-261).
+    ///
+    /// Note: MySQL DDL statements (CREATE/DROP/ALTER) issue implicit commits and are
+    /// not subject to transaction read-only enforcement — they are handled exclusively
+    /// by the parser. This test covers the DML threat class only.
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_mysql_session_read_only_enforcement() {
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+
+        let opts = build_mysql_opts(&config).unwrap();
+        let mut conn = Conn::new(opts).await.unwrap();
+
+        // Set up a test table using a separate write (outside of read-only session)
+        conn.exec_drop(
+            "CREATE TABLE IF NOT EXISTS _plenum_ro_test_mysql (id INT)",
+            (),
+        )
+        .await
+        .unwrap();
+
+        // Apply session-level read-only (same as execute() does)
+        conn.exec_drop("SET SESSION TRANSACTION READ ONLY", ()).await.unwrap();
+
+        // Verify the setting is active
+        let row: Option<Row> = conn
+            .query_first("SELECT @@session.transaction_read_only")
+            .await
+            .unwrap();
+        let value: i64 = row.unwrap().get(0).unwrap();
+        assert_eq!(value, 1, "session transaction_read_only must be 1");
+
+        // Attempt a direct INSERT bypassing Plenum's parser — must fail at the DB layer.
+        let result =
+            conn.exec_drop("INSERT INTO _plenum_ro_test_mysql VALUES (1)", ()).await;
+        assert!(result.is_err(), "INSERT must be rejected by MySQL session read-only mode");
+
+        // Clean up (requires a new connection since this one is read-only)
+        conn.disconnect().await.ok();
+
+        let opts2 = build_mysql_opts(&config).unwrap();
+        let mut conn2 = Conn::new(opts2).await.unwrap();
+        conn2.exec_drop("DROP TABLE IF EXISTS _plenum_ro_test_mysql", ()).await.ok();
+        conn2.disconnect().await.ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_max_execution_time_fires_server_side() {
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+
+        // 50ms timeout with SLEEP(10) — server must cancel this SELECT.
+        // MAX_EXECUTION_TIME only applies to SELECT statements in MySQL.
+        let caps = Capabilities { timeout_ms: Some(50), ..Capabilities::default() };
+        let result = MySqlEngine::execute(&config, "SELECT SLEEP(10)", &[], &caps).await;
+
+        assert!(result.is_err(), "Expected timeout error, got Ok");
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.error_code(),
+            "QUERY_TIMEOUT",
+            "Expected QUERY_TIMEOUT error code, got: {:?}",
+            err
+        );
+        assert!(
+            err.message().contains("MAX_EXECUTION_TIME"),
+            "Expected message to mention MAX_EXECUTION_TIME, got: {}",
+            err.message()
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // REF-263: column comments + row estimates
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_introspect_column_comment_and_row_estimate_mysql() {
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "".to_string(),
+            "test".to_string(),
+        );
+
+        let opts = build_mysql_opts(&config).expect("opts");
+        let mut conn = Conn::new(opts).await.expect("connect");
+
+        conn.exec_drop("DROP TABLE IF EXISTS ref263_mysql", ()).await.expect("drop");
+        conn.exec_drop(
+            "CREATE TABLE ref263_mysql (
+                id INT PRIMARY KEY AUTO_INCREMENT COMMENT 'PK column',
+                label VARCHAR(100) COMMENT 'Human readable name'
+            ) COMMENT='REF-263 test table'",
+            (),
+        )
+        .await
+        .expect("create");
+
+        conn.exec_drop(
+            "INSERT INTO ref263_mysql (label) VALUES ('a'), ('b'), ('c')",
+            (),
+        )
+        .await
+        .expect("insert");
+
+        conn.disconnect().await.ok();
+
+        let result = MySqlEngine::introspect(
+            &config,
+            &IntrospectOperation::TableDetails {
+                name: "ref263_mysql".to_string(),
+                fields: crate::engine::TableFields::all(),
+            },
+            None,
+            Some("test"),
+        )
+        .await
+        .expect("introspect");
+
+        let IntrospectResult::TableDetails { table } = result else {
+            panic!("Expected TableDetails")
+        };
+
+        // Table comment
+        assert_eq!(
+            table.comment.as_deref(),
+            Some("REF-263 test table"),
+            "table comment mismatch"
+        );
+
+        // row_estimate: MySQL's table_rows is an estimate and may be null for empty tables,
+        // but for 3 rows it should be Some.
+        assert!(table.row_estimate.is_some(), "row_estimate should be populated");
+
+        // Column comments
+        let id_col = table.columns.iter().find(|c| c.name == "id").expect("id col");
+        assert_eq!(id_col.comment.as_deref(), Some("PK column"));
+
+        let label_col = table.columns.iter().find(|c| c.name == "label").expect("label col");
+        assert_eq!(label_col.comment.as_deref(), Some("Human readable name"));
+
+        // Verify JSON has explicit nulls for columns without comments, and non-null for those with
+        let json = serde_json::to_value(&table).expect("serialize");
+        assert!(json.get("comment").is_some(), "table comment key must be present in JSON");
+        assert!(json.get("row_estimate").is_some(), "row_estimate key must be present in JSON");
+
+        // Cleanup
+        let opts2 = build_mysql_opts(&config).expect("opts2");
+        let mut conn2 = Conn::new(opts2).await.expect("connect2");
+        conn2.exec_drop("DROP TABLE IF EXISTS ref263_mysql", ()).await.ok();
+        conn2.disconnect().await.ok();
+    }
 }

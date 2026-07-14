@@ -11,13 +11,14 @@
 //! # Implementation Notes
 //! - Uses `rusqlite` (synchronous driver, no async needed)
 //! - BLOB data is Base64-encoded for JSON safety
-//! - Timeouts enforced via `busy_timeout`
+//! - Statement timeouts enforced via `sqlite3_interrupt` (interrupt handle + timer thread)
+//! - Lock contention timeouts enforced via `busy_timeout`
 //! - Row limits enforced in application code
 //! - No explicit schema support (`SQLite` uses catalogs)
 
 use rusqlite::{Connection, OpenFlags, Row};
 use std::collections::HashMap; // Used for grouping foreign keys during introspection
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::capability::validate_query;
 use crate::engine::{
@@ -150,6 +151,7 @@ impl DatabaseEngine for SqliteEngine {
     async fn execute(
         config: &ConnectionConfig,
         query: &str,
+        params: &[serde_json::Value],
         caps: &Capabilities,
     ) -> Result<QueryResult> {
         // Validate config is for SQLite
@@ -169,22 +171,36 @@ impl DatabaseEngine for SqliteEngine {
             .as_ref()
             .ok_or_else(|| PlenumError::invalid_input("SQLite requires 'file' parameter"))?;
 
-        // Open connection (read-write for queries)
+        // Open connection (read-only: defense in depth at OS/VFS level — writes are
+        // rejected by SQLite itself even if the parser is somehow bypassed)
         let path_str = file_path.to_str().ok_or_else(|| {
             PlenumError::invalid_input("SQLite file path contains invalid UTF-8 characters")
         })?;
-        let conn = open_connection(path_str, false)?;
+        let conn = open_connection(path_str, true)?;
 
-        // Set busy timeout if specified
+        // Set busy_timeout for lock-contention waits (database file locked by another writer).
         if let Some(timeout_ms) = caps.timeout_ms {
-            conn.busy_timeout(std::time::Duration::from_millis(timeout_ms)).map_err(|e| {
-                PlenumError::engine_error("sqlite", format!("Failed to set timeout: {e}"))
+            conn.busy_timeout(Duration::from_millis(timeout_ms)).map_err(|e| {
+                PlenumError::engine_error("sqlite", format!("Failed to set busy_timeout: {e}"))
             })?;
+        }
+
+        // Interrupt-based statement timeout: obtain a handle before the query starts,
+        // then spawn a thread that fires sqlite3_interrupt after timeout_ms. SQLite checks
+        // for interrupts between VM steps, cancelling the query server-side rather than
+        // just abandoning the wait. Per SQLite docs, interrupt() on an idle connection is
+        // a no-op, so the timer is harmless if the query finishes first.
+        if let Some(timeout_ms) = caps.timeout_ms {
+            let handle = conn.get_interrupt_handle();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(timeout_ms));
+                handle.interrupt();
+            });
         }
 
         // Execute query
         let start = Instant::now();
-        let mut result = execute_query(&conn, query, caps)?;
+        let mut result = execute_query(&conn, query, params, caps)?;
         let elapsed = start.elapsed();
         result.execution_ms = elapsed.as_millis() as u64;
 
@@ -383,6 +399,8 @@ fn get_table_details_sqlite(
         primary_key: if fields.primary_key { full_table.primary_key } else { None },
         foreign_keys: if fields.foreign_keys { full_table.foreign_keys } else { Vec::new() },
         indexes: if fields.indexes { full_table.indexes } else { Vec::new() },
+        comment: None,
+        row_estimate: full_table.row_estimate,
     };
 
     Ok(IntrospectResult::TableDetails { table })
@@ -423,6 +441,7 @@ fn get_view_details_sqlite(conn: &Connection, view_name: &str) -> Result<Introsp
                 data_type: row.get::<_, String>(2)?,
                 nullable: row.get::<_, i32>(3)? == 0,
                 default: row.get::<_, Option<String>>(4)?,
+                comment: None,
             })
         })
         .map_err(|e| {
@@ -461,6 +480,7 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
                 data_type: row.get::<_, String>(2)?,
                 nullable: row.get::<_, i32>(3)? == 0, // notnull column: 0 = nullable, 1 = not null
                 default: row.get::<_, Option<String>>(4)?,
+                comment: None, // SQLite has no native column comment storage
             })
         })
         .map_err(|e| {
@@ -601,6 +621,8 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
         indexes.push(IndexInfo { name: index_name, columns: index_columns, unique });
     }
 
+    let row_estimate = get_sqlite_row_estimate(conn, table_name);
+
     Ok(TableInfo {
         name: table_name.to_string(),
         schema: None, // SQLite doesn't have explicit schemas
@@ -608,11 +630,58 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
         primary_key,
         foreign_keys,
         indexes,
+        comment: None, // SQLite has no native table comment storage
+        row_estimate,
     })
 }
 
+/// Try to get a row estimate from sqlite_stat1 (populated by ANALYZE).
+/// Returns None when ANALYZE has not been run or the table is absent from the stats table.
+fn get_sqlite_row_estimate(conn: &Connection, table_name: &str) -> Option<i64> {
+    conn.query_row(
+        "SELECT stat FROM sqlite_stat1 WHERE tbl = ?1 AND idx IS NULL LIMIT 1",
+        [table_name],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|stat| stat.split_whitespace().next().and_then(|s| s.parse::<i64>().ok()))
+}
+
+/// Convert a JSON value to a `rusqlite` native value for parameter binding
+fn json_to_sqlite_value(val: &serde_json::Value) -> rusqlite::types::Value {
+    use rusqlite::types::Value;
+    match val {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Integer(i64::from(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Integer(i)
+            } else {
+                Value::Real(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => Value::Text(s.clone()),
+        v => Value::Text(v.to_string()),
+    }
+}
+
+/// Returns true when a rusqlite error is SQLITE_INTERRUPT (code 9), meaning
+/// the interrupt handle fired and SQLite cancelled the running statement.
+fn is_sqlite_interrupt(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(ffi_err, _)
+            if ffi_err.code == rusqlite::ErrorCode::OperationInterrupted
+    )
+}
+
 /// Execute query and return `QueryResult`
-fn execute_query(conn: &Connection, query: &str, caps: &Capabilities) -> Result<QueryResult> {
+fn execute_query(
+    conn: &Connection,
+    query: &str,
+    params: &[serde_json::Value],
+    caps: &Capabilities,
+) -> Result<QueryResult> {
     // Prepare statement
     let mut stmt = conn
         .prepare(query)
@@ -621,41 +690,91 @@ fn execute_query(conn: &Connection, query: &str, caps: &Capabilities) -> Result<
     // Get column names
     let column_names: Vec<String> = stmt.column_names().iter().map(|s| (*s).to_string()).collect();
 
+    // Convert JSON params to rusqlite native values for server-side binding
+    let sqlite_params: Vec<rusqlite::types::Value> =
+        params.iter().map(json_to_sqlite_value).collect();
+
     // Execute query and collect rows
     let mut rows_data = Vec::new();
     let mut rows_affected: Option<u64> = None;
+    let mut rows_truncated = false;
 
     // Check if this is a SELECT query (has columns)
     if column_names.is_empty() {
-        // Non-SELECT query (INSERT, UPDATE, DELETE, DDL)
-        stmt.execute([])
-            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {e}")))?;
+        // Non-SELECT query (INSERT, UPDATE, DELETE, DDL) — blocked by capability checks in
+        // practice; handled here for completeness.
+        stmt.execute(rusqlite::params_from_iter(&sqlite_params))
+            .map_err(|e| {
+                if is_sqlite_interrupt(&e) {
+                    PlenumError::query_timeout(
+                        "Query interrupted by SQLite server-side timeout".to_string(),
+                    )
+                } else {
+                    PlenumError::query_failed(format!("Failed to execute query: {e}"))
+                }
+            })?;
 
         // Get rows affected (only for DML statements)
         rows_affected = Some(conn.changes());
     } else {
         // SELECT query - collect result set
         let rows = stmt
-            .query([])
-            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {e}")))?;
+            .query(rusqlite::params_from_iter(&sqlite_params))
+            .map_err(|e| {
+                if is_sqlite_interrupt(&e) {
+                    PlenumError::query_timeout(
+                        "Query interrupted by SQLite server-side timeout".to_string(),
+                    )
+                } else {
+                    PlenumError::query_failed(format!("Failed to execute query: {e}"))
+                }
+            })?;
 
         let mapped_rows = rows.mapped(|row| row_to_json(&column_names, row)).collect::<Vec<_>>();
 
+        let offset = caps.offset.unwrap_or(0);
+        let max = caps.max_rows;
+        let mut pos = 0usize;
+
         for row_result in mapped_rows {
             let row = row_result
-                .map_err(|e| PlenumError::query_failed(format!("Failed to fetch row: {e}")))?;
-            rows_data.push(row);
+                .map_err(|e| {
+                    if is_sqlite_interrupt(&e) {
+                        PlenumError::query_timeout(
+                            "Query interrupted by SQLite server-side timeout during row fetch"
+                                .to_string(),
+                        )
+                    } else {
+                        PlenumError::query_failed(format!("Failed to fetch row: {e}"))
+                    }
+                })?;
 
-            // Enforce max_rows limit
-            if let Some(max_rows) = caps.max_rows {
-                if rows_data.len() >= max_rows {
+            // Skip offset rows
+            if pos < offset {
+                pos += 1;
+                continue;
+            }
+
+            // Probe one row past max_rows to detect truncation
+            if let Some(m) = max {
+                if rows_data.len() >= m {
+                    rows_truncated = true;
                     break;
                 }
             }
+
+            rows_data.push(row);
+            pos += 1;
         }
     }
 
-    Ok(QueryResult { columns: column_names, rows: rows_data, rows_affected, execution_ms: 0 })
+    Ok(QueryResult {
+        columns: column_names,
+        rows: rows_data,
+        rows_affected,
+        execution_ms: 0,
+        rows_truncated,
+    })
 }
 
 /// Convert a `SQLite` row to a JSON-safe `Vec`
@@ -818,7 +937,7 @@ mod tests {
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::default();
-        let result = SqliteEngine::execute(&config, "SELECT * FROM users", &caps).await;
+        let result = SqliteEngine::execute(&config, "SELECT * FROM users", &[], &caps).await;
         assert!(result.is_ok());
 
         let query_result = result.unwrap();
@@ -844,7 +963,7 @@ mod tests {
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::default();
         let result =
-            SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &caps).await;
+            SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &[], &caps).await;
 
         assert!(result.is_err());
         let error_message = result.unwrap_err().message();
@@ -871,7 +990,7 @@ mod tests {
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::default();
         let result =
-            SqliteEngine::execute(&config, "UPDATE users SET name = 'Bob' WHERE id = 1", &caps)
+            SqliteEngine::execute(&config, "UPDATE users SET name = 'Bob' WHERE id = 1", &[], &caps)
                 .await;
 
         assert!(result.is_err());
@@ -895,7 +1014,7 @@ mod tests {
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::default();
         let result =
-            SqliteEngine::execute(&config, "CREATE TABLE users (id INTEGER PRIMARY KEY)", &caps)
+            SqliteEngine::execute(&config, "CREATE TABLE users (id INTEGER PRIMARY KEY)", &[], &caps)
                 .await;
 
         assert!(result.is_err());
@@ -922,7 +1041,7 @@ mod tests {
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::default();
-        let result = SqliteEngine::execute(&config, "DELETE FROM users WHERE id = 1", &caps).await;
+        let result = SqliteEngine::execute(&config, "DELETE FROM users WHERE id = 1", &[], &caps).await;
 
         assert!(result.is_err());
         let error_message = result.unwrap_err().message();
@@ -951,7 +1070,7 @@ mod tests {
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities { max_rows: Some(5), ..Capabilities::default() };
-        let result = SqliteEngine::execute(&config, "SELECT * FROM users", &caps).await;
+        let result = SqliteEngine::execute(&config, "SELECT * FROM users", &[], &caps).await;
 
         assert!(result.is_ok());
         let query_result = result.unwrap();
@@ -995,7 +1114,7 @@ mod tests {
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::default();
-        let result = SqliteEngine::execute(&config, "SELECT * FROM test_types", &caps).await;
+        let result = SqliteEngine::execute(&config, "SELECT * FROM test_types", &[], &caps).await;
 
         assert!(result.is_ok());
         let query_result = result.unwrap();
@@ -1073,6 +1192,39 @@ mod tests {
         let _ = std::fs::remove_file(&temp_file);
     }
 
+    /// Prove that writes fail at the SQLite session layer independently of the parser.
+    ///
+    /// This test opens a connection using the same `SQLITE_OPEN_READ_ONLY` flags that
+    /// `execute()` uses, then attempts a direct rusqlite write without going through
+    /// `validate_query`. The write must be rejected by SQLite itself, not by Plenum's
+    /// parser, demonstrating true defense-in-depth (REF-261).
+    #[test]
+    fn test_sqlite_session_read_only_enforcement() {
+        let temp_file = std::env::temp_dir().join("test_session_ro_sqlite.db");
+        let _ = std::fs::remove_file(&temp_file);
+
+        // Pre-create the database with a table so writes are physically possible
+        // if the session were writable.
+        {
+            let conn = Connection::open(&temp_file).expect("Failed to create temp database");
+            conn.execute("CREATE TABLE t (id INTEGER)", []).expect("Failed to create table");
+        }
+
+        // Open with the same read-only flags that SqliteEngine::execute() uses.
+        let path_str = temp_file.to_str().unwrap();
+        let conn = open_connection(path_str, true).expect("Failed to open read-only connection");
+
+        // Attempt DML directly — no Plenum parser involved.
+        let dml_result = conn.execute("INSERT INTO t (id) VALUES (1)", []);
+        assert!(dml_result.is_err(), "INSERT must be rejected at the SQLite session layer");
+
+        // Attempt DDL directly — no Plenum parser involved.
+        let ddl_result = conn.execute("CREATE TABLE t2 (id INTEGER)", []);
+        assert!(ddl_result.is_err(), "CREATE TABLE must be rejected at the SQLite session layer");
+
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
     #[tokio::test]
     async fn test_introspect_indexes() {
         let temp_file = std::env::temp_dir().join("test_indexes.db");
@@ -1120,5 +1272,143 @@ mod tests {
 
         // Clean up
         let _ = std::fs::remove_file(&temp_file);
+    }
+
+    // -------------------------------------------------------------------------
+    // REF-263: column comments + row estimates
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_introspect_comment_and_row_estimate_explicit_null() {
+        // SQLite has no native comment storage and no row statistics unless
+        // ANALYZE has been run.  Both fields must be present in JSON as null.
+        let temp_file = std::env::temp_dir().join("test_ref263_sqlite.db");
+        let _ = std::fs::remove_file(&temp_file);
+
+        {
+            let conn = Connection::open(&temp_file).expect("Failed to open db");
+            conn.execute(
+                "CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT NOT NULL)",
+                [],
+            )
+            .expect("Failed to create table");
+        }
+
+        let config = ConnectionConfig::sqlite(temp_file.clone());
+        let result = SqliteEngine::introspect(
+            &config,
+            &IntrospectOperation::TableDetails {
+                name: "items".to_string(),
+                fields: crate::engine::TableFields::all(),
+            },
+            None,
+            None,
+        )
+        .await
+        .expect("Introspect failed");
+
+        let IntrospectResult::TableDetails { table } = result else {
+            panic!("Expected TableDetails")
+        };
+
+        // Table-level comment is always null for SQLite
+        assert!(table.comment.is_none(), "SQLite table comment must be null");
+        // row_estimate is null without prior ANALYZE
+        assert!(table.row_estimate.is_none(), "row_estimate must be null before ANALYZE");
+
+        // Column-level comments are always null for SQLite
+        for col in &table.columns {
+            assert!(col.comment.is_none(), "SQLite column '{}' comment must be null", col.name);
+        }
+
+        // Verify the JSON representation has explicit nulls (not omitted)
+        let json = serde_json::to_value(&table).expect("Serialization failed");
+        assert_eq!(json["comment"], serde_json::Value::Null, "comment must serialize as null");
+        assert_eq!(
+            json["row_estimate"],
+            serde_json::Value::Null,
+            "row_estimate must serialize as null"
+        );
+        assert_eq!(
+            json["columns"][0]["comment"],
+            serde_json::Value::Null,
+            "column comment must serialize as null"
+        );
+
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[tokio::test]
+    async fn test_introspect_row_estimate_after_analyze() {
+        // After ANALYZE sqlite_stat1 is populated; row_estimate should be non-null.
+        let temp_file = std::env::temp_dir().join("test_ref263_analyze.db");
+        let _ = std::fs::remove_file(&temp_file);
+
+        {
+            let conn = Connection::open(&temp_file).expect("Failed to open db");
+            conn.execute("CREATE TABLE things (id INTEGER PRIMARY KEY)", [])
+                .expect("Failed to create table");
+            for _ in 0..5 {
+                conn.execute("INSERT INTO things (id) VALUES (NULL)", [])
+                    .expect("Failed to insert");
+            }
+            conn.execute("ANALYZE", []).expect("Failed to ANALYZE");
+        }
+
+        let config = ConnectionConfig::sqlite(temp_file.clone());
+        let result = SqliteEngine::introspect(
+            &config,
+            &IntrospectOperation::TableDetails {
+                name: "things".to_string(),
+                fields: crate::engine::TableFields::all(),
+            },
+            None,
+            None,
+        )
+        .await
+        .expect("Introspect failed");
+
+        let IntrospectResult::TableDetails { table } = result else {
+            panic!("Expected TableDetails")
+        };
+
+        assert!(
+            table.row_estimate.is_some(),
+            "row_estimate must be populated after ANALYZE"
+        );
+        assert!(
+            table.row_estimate.unwrap() >= 0,
+            "row_estimate must be non-negative"
+        );
+
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[tokio::test]
+    async fn test_execute_server_side_timeout_interrupt() {
+        // A recursive CTE that counts to 1 billion will run for many seconds.
+        // With timeout_ms = 1 the interrupt thread fires almost immediately,
+        // and SQLite returns SQLITE_INTERRUPT, which we surface as QUERY_TIMEOUT.
+        let config = ConnectionConfig::sqlite(":memory:".into());
+        let caps = Capabilities { timeout_ms: Some(1), ..Capabilities::default() };
+        let sql = "WITH RECURSIVE cnt(x) AS \
+                   (VALUES(1) UNION ALL SELECT x+1 FROM cnt WHERE x < 1000000000) \
+                   SELECT count(*) FROM cnt";
+
+        let result = SqliteEngine::execute(&config, sql, &[], &caps).await;
+
+        assert!(result.is_err(), "Expected a timeout error but got Ok");
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.error_code(),
+            "QUERY_TIMEOUT",
+            "Expected QUERY_TIMEOUT, got: {}",
+            err.error_code()
+        );
+        assert!(
+            err.message().contains("interrupted"),
+            "Error message should mention interrupt: {}",
+            err.message()
+        );
     }
 }
