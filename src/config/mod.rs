@@ -209,6 +209,34 @@ pub fn lookup_keychain_password_pub(service: &str, account: &str) -> Result<Stri
     lookup_keychain_password(service, account)
 }
 
+// In tests, use a thread-local map so we can pre-populate entries without
+// needing a real OS keychain. The keyring mock's EntryOnly persistence means
+// each Entry::new() creates a fresh credential with no shared state, making it
+// unsuitable for round-trip tests.
+#[cfg(test)]
+thread_local! {
+    static MOCK_KEYCHAIN: std::cell::RefCell<std::collections::HashMap<String, String>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[cfg(test)]
+fn mock_keychain_key(service: &str, account: &str) -> String {
+    format!("{service}\0{account}")
+}
+
+#[cfg(test)]
+fn set_mock_keychain(service: &str, account: &str, password: &str) {
+    MOCK_KEYCHAIN.with(|k| {
+        k.borrow_mut().insert(mock_keychain_key(service, account), password.to_string());
+    });
+}
+
+#[cfg(test)]
+fn clear_mock_keychain() {
+    MOCK_KEYCHAIN.with(|k| k.borrow_mut().clear());
+}
+
+#[cfg(not(test))]
 fn lookup_keychain_password(service: &str, account: &str) -> Result<String> {
     let entry = keyring::Entry::new(service, account).map_err(|_| {
         PlenumError::config_error(format!(
@@ -220,6 +248,20 @@ fn lookup_keychain_password(service: &str, account: &str) -> Result<String> {
         PlenumError::config_error(format!(
             "No password found in keychain for service '{service}', account '{account}'"
         ))
+    })
+}
+
+#[cfg(test)]
+fn lookup_keychain_password(service: &str, account: &str) -> Result<String> {
+    MOCK_KEYCHAIN.with(|k| {
+        k.borrow()
+            .get(&mock_keychain_key(service, account))
+            .cloned()
+            .ok_or_else(|| {
+                PlenumError::config_error(format!(
+                    "No password found in keychain for service '{service}', account '{account}'"
+                ))
+            })
     })
 }
 
@@ -1441,12 +1483,8 @@ mod tests {
 
     #[test]
     fn test_keychain_entry_resolves_via_mock() {
-        // Use keyring's mock credential builder so no real OS keychain is needed.
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
-
-        // Pre-populate the mock keychain with a known password.
-        let entry = keyring::Entry::new("plenum-test-svc", "plenum-test-user").unwrap();
-        entry.set_password("mock-keychain-password").unwrap();
+        clear_mock_keychain();
+        set_mock_keychain("plenum-test-svc", "plenum-test-user", "mock-keychain-password");
 
         let stored = StoredConnection {
             config: ConnectionConfig {
@@ -1474,7 +1512,7 @@ mod tests {
 
     #[test]
     fn test_keychain_entry_missing_key_is_error() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        clear_mock_keychain(); // ensure no entry exists for these service/account
 
         let stored = StoredConnection {
             config: ConnectionConfig {
