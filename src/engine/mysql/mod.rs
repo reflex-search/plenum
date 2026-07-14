@@ -937,6 +937,7 @@ async fn execute_query(
             rows_affected: None,
             execution_ms: 0,
             rows_truncated,
+            truncated_by: None,
         })
     } else {
         // Non-SELECT query — use exec_iter() to support bound params
@@ -962,6 +963,7 @@ async fn execute_query(
             rows_affected: Some(rows_affected),
             execution_ms: 0,
             rows_truncated: false,
+            truncated_by: None,
         })
     }
 }

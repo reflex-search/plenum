@@ -774,6 +774,7 @@ fn execute_query(
         rows_affected,
         execution_ms: 0,
         rows_truncated,
+        truncated_by: None,
     })
 }
 

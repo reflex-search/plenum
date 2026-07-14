@@ -175,6 +175,12 @@ pub struct Capabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_rows: Option<usize>,
 
+    /// Maximum serialized byte size of the rows array in the response.
+    /// Truncation occurs at row boundaries; sets truncated_by="bytes" when triggered.
+    /// None means no limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<usize>,
+
     /// Query timeout in milliseconds
     /// None means no timeout
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -190,7 +196,7 @@ impl Capabilities {
     /// Create new capabilities with optional constraints
     #[must_use]
     pub const fn new(max_rows: Option<usize>, timeout_ms: Option<u64>) -> Self {
-        Self { max_rows, timeout_ms, offset: None }
+        Self { max_rows, max_bytes: None, timeout_ms, offset: None }
     }
 }
 
@@ -282,6 +288,8 @@ pub struct IndexInfo {
     pub unique: bool,
 }
 
+fn is_false(b: &bool) -> bool { !b }
+
 /// Query execution result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResult {
@@ -298,9 +306,36 @@ pub struct QueryResult {
     /// Query execution time in milliseconds
     pub execution_ms: u64,
 
-    /// Whether the result was truncated by max_rows; used to populate Metadata, not serialized
-    #[serde(skip)]
+    /// Whether the result was truncated (by max_rows or max_bytes); present in output when true
+    #[serde(skip_serializing_if = "is_false")]
     pub rows_truncated: bool,
+
+    /// Why the result was truncated: "rows" (max_rows) or "bytes" (max_bytes); absent when not truncated
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_by: Option<String>,
+}
+
+/// Trim `result.rows` to fit within `max_bytes` of serialized JSON, at row boundaries.
+///
+/// Each row's contribution is measured as `serde_json::to_string(row).len()`. When the
+/// cumulative total would exceed the budget, the result is truncated at that row boundary.
+/// Sets `rows_truncated = true` and `truncated_by = Some("bytes")` when truncation occurs.
+pub fn apply_byte_budget(result: &mut QueryResult, max_bytes: usize) {
+    let mut byte_count: usize = 0;
+    let mut cutoff: Option<usize> = None;
+    for (i, row) in result.rows.iter().enumerate() {
+        let row_bytes = serde_json::to_string(row).map(|s| s.len()).unwrap_or(0);
+        if byte_count + row_bytes > max_bytes {
+            cutoff = Some(i);
+            break;
+        }
+        byte_count += row_bytes;
+    }
+    if let Some(n) = cutoff {
+        result.rows.truncate(n);
+        result.rows_truncated = true;
+        result.truncated_by = Some("bytes".to_string());
+    }
 }
 
 /// Time-only query result (for benchmarking without token consumption)
@@ -582,6 +617,7 @@ mod tests {
     fn test_capabilities_defaults() {
         let caps = Capabilities::default();
         assert!(caps.max_rows.is_none());
+        assert!(caps.max_bytes.is_none());
         assert!(caps.timeout_ms.is_none());
     }
 
@@ -589,6 +625,63 @@ mod tests {
     fn test_capabilities_new() {
         let caps = Capabilities::new(Some(100), Some(5000));
         assert_eq!(caps.max_rows, Some(100));
+        assert!(caps.max_bytes.is_none());
         assert_eq!(caps.timeout_ms, Some(5000));
+    }
+
+    #[test]
+    fn test_apply_byte_budget_truncates_at_row_boundary() {
+        use serde_json::json;
+        let mut result = QueryResult {
+            columns: vec!["v".to_string()],
+            rows: vec![
+                vec![json!("aaaaaaaaaa")], // ~14 bytes serialized
+                vec![json!("bbbbbbbbbb")], // ~14 bytes
+                vec![json!("cccccccccc")], // ~14 bytes
+            ],
+            rows_affected: None,
+            execution_ms: 0,
+            rows_truncated: false,
+            truncated_by: None,
+        };
+        // Budget tight enough for 2 rows but not 3
+        apply_byte_budget(&mut result, 30);
+        assert_eq!(result.rows.len(), 2);
+        assert!(result.rows_truncated);
+        assert_eq!(result.truncated_by.as_deref(), Some("bytes"));
+    }
+
+    #[test]
+    fn test_apply_byte_budget_no_truncation_when_under_budget() {
+        use serde_json::json;
+        let mut result = QueryResult {
+            columns: vec!["v".to_string()],
+            rows: vec![vec![json!(1)], vec![json!(2)]],
+            rows_affected: None,
+            execution_ms: 0,
+            rows_truncated: false,
+            truncated_by: None,
+        };
+        apply_byte_budget(&mut result, 1_000_000);
+        assert_eq!(result.rows.len(), 2);
+        assert!(!result.rows_truncated);
+        assert!(result.truncated_by.is_none());
+    }
+
+    #[test]
+    fn test_apply_byte_budget_zero_budget_returns_empty() {
+        use serde_json::json;
+        let mut result = QueryResult {
+            columns: vec!["v".to_string()],
+            rows: vec![vec![json!(1)]],
+            rows_affected: None,
+            execution_ms: 0,
+            rows_truncated: false,
+            truncated_by: None,
+        };
+        apply_byte_budget(&mut result, 0);
+        assert_eq!(result.rows.len(), 0);
+        assert!(result.rows_truncated);
+        assert_eq!(result.truncated_by.as_deref(), Some("bytes"));
     }
 }
