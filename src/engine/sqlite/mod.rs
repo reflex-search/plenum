@@ -859,6 +859,7 @@ mod tests {
         let config = ConnectionConfig {
             engine: DatabaseType::SQLite,
             file: None,
+            tls: None,
             host: None,
             port: None,
             user: None,

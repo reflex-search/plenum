@@ -19,7 +19,7 @@
 //! - Row limits enforced in application code
 //! - Schema filtering supported (`MySQL` has explicit schemas/databases)
 
-use mysql_async::{prelude::*, Conn, OptsBuilder, Params, Row, Value};
+use mysql_async::{prelude::*, Conn, OptsBuilder, Params, Row, SslOpts, Value};
 use std::collections::HashMap; // Used for grouping foreign keys during introspection
 use std::time::{Duration, Instant};
 
@@ -27,7 +27,7 @@ use crate::capability::validate_query;
 use crate::engine::{
     Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine, DatabaseType,
     ForeignKeyInfo, IndexInfo, IndexSummary, IntrospectOperation, IntrospectResult, QueryResult,
-    TableFields, TableInfo, ViewInfo,
+    SslMode, TableFields, TableInfo, TlsConfig, ViewInfo,
 };
 use crate::error::{PlenumError, Result};
 
@@ -290,14 +290,69 @@ fn build_mysql_opts(config: &ConnectionConfig) -> Result<OptsBuilder> {
         }
     };
 
-    let opts = OptsBuilder::default()
+    let mut opts = OptsBuilder::default()
         .ip_or_hostname(host)
         .tcp_port(port)
         .user(Some(user))
         .pass(Some(password))
         .db_name(db_name);
 
+    // Apply TLS options when sslmode is not Disable.
+    if let Some(tls_config) = &config.tls {
+        if tls_config.sslmode != SslMode::Disable {
+            let ssl_opts = build_mysql_ssl_opts(tls_config)?;
+            opts = opts.ssl_opts(ssl_opts);
+        }
+    }
+
     Ok(opts)
+}
+
+/// Build `mysql_async::SslOpts` from a `TlsConfig`.
+///
+/// Error messages deliberately omit cert/key paths to prevent credential leakage.
+fn build_mysql_ssl_opts(tls: &TlsConfig) -> Result<SslOpts> {
+    let mut ssl_opts = SslOpts::default();
+
+    match &tls.sslmode {
+        SslMode::Require => {
+            // Require TLS; skip both cert validation and hostname check.
+            ssl_opts = ssl_opts
+                .with_danger_accept_invalid_certs(true)
+                .with_danger_skip_domain_validation(true);
+        }
+        SslMode::VerifyCa => {
+            // Verify cert against CA; skip hostname check.
+            let ca_path = tls.ca_cert.as_ref().ok_or_else(|| {
+                PlenumError::connection_failed(
+                    "sslmode=verify-ca requires a CA certificate (--ssl-ca)",
+                )
+            })?;
+            ssl_opts = ssl_opts
+                .with_root_certs(vec![ca_path.clone().into()])
+                .with_danger_skip_domain_validation(true);
+        }
+        SslMode::VerifyFull => {
+            // Full verification: CA cert + hostname.
+            let ca_path = tls.ca_cert.as_ref().ok_or_else(|| {
+                PlenumError::connection_failed(
+                    "sslmode=verify-full requires a CA certificate (--ssl-ca)",
+                )
+            })?;
+            ssl_opts = ssl_opts.with_root_certs(vec![ca_path.clone().into()]);
+        }
+        SslMode::Disable => {
+            unreachable!("Disable mode is filtered before calling this function")
+        }
+    }
+
+    // mTLS: load client cert + key if provided.
+    if let (Some(cert_path), Some(key_path)) = (&tls.client_cert, &tls.client_key) {
+        let identity = mysql_async::ClientIdentity::new(cert_path.clone().into(), key_path.clone().into());
+        ssl_opts = ssl_opts.with_client_identity(Some(identity));
+    }
+
+    Ok(ssl_opts)
 }
 
 /// Parse `MySQL` version string to detect `MySQL` vs `MariaDB`
@@ -1081,6 +1136,7 @@ mod tests {
             password: Some("password".to_string()),
             database: None,
             file: None,
+            tls: None,
         };
 
         let result = build_mysql_opts(&config);
@@ -1202,11 +1258,118 @@ mod tests {
             password: Some("password".to_string()),
             database: Some("test".to_string()),
             file: None,
+            tls: None,
         };
 
         let result = MySqlEngine::validate_connection(&config).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().message().contains("MySQL requires 'host' parameter"));
+    }
+
+    // -------------------------------------------------------------------------
+    // REF-270: TLS/SSL configuration tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_mysql_verify_ca_requires_ca_cert() {
+        let mut config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+        config.tls = Some(TlsConfig {
+            sslmode: SslMode::VerifyCa,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+        });
+        let result = build_mysql_opts(&config);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().message().to_string();
+        assert!(msg.contains("CA certificate"), "expected mention of CA cert: {msg}");
+        assert!(!msg.contains('/'), "must not contain file path: {msg}");
+    }
+
+    #[test]
+    fn test_mysql_verify_full_requires_ca_cert() {
+        let mut config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+        config.tls = Some(TlsConfig {
+            sslmode: SslMode::VerifyFull,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+        });
+        let result = build_mysql_opts(&config);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().message().to_string();
+        assert!(msg.contains("CA certificate"), "expected mention of CA cert: {msg}");
+        assert!(!msg.contains('/'), "must not contain file path: {msg}");
+    }
+
+    #[test]
+    fn test_mysql_require_mode_builds_without_ca() {
+        let mut config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+        config.tls = Some(TlsConfig {
+            sslmode: SslMode::Require,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+        });
+        // sslmode=require should not fail at opts-build time (no CA needed)
+        assert!(build_mysql_opts(&config).is_ok());
+    }
+
+    #[test]
+    fn test_mysql_disable_mode_no_ssl_opts() {
+        let mut config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+        config.tls = Some(TlsConfig {
+            sslmode: SslMode::Disable,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+        });
+        // sslmode=disable → plaintext; no SSL opts needed and should not error
+        assert!(build_mysql_opts(&config).is_ok());
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance with TLS enabled"]
+    async fn test_mysql_tls_verify_full_connects() {
+        let mut config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+        config.tls = Some(TlsConfig {
+            sslmode: SslMode::VerifyFull,
+            ca_cert: Some(std::path::PathBuf::from("/etc/ssl/certs/ca-certificates.crt")),
+            client_cert: None,
+            client_key: None,
+        });
+        let result = MySqlEngine::validate_connection(&config).await;
+        assert!(result.is_ok(), "TLS verify-full connection failed: {:?}", result.err());
     }
 
     // Additional integration tests would follow the pattern from postgres/mod.rs

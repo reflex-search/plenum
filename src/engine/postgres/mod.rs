@@ -26,7 +26,8 @@ use tokio_postgres::{error::SqlState, Client, Config, NoTls, Row};
 use crate::capability::validate_query;
 use crate::engine::{
     Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine, DatabaseType,
-    ForeignKeyInfo, IndexInfo, IntrospectOperation, IntrospectResult, QueryResult, TableInfo,
+    ForeignKeyInfo, IndexInfo, IntrospectOperation, IntrospectResult, QueryResult, SslMode,
+    TableInfo, TlsConfig,
 };
 use crate::error::{PlenumError, Result};
 
@@ -46,16 +47,8 @@ impl DatabaseEngine for PostgresEngine {
         // Build connection config
         let pg_config = build_pg_config(config)?;
 
-        // Connect to PostgreSQL
-        let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
-            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {e}"))
-        })?;
-
-        // Spawn connection handler
-        // Note: Connection errors are not logged to prevent credential leakage
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
+        // Connect to PostgreSQL (TLS or plaintext depending on config)
+        let client = pg_connect(&pg_config, config.tls.as_ref()).await?;
 
         // Get PostgreSQL version
         let version_row = client.query_one("SELECT version()", &[]).await.map_err(|e| {
@@ -120,15 +113,8 @@ impl DatabaseEngine for PostgresEngine {
         // Build connection config
         let pg_config = build_pg_config(&effective_config)?;
 
-        // Connect to PostgreSQL
-        let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
-            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {e}"))
-        })?;
-
-        // Spawn connection handler
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
+        // Connect to PostgreSQL (TLS or plaintext depending on config)
+        let client = pg_connect(&pg_config, effective_config.tls.as_ref()).await?;
 
         // Route to appropriate operation handler
         let result = match operation {
@@ -185,16 +171,8 @@ impl DatabaseEngine for PostgresEngine {
         // Build connection config
         let pg_config = build_pg_config(config)?;
 
-        // Connect to PostgreSQL
-        let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
-            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {e}"))
-        })?;
-
-        // Spawn connection handler
-        // Note: Connection errors are not logged to prevent credential leakage
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
+        // Connect to PostgreSQL (TLS or plaintext depending on config)
+        let client = pg_connect(&pg_config, config.tls.as_ref()).await?;
 
         // Defense in depth: enforce session-level read-only at the database layer.
         // This rejects writes even if the SQL parser is somehow bypassed (REF-261).
@@ -284,6 +262,96 @@ fn build_pg_config(config: &ConnectionConfig) -> Result<Config> {
     pg_config.host(host).port(port).user(user).password(password).dbname(db_name);
 
     Ok(pg_config)
+}
+
+/// Connect to PostgreSQL, branching on TLS config.
+///
+/// Returns only the `Client`; the background `Connection` is spawned into the tokio runtime.
+/// No credentials or cert paths appear in error messages.
+async fn pg_connect(pg_config: &Config, tls_config: Option<&TlsConfig>) -> Result<Client> {
+    let sslmode = tls_config.map(|t| &t.sslmode).unwrap_or(&SslMode::Disable);
+
+    match sslmode {
+        SslMode::Disable => {
+            let (client, connection) = pg_config
+                .connect(NoTls)
+                .await
+                .map_err(|e| PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {e}")))?;
+            tokio::spawn(async move { let _ = connection.await; });
+            Ok(client)
+        }
+        _ => {
+            // SAFETY: only reachable when tls_config is Some (sslmode != Disable).
+            let connector = build_pg_native_tls(tls_config.unwrap())?;
+            let tls = postgres_native_tls::MakeTlsConnector::new(connector);
+            let (client, connection) = pg_config
+                .connect(tls)
+                .await
+                .map_err(|e| PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {e}")))?;
+            tokio::spawn(async move { let _ = connection.await; });
+            Ok(client)
+        }
+    }
+}
+
+/// Build a `native_tls::TlsConnector` from a `TlsConfig`.
+///
+/// Error messages deliberately omit cert/key paths to prevent credential leakage.
+fn build_pg_native_tls(tls: &TlsConfig) -> Result<native_tls::TlsConnector> {
+    let mut builder = native_tls::TlsConnector::builder();
+
+    match &tls.sslmode {
+        SslMode::Require => {
+            // Require TLS; skip both cert validation and hostname check.
+            builder.danger_accept_invalid_certs(true);
+            builder.danger_accept_invalid_hostnames(true);
+        }
+        SslMode::VerifyCa => {
+            // Verify cert against CA; skip hostname check.
+            let ca_path = tls.ca_cert.as_ref().ok_or_else(|| {
+                PlenumError::connection_failed(
+                    "sslmode=verify-ca requires a CA certificate (--ssl-ca)",
+                )
+            })?;
+            let ca_pem = std::fs::read(ca_path)
+                .map_err(|_| PlenumError::connection_failed("Failed to read CA certificate"))?;
+            let cert = native_tls::Certificate::from_pem(&ca_pem)
+                .map_err(|_| PlenumError::connection_failed("Failed to parse CA certificate"))?;
+            builder.add_root_certificate(cert);
+            builder.danger_accept_invalid_hostnames(true);
+        }
+        SslMode::VerifyFull => {
+            // Full verification: CA cert + hostname.
+            let ca_path = tls.ca_cert.as_ref().ok_or_else(|| {
+                PlenumError::connection_failed(
+                    "sslmode=verify-full requires a CA certificate (--ssl-ca)",
+                )
+            })?;
+            let ca_pem = std::fs::read(ca_path)
+                .map_err(|_| PlenumError::connection_failed("Failed to read CA certificate"))?;
+            let cert = native_tls::Certificate::from_pem(&ca_pem)
+                .map_err(|_| PlenumError::connection_failed("Failed to parse CA certificate"))?;
+            builder.add_root_certificate(cert);
+        }
+        SslMode::Disable => {
+            unreachable!("Disable mode is handled in pg_connect before calling this function")
+        }
+    }
+
+    // mTLS: load client cert + key if provided.
+    if let (Some(cert_path), Some(key_path)) = (&tls.client_cert, &tls.client_key) {
+        let cert_pem = std::fs::read(cert_path)
+            .map_err(|_| PlenumError::connection_failed("Failed to read client certificate"))?;
+        let key_pem = std::fs::read(key_path)
+            .map_err(|_| PlenumError::connection_failed("Failed to read client key"))?;
+        let identity = native_tls::Identity::from_pkcs8(&cert_pem, &key_pem)
+            .map_err(|_| PlenumError::connection_failed("Failed to parse client certificate or key"))?;
+        builder.identity(identity);
+    }
+
+    builder
+        .build()
+        .map_err(|_| PlenumError::connection_failed("Failed to build TLS connector"))
 }
 
 /// Determine target schema from filter or current schema
@@ -1080,6 +1148,7 @@ mod tests {
             password: Some("postgres".to_string()),
             database: None,
             file: None,
+            tls: None,
         };
 
         let result = build_pg_config(&config);
@@ -1185,6 +1254,7 @@ mod tests {
             password: Some("postgres".to_string()),
             database: Some("postgres".to_string()),
             file: None,
+            tls: None,
         };
 
         let result = PostgresEngine::validate_connection(&config).await;
@@ -1452,6 +1522,90 @@ mod tests {
 
         // Cleanup
         let _ = PostgresEngine::execute(&config, "DROP TABLE test_limit", &[], &ddl_caps).await;
+    }
+
+    // -------------------------------------------------------------------------
+    // REF-270: TLS/SSL configuration tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_verify_ca_requires_ca_cert() {
+        let tls = TlsConfig {
+            sslmode: SslMode::VerifyCa,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+        };
+        let result = build_pg_native_tls(&tls);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().message().to_string();
+        // Must report connection failed, must NOT leak paths
+        assert!(msg.contains("CA certificate"), "expected mention of CA cert");
+        assert!(!msg.contains('/'), "must not contain file path in error");
+    }
+
+    #[test]
+    fn test_verify_full_requires_ca_cert() {
+        let tls = TlsConfig {
+            sslmode: SslMode::VerifyFull,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+        };
+        let result = build_pg_native_tls(&tls);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().message().to_string();
+        assert!(msg.contains("CA certificate"));
+        assert!(!msg.contains('/'));
+    }
+
+    #[test]
+    fn test_verify_ca_nonexistent_ca_file_no_path_leak() {
+        let tls = TlsConfig {
+            sslmode: SslMode::VerifyCa,
+            ca_cert: Some(std::path::PathBuf::from("/nonexistent/ca.pem")),
+            client_cert: None,
+            client_key: None,
+        };
+        let result = build_pg_native_tls(&tls);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().message().to_string();
+        // Error must not leak the path "/nonexistent/ca.pem"
+        assert!(!msg.contains("nonexistent"), "path must not appear in error: {msg}");
+        assert!(!msg.contains("/nonexistent"), "path must not appear in error: {msg}");
+    }
+
+    #[test]
+    fn test_require_mode_builds_without_ca() {
+        // sslmode=require should succeed without ca_cert (no cert verification)
+        let tls = TlsConfig {
+            sslmode: SslMode::Require,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+        };
+        // build_pg_native_tls returns Ok for require mode (no files read)
+        assert!(build_pg_native_tls(&tls).is_ok());
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running PostgreSQL instance with TLS enabled"]
+    async fn test_tls_verify_full_connects() {
+        let mut config = ConnectionConfig::postgres(
+            "localhost".to_string(),
+            5432,
+            "postgres".to_string(),
+            "postgres".to_string(),
+            "postgres".to_string(),
+        );
+        config.tls = Some(TlsConfig {
+            sslmode: SslMode::VerifyFull,
+            ca_cert: Some(std::path::PathBuf::from("/etc/ssl/certs/ca-certificates.crt")),
+            client_cert: None,
+            client_key: None,
+        });
+        let result = PostgresEngine::validate_connection(&config).await;
+        assert!(result.is_ok(), "TLS verify-full connection failed: {:?}", result.err());
     }
 
     #[test]

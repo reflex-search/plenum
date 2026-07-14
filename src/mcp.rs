@@ -46,7 +46,7 @@ use serde_json::Value;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
-use crate::{Capabilities, ConnectionConfig, DatabaseEngine, DatabaseType};
+use crate::{parse_dsn, redact_dsn, Capabilities, ConnectionConfig, DatabaseEngine, DatabaseType};
 
 // Import database engines
 #[cfg(feature = "mysql")]
@@ -253,6 +253,10 @@ fn handle_list_tools() -> Result<Value> {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
+                        "dsn": {
+                            "type": "string",
+                            "description": "One-off connection DSN/URL. Use when you have a full connection string and no saved connection exists. Mutually exclusive with 'connection' and 'engine'. Accepted schemes: postgres://, postgresql://, mysql://, sqlite:. Credentials are redacted from any error output. Example: 'postgres://user:pass@host:5432/db'. Config is never written."
+                        },
                         "connection": {
                             "type": "string",
                             "description": "RECOMMENDED: Name of saved connection to use. Loads from .plenum/config.json (local) or ~/.config/plenum/connections.json (global). If omitted along with 'engine', auto-resolves project's default connection (BEST PRACTICE)."
@@ -350,6 +354,10 @@ fn handle_list_tools() -> Result<Value> {
                         "sql": {
                             "type": "string",
                             "description": "SQL query to execute. REQUIRED. Must be valid, vendor-specific SQL (PostgreSQL SQL ≠ MySQL SQL ≠ SQLite SQL). You (the agent) are responsible for sanitizing user inputs before constructing SQL - Plenum does not validate SQL safety."
+                        },
+                        "dsn": {
+                            "type": "string",
+                            "description": "One-off connection DSN/URL. Use when you have a full connection string and no saved connection exists. Mutually exclusive with 'connection' and 'engine'. Accepted schemes: postgres://, postgresql://, mysql://, sqlite:. Credentials are redacted from any error output. Example: 'postgres://user:pass@host:5432/db'. Config is never written."
                         },
                         "connection": {
                             "type": "string",
@@ -750,13 +758,28 @@ fn build_connection_config_from_args(args: &Value, engine_str: &str) -> Result<C
 
 /// Resolve connection config from JSON arguments
 ///
-/// This handles three scenarios:
-/// 1. Named connection: Loads saved connection, optionally with overrides
-/// 2. Explicit parameters: Requires engine and all connection details
-/// 3. Auto-resolve default: When neither connection nor engine provided, uses current project's default connection
+/// Resolution order:
+/// 1. DSN string: one-off URL, bypasses saved config; mutually exclusive with connection/engine
+/// 2. Named connection: loads saved connection, optionally with overrides
+/// 3. Explicit parameters: requires engine and all connection details
+/// 4. Auto-resolve default: uses current project's default connection
 ///
 /// Returns a tuple of (`ConnectionConfig`, `is_readonly`).
 fn resolve_connection_from_args(args: &Value) -> Result<(ConnectionConfig, bool)> {
+    // Scenario 0: DSN one-off URL (mutually exclusive with connection and engine)
+    if let Some(dsn_str) = args.get("dsn").and_then(|v| v.as_str()) {
+        if args.get("connection").and_then(|v| v.as_str()).is_some() {
+            return Err(anyhow!("'dsn' and 'connection' are mutually exclusive"));
+        }
+        if args.get("engine").and_then(|v| v.as_str()).is_some() {
+            return Err(anyhow!("'dsn' and 'engine' are mutually exclusive"));
+        }
+        let config = parse_dsn(dsn_str).map_err(|e| {
+            anyhow!("{} (DSN: {})", e.message(), redact_dsn(dsn_str))
+        })?;
+        return Ok((config, false));
+    }
+
     let has_connection = args.get("connection").and_then(|v| v.as_str()).is_some();
     let has_engine = args.get("engine").and_then(|v| v.as_str()).is_some();
 

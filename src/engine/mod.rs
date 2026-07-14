@@ -17,6 +17,52 @@ use std::path::PathBuf;
 
 use crate::error::Result;
 
+/// TLS/SSL mode for database connections
+///
+/// Maps to PostgreSQL's `sslmode` parameter and equivalent MySQL semantics.
+/// SQLite ignores this field (no network TLS).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SslMode {
+    /// No TLS; plaintext connection only. Fails if server requires TLS.
+    #[default]
+    Disable,
+    /// Require TLS but do not verify server certificate or hostname.
+    Require,
+    /// Require TLS and verify the server certificate against `ca_cert`.
+    /// Hostname is not verified. Requires `ca_cert`.
+    VerifyCa,
+    /// Require TLS, verify certificate against `ca_cert`, and verify hostname.
+    /// Requires `ca_cert`. This is the highest-security mode.
+    VerifyFull,
+}
+
+/// TLS/SSL configuration for a database connection
+///
+/// All fields are opt-in. Missing-but-required inputs (e.g. `ca_cert` for
+/// `verify-ca`) fail fast with a normalised `CONNECTION_FAILED` error and
+/// no credential or path leakage in the message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsConfig {
+    /// SSL mode (disable / require / verify-ca / verify-full)
+    pub sslmode: SslMode,
+
+    /// Path to PEM CA certificate file.
+    /// Required for `verify-ca` and `verify-full`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_cert: Option<PathBuf>,
+
+    /// Path to PEM client certificate file (mTLS).
+    /// Must be paired with `client_key`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_cert: Option<PathBuf>,
+
+    /// Path to PEM client private key file (mTLS).
+    /// Must be paired with `client_cert`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_key: Option<PathBuf>,
+}
+
 // Engine-specific implementations
 #[cfg(feature = "sqlite")]
 pub mod sqlite; // Phase 3 ✅
@@ -91,12 +137,16 @@ pub struct ConnectionConfig {
     /// Database file path (for sqlite)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<PathBuf>,
+
+    /// TLS/SSL configuration (postgres and mysql only; ignored by sqlite)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<TlsConfig>,
 }
 
 impl ConnectionConfig {
     /// Create a new `PostgreSQL` connection config
     #[must_use]
-    pub const fn postgres(
+    pub fn postgres(
         host: String,
         port: u16,
         user: String,
@@ -111,12 +161,13 @@ impl ConnectionConfig {
             password: Some(password),
             database: Some(database),
             file: None,
+            tls: None,
         }
     }
 
     /// Create a new `MySQL` connection config
     #[must_use]
-    pub const fn mysql(
+    pub fn mysql(
         host: String,
         port: u16,
         user: String,
@@ -131,12 +182,13 @@ impl ConnectionConfig {
             password: Some(password),
             database: Some(database),
             file: None,
+            tls: None,
         }
     }
 
     /// Create a new `SQLite` connection config
     #[must_use]
-    pub const fn sqlite(file: PathBuf) -> Self {
+    pub fn sqlite(file: PathBuf) -> Self {
         Self {
             engine: DatabaseType::SQLite,
             host: None,
@@ -145,6 +197,7 @@ impl ConnectionConfig {
             password: None,
             database: None,
             file: Some(file),
+            tls: None,
         }
     }
 }
@@ -598,6 +651,7 @@ mod tests {
         );
         assert_eq!(pg_config.engine, DatabaseType::Postgres);
         assert_eq!(pg_config.port, Some(5432));
+        assert!(pg_config.tls.is_none());
 
         let mysql_config = ConnectionConfig::mysql(
             "localhost".to_string(),
@@ -608,10 +662,85 @@ mod tests {
         );
         assert_eq!(mysql_config.engine, DatabaseType::MySQL);
         assert_eq!(mysql_config.port, Some(3306));
+        assert!(mysql_config.tls.is_none());
 
         let sqlite_config = ConnectionConfig::sqlite(PathBuf::from("/tmp/test.db"));
         assert_eq!(sqlite_config.engine, DatabaseType::SQLite);
         assert!(sqlite_config.file.is_some());
+        assert!(sqlite_config.tls.is_none());
+    }
+
+    #[test]
+    fn test_ssl_mode_serialization() {
+        assert_eq!(
+            serde_json::to_string(&SslMode::Disable).unwrap(),
+            r#""disable""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SslMode::Require).unwrap(),
+            r#""require""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SslMode::VerifyCa).unwrap(),
+            r#""verify-ca""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SslMode::VerifyFull).unwrap(),
+            r#""verify-full""#
+        );
+    }
+
+    #[test]
+    fn test_ssl_mode_default_is_disable() {
+        let mode = SslMode::default();
+        assert_eq!(mode, SslMode::Disable);
+    }
+
+    #[test]
+    fn test_tls_config_serialization_omits_none_fields() {
+        let tls = TlsConfig { sslmode: SslMode::Require, ca_cert: None, client_cert: None, client_key: None };
+        let json = serde_json::to_string(&tls).unwrap();
+        assert!(json.contains("\"sslmode\":\"require\""));
+        assert!(!json.contains("ca_cert"));
+        assert!(!json.contains("client_cert"));
+        assert!(!json.contains("client_key"));
+    }
+
+    #[test]
+    fn test_connection_config_tls_roundtrip() {
+        let mut config = ConnectionConfig::postgres(
+            "localhost".to_string(),
+            5432,
+            "user".to_string(),
+            "pass".to_string(),
+            "db".to_string(),
+        );
+        config.tls = Some(TlsConfig {
+            sslmode: SslMode::VerifyFull,
+            ca_cert: Some(PathBuf::from("/etc/ssl/ca.pem")),
+            client_cert: None,
+            client_key: None,
+        });
+
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: ConnectionConfig = serde_json::from_str(&json).unwrap();
+        let tls = parsed.tls.unwrap();
+        assert_eq!(tls.sslmode, SslMode::VerifyFull);
+        assert_eq!(tls.ca_cert, Some(PathBuf::from("/etc/ssl/ca.pem")));
+    }
+
+    #[test]
+    fn test_connection_config_tls_absent_omits_field() {
+        let config = ConnectionConfig::postgres(
+            "localhost".to_string(),
+            5432,
+            "user".to_string(),
+            "pass".to_string(),
+            "db".to_string(),
+        );
+        let json = serde_json::to_string(&config).unwrap();
+        // tls field should not appear in JSON when None
+        assert!(!json.contains("\"tls\""));
     }
 
     #[test]

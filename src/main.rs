@@ -14,9 +14,10 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use plenum::{
-    Capabilities, ConfigLocation, ConnectionConfig, DatabaseEngine, DatabaseType, ErrorEnvelope,
-    Metadata, PlenumError, Result, SuccessEnvelope,
+    parse_dsn, redact_dsn, Capabilities, ConfigLocation, ConnectionConfig, DatabaseEngine,
+    DatabaseType, ErrorEnvelope, KeychainEntry, Metadata, PlenumError, Result, SuccessEnvelope,
 };
+use plenum::engine::{SslMode, TlsConfig};
 
 // Import database engines
 #[cfg(feature = "mysql")]
@@ -27,8 +28,16 @@ use plenum::engine::postgres::PostgresEngine;
 use plenum::engine::sqlite::SqliteEngine;
 
 /// Resolved arguments for `plenum connect`:
-/// connection name, project path, config, optional `password_env` reference, save location.
-type ConnectArgs = (String, Option<String>, ConnectionConfig, Option<String>, ConfigLocation);
+/// connection name, project path, config, password_env, password_command, keychain_entry, save location.
+type ConnectArgs = (
+    String,
+    Option<String>,
+    ConnectionConfig,
+    Option<String>,
+    Option<String>,
+    Option<KeychainEntry>,
+    ConfigLocation,
+);
 
 /// Plenum - Agent-First Database Control CLI
 #[derive(Parser)]
@@ -45,7 +54,7 @@ enum Commands {
     /// Configure and validate database connections
     Connect {
         /// List saved connections for the project as JSON (no secrets emitted)
-        #[arg(long, conflicts_with_all = ["name", "engine", "host", "port", "user", "password", "password_env", "database", "file", "save", "test"])]
+        #[arg(long, conflicts_with_all = ["name", "engine", "host", "port", "user", "password", "password_env", "password_command", "keychain_service", "keychain_account", "database", "file", "save", "test"])]
         list: bool,
 
         /// Connection name (optional, defaults to "default")
@@ -80,6 +89,18 @@ enum Commands {
         #[arg(long)]
         password_env: Option<String>,
 
+        /// Shell command whose stdout is used as the password (run via `sh -c` at connection time)
+        #[arg(long)]
+        password_command: Option<String>,
+
+        /// OS keychain service name (use with --keychain-account)
+        #[arg(long, requires = "keychain_account")]
+        keychain_service: Option<String>,
+
+        /// OS keychain account name (use with --keychain-service)
+        #[arg(long, requires = "keychain_service")]
+        keychain_account: Option<String>,
+
         /// Database name (postgres/mysql)
         #[arg(long)]
         database: Option<String>,
@@ -92,6 +113,22 @@ enum Commands {
         #[arg(long, value_parser = ["local", "global"], conflicts_with = "test")]
         save: Option<String>,
 
+        /// TLS/SSL mode (postgres/mysql only): disable, require, verify-ca, or verify-full
+        #[arg(long, value_parser = ["disable", "require", "verify-ca", "verify-full"])]
+        ssl_mode: Option<String>,
+
+        /// Path to PEM CA certificate for TLS verification (required for verify-ca / verify-full)
+        #[arg(long)]
+        ssl_ca: Option<PathBuf>,
+
+        /// Path to PEM client certificate for mTLS (must be paired with --ssl-key)
+        #[arg(long)]
+        ssl_cert: Option<PathBuf>,
+
+        /// Path to PEM client private key for mTLS (must be paired with --ssl-cert)
+        #[arg(long)]
+        ssl_key: Option<PathBuf>,
+
         /// Test connection liveness and return server metadata without saving config
         #[arg(long, conflicts_with = "save")]
         test: bool,
@@ -99,6 +136,11 @@ enum Commands {
 
     /// Introspect database schema
     Introspect {
+        /// One-off connection DSN/URL (mutually exclusive with --name and explicit connection flags).
+        /// Accepted schemes: postgres://, postgresql://, mysql://, sqlite:
+        #[arg(long, conflicts_with_all = ["name", "engine", "host", "port", "user", "password", "database", "file"])]
+        dsn: Option<String>,
+
         /// Connection name (optional, defaults to "default")
         #[arg(long)]
         name: Option<String>,
@@ -134,6 +176,22 @@ enum Commands {
         /// `SQLite` file override
         #[arg(long)]
         file: Option<PathBuf>,
+
+        /// TLS/SSL mode (postgres/mysql only): disable, require, verify-ca, or verify-full
+        #[arg(long, value_parser = ["disable", "require", "verify-ca", "verify-full"])]
+        ssl_mode: Option<String>,
+
+        /// Path to PEM CA certificate for TLS verification (required for verify-ca / verify-full)
+        #[arg(long)]
+        ssl_ca: Option<PathBuf>,
+
+        /// Path to PEM client certificate for mTLS (must be paired with --ssl-key)
+        #[arg(long)]
+        ssl_cert: Option<PathBuf>,
+
+        /// Path to PEM client private key for mTLS (must be paired with --ssl-cert)
+        #[arg(long)]
+        ssl_key: Option<PathBuf>,
 
         // ===== OPERATIONS (mutually exclusive) =====
         /// List all databases (requires wildcard database connection)
@@ -193,6 +251,11 @@ enum Commands {
 
     /// Execute constrained SQL queries
     Query {
+        /// One-off connection DSN/URL (mutually exclusive with --name and explicit connection flags).
+        /// Accepted schemes: postgres://, postgresql://, mysql://, sqlite:
+        #[arg(long, conflicts_with_all = ["name", "engine", "host", "port", "user", "password", "database", "file"])]
+        dsn: Option<String>,
+
         /// Connection name (optional, defaults to "default")
         #[arg(long)]
         name: Option<String>,
@@ -228,6 +291,22 @@ enum Commands {
         /// `SQLite` file override
         #[arg(long)]
         file: Option<PathBuf>,
+
+        /// TLS/SSL mode (postgres/mysql only): disable, require, verify-ca, or verify-full
+        #[arg(long, value_parser = ["disable", "require", "verify-ca", "verify-full"])]
+        ssl_mode: Option<String>,
+
+        /// Path to PEM CA certificate for TLS verification (required for verify-ca / verify-full)
+        #[arg(long)]
+        ssl_ca: Option<PathBuf>,
+
+        /// Path to PEM client certificate for mTLS (must be paired with --ssl-key)
+        #[arg(long)]
+        ssl_cert: Option<PathBuf>,
+
+        /// Path to PEM client private key for mTLS (must be paired with --ssl-cert)
+        #[arg(long)]
+        ssl_key: Option<PathBuf>,
 
         /// SQL query (mutually exclusive with --sql-file)
         #[arg(long, conflicts_with = "sql_file")]
@@ -301,11 +380,23 @@ async fn main() {
             user,
             password,
             password_env,
+            password_command,
+            keychain_service,
+            keychain_account,
             database,
             file,
             save,
+            ssl_mode,
+            ssl_ca,
+            ssl_cert,
+            ssl_key,
             test,
         }) => {
+            let tls = build_tls_config(ssl_mode, ssl_ca, ssl_cert, ssl_key);
+            let keychain_entry = match (keychain_service, keychain_account) {
+                (Some(service), Some(account)) => Some(KeychainEntry { service, account }),
+                _ => None,
+            };
             if list {
                 handle_connect_list(project_path).await
             } else if test {
@@ -318,8 +409,11 @@ async fn main() {
                     user,
                     password,
                     password_env,
+                    password_command,
+                    keychain_entry,
                     database,
                     file,
+                    tls,
                 )
                 .await
             } else {
@@ -332,14 +426,18 @@ async fn main() {
                     user,
                     password,
                     password_env,
+                    password_command,
+                    keychain_entry,
                     database,
                     file,
                     save,
+                    tls,
                 )
                 .await
             }
         }
         Some(Commands::Introspect {
+            dsn,
             name,
             project_path,
             engine,
@@ -349,6 +447,10 @@ async fn main() {
             password,
             database,
             file,
+            ssl_mode,
+            ssl_ca,
+            ssl_cert,
+            ssl_key,
             list_databases,
             list_schemas,
             list_tables,
@@ -363,7 +465,9 @@ async fn main() {
             foreign_keys,
             indexes,
         }) => {
+            let tls = build_tls_config(ssl_mode, ssl_ca, ssl_cert, ssl_key);
             handle_introspect(
+                dsn,
                 name,
                 project_path,
                 engine,
@@ -373,6 +477,7 @@ async fn main() {
                 password,
                 database,
                 file,
+                tls,
                 list_databases,
                 list_schemas,
                 list_tables,
@@ -390,6 +495,7 @@ async fn main() {
             .await
         }
         Some(Commands::Query {
+            dsn,
             name,
             project_path,
             engine,
@@ -399,6 +505,10 @@ async fn main() {
             password,
             database,
             file,
+            ssl_mode,
+            ssl_ca,
+            ssl_cert,
+            ssl_key,
             sql,
             sql_file,
             max_rows,
@@ -409,7 +519,9 @@ async fn main() {
             time_only,
             check_only,
         }) => {
+            let tls = build_tls_config(ssl_mode, ssl_ca, ssl_cert, ssl_key);
             handle_query(
+                dsn,
                 name,
                 project_path,
                 engine,
@@ -419,6 +531,7 @@ async fn main() {
                 password,
                 database,
                 file,
+                tls,
                 sql,
                 sql_file,
                 max_rows,
@@ -458,7 +571,10 @@ async fn main() {
 // ============================================================================
 
 /// Redacted connection entry for `connect --list` JSON output.
-/// Never includes plaintext passwords; shows `password_env` var name only.
+/// Never includes plaintext passwords. Shows metadata for indirect sources only:
+/// - `password_env`: the env var name
+/// - `password_command`: literal `true` (command itself not emitted to avoid leakage)
+/// - `keychain_entry`: the service/account reference (no secret)
 #[derive(serde::Serialize)]
 struct ConnectionListEntry {
     name: String,
@@ -475,6 +591,12 @@ struct ConnectionListEntry {
     file: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     password_env: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password_command: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keychain_service: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keychain_account: Option<String>,
 }
 
 async fn handle_connect_list(project_path: Option<String>) -> std::result::Result<(), i32> {
@@ -506,7 +628,11 @@ async fn handle_connect_list(project_path: Option<String>) -> std::result::Resul
                     database: stored.config.database,
                     file: stored.config.file,
                     password_env: stored.password_env,
-                    // password intentionally omitted — never emitted
+                    // command text not emitted to avoid leaking secrets in list output
+                    password_command: stored.password_command.map(|_| true),
+                    keychain_service: stored.keychain_entry.as_ref().map(|e| e.service.clone()),
+                    keychain_account: stored.keychain_entry.map(|e| e.account),
+                    // inline password intentionally omitted — never emitted
                 })
                 .collect();
 
@@ -536,9 +662,12 @@ async fn handle_connect(
     user: Option<String>,
     password: Option<String>,
     password_env: Option<String>,
+    password_command: Option<String>,
+    keychain_entry: Option<KeychainEntry>,
     database: Option<String>,
     file: Option<PathBuf>,
     save: Option<String>,
+    tls: Option<TlsConfig>,
 ) -> std::result::Result<(), i32> {
     // Start timing
     let start = Instant::now();
@@ -550,9 +679,12 @@ async fn handle_connect(
         || user.is_some()
         || password.is_some()
         || password_env.is_some()
+        || password_command.is_some()
+        || keychain_entry.is_some()
         || database.is_some()
         || file.is_some()
-        || save.is_some();
+        || save.is_some()
+        || tls.is_some();
 
     let result: Result<ConnectArgs> = if has_args {
         // Non-interactive mode: build from args
@@ -565,24 +697,29 @@ async fn handle_connect(
             user,
             password,
             password_env,
+            password_command,
+            keychain_entry,
             database,
             file,
             save,
+            tls,
         )
         .await
     } else {
         // Interactive mode: show picker
-        interactive_connect_picker().await.map(|(n, p, c, l)| (n, p, c, None, l))
+        interactive_connect_picker().await.map(|(n, p, c, l)| (n, p, c, None, None, None, l))
     };
 
     match result {
-        Ok((conn_name, proj_path, config, password_env, location)) => {
+        Ok((conn_name, proj_path, config, password_env, password_command, keychain_entry, location)) => {
             // Save connection
             match plenum::save_connection(
                 proj_path,
                 Some(conn_name.clone()),
                 config.clone(),
                 password_env,
+                password_command,
+                keychain_entry,
                 location,
             ) {
                 Ok(()) => {
@@ -634,12 +771,37 @@ async fn handle_connect_test(
     user: Option<String>,
     mut password: Option<String>,
     password_env: Option<String>,
+    password_command: Option<String>,
+    keychain_entry: Option<KeychainEntry>,
     database: Option<String>,
     file: Option<PathBuf>,
+    tls: Option<TlsConfig>,
 ) -> std::result::Result<(), i32> {
     let start = Instant::now();
 
-    // Resolve password_env before building the config (explicit-arg path only)
+    // Enforce: at most one indirect credential source in test mode
+    let source_count = [
+        password_env.is_some(),
+        password_command.is_some(),
+        keychain_entry.is_some(),
+    ]
+    .iter()
+    .filter(|&&b| b)
+    .count();
+    if source_count > 1 {
+        let envelope = ErrorEnvelope::new(
+            "",
+            "connect",
+            plenum::ErrorInfo::new(
+                "INVALID_INPUT",
+                "Only one of --password-env, --password-command, or --keychain-service/--keychain-account may be used",
+            ),
+        );
+        output_error(&envelope);
+        return Err(1);
+    }
+
+    // Resolve indirect credential sources before building the config
     if let Some(env_var) = &password_env {
         match std::env::var(env_var) {
             Ok(val) if !val.is_empty() => password = Some(val),
@@ -668,6 +830,24 @@ async fn handle_connect_test(
                 return Err(1);
             }
         }
+    } else if let Some(cmd) = &password_command {
+        match plenum::config::run_password_command_pub(cmd) {
+            Ok(val) => password = Some(val),
+            Err(e) => {
+                let envelope = ErrorEnvelope::from_error("", "connect", &e);
+                output_error(&envelope);
+                return Err(1);
+            }
+        }
+    } else if let Some(entry) = &keychain_entry {
+        match plenum::config::lookup_keychain_password_pub(&entry.service, &entry.account) {
+            Ok(val) => password = Some(val),
+            Err(e) => {
+                let envelope = ErrorEnvelope::from_error("", "connect", &e);
+                output_error(&envelope);
+                return Err(1);
+            }
+        }
     }
 
     // Resolve connection config from saved config or explicit CLI args
@@ -681,6 +861,7 @@ async fn handle_connect_test(
         password,
         database,
         file,
+        tls,
     ) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -887,9 +1068,12 @@ async fn non_interactive_connect(
     user: Option<String>,
     password: Option<String>,
     password_env: Option<String>,
+    password_command: Option<String>,
+    keychain_entry: Option<KeychainEntry>,
     database: Option<String>,
     file: Option<PathBuf>,
     save: Option<String>,
+    tls: Option<TlsConfig>,
 ) -> Result<ConnectArgs> {
     // Validate required arguments
     let engine_str = engine.ok_or_else(|| {
@@ -897,10 +1081,25 @@ async fn non_interactive_connect(
     })?;
     let engine_type = parse_engine(&engine_str)?;
 
-    // --password and --password-env are mutually exclusive
-    if password.is_some() && password_env.is_some() {
+    // Enforce: at most one indirect credential source
+    let indirect_count = [
+        password_env.is_some(),
+        password_command.is_some(),
+        keychain_entry.is_some(),
+    ]
+    .iter()
+    .filter(|&&b| b)
+    .count();
+    if indirect_count > 1 {
         return Err(PlenumError::invalid_input(
-            "--password and --password-env are mutually exclusive",
+            "Only one of --password-env, --password-command, or --keychain-service/--keychain-account may be used",
+        ));
+    }
+
+    // --password is mutually exclusive with indirect sources
+    if password.is_some() && indirect_count > 0 {
+        return Err(PlenumError::invalid_input(
+            "--password is mutually exclusive with --password-env, --password-command, and --keychain-service",
         ));
     }
 
@@ -922,10 +1121,24 @@ async fn non_interactive_connect(
         }
     }
 
-    // password_env is only meaningful for engines that use passwords.
-    if engine_type == DatabaseType::SQLite && password_env.is_some() {
+    // If --password-command is provided, do a test run to validate it resolves now.
+    if let Some(cmd) = password_command.as_deref() {
+        plenum::config::run_password_command_pub(cmd).map_err(|e| {
+            PlenumError::invalid_input(format!("--password-command failed validation: {}", e.message()))
+        })?;
+    }
+
+    // If keychain entry provided, validate it resolves now.
+    if let Some(ref entry) = keychain_entry {
+        plenum::config::lookup_keychain_password_pub(&entry.service, &entry.account).map_err(|e| {
+            PlenumError::invalid_input(format!("--keychain-service/--keychain-account failed validation: {}", e.message()))
+        })?;
+    }
+
+    // Indirect sources are only meaningful for engines that use passwords.
+    if engine_type == DatabaseType::SQLite && (password_env.is_some() || password_command.is_some() || keychain_entry.is_some()) {
         return Err(PlenumError::invalid_input(
-            "--password-env is not applicable to sqlite (no authentication)",
+            "--password-env, --password-command, and --keychain-service are not applicable to sqlite (no authentication)",
         ));
     }
 
@@ -945,17 +1158,17 @@ async fn non_interactive_connect(
                 PlenumError::invalid_input("--database is required for postgres/mysql")
             })?;
 
-            // Password is supplied either inline (--password) or by reference (--password-env).
-            // Exactly one must be provided.
-            let stored_password = match (&password, &password_env) {
-                (Some(p), None) => Some(p.clone()),
-                (None, Some(_)) => None,
-                (None, None) => {
+            // Password is stored directly only when --password is given.
+            // Indirect sources (env/command/keychain) are NOT stored inline — resolved at use time.
+            let stored_password = match (&password, indirect_count) {
+                (Some(p), 0) => Some(p.clone()),
+                (None, 1) => None, // indirect source will be resolved at use time
+                (None, 0) => {
                     return Err(PlenumError::invalid_input(
-                        "--password or --password-env is required for postgres/mysql",
+                        "--password, --password-env, --password-command, or --keychain-service is required for postgres/mysql",
                     ));
                 }
-                (Some(_), Some(_)) => unreachable!("checked above"),
+                _ => unreachable!("checked above"),
             };
 
             ConnectionConfig {
@@ -966,12 +1179,15 @@ async fn non_interactive_connect(
                 password: stored_password,
                 database: Some(database),
                 file: None,
+                tls,
             }
         }
         DatabaseType::SQLite => {
             let file =
                 file.ok_or_else(|| PlenumError::invalid_input("--file is required for sqlite"))?;
-            ConnectionConfig::sqlite(file)
+            let mut cfg = ConnectionConfig::sqlite(file);
+            cfg.tls = tls;
+            cfg
         }
     };
 
@@ -989,7 +1205,7 @@ async fn non_interactive_connect(
         }
     };
 
-    Ok((conn_name, project_path, config, password_env, location))
+    Ok((conn_name, project_path, config, password_env, password_command, keychain_entry, location))
 }
 
 /// Prompt user for save location
@@ -1009,6 +1225,7 @@ fn prompt_save_location() -> Result<ConfigLocation> {
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 async fn handle_introspect(
+    dsn: Option<String>,
     name: Option<String>,
     project_path: Option<String>,
     engine: Option<String>,
@@ -1018,6 +1235,7 @@ async fn handle_introspect(
     password: Option<String>,
     database: Option<String>,
     file: Option<PathBuf>,
+    tls: Option<TlsConfig>,
     list_databases: bool,
     list_schemas: bool,
     list_tables: bool,
@@ -1037,25 +1255,42 @@ async fn handle_introspect(
     // Start timing
     let start = Instant::now();
 
-    // Resolve connection config
-    let config_result = build_connection_config(
-        name.as_deref(),
-        project_path.as_deref(),
-        engine,
-        host,
-        port,
-        user,
-        password,
-        database,
-        file,
-    );
-
-    let (config, _is_readonly) = match config_result {
-        Ok(cfg_tuple) => cfg_tuple,
-        Err(e) => {
-            let envelope = ErrorEnvelope::from_error("", "introspect", &e);
-            output_error(&envelope);
-            return Err(1);
+    // Resolve connection config — DSN path bypasses saved config entirely
+    let (config, _is_readonly) = if let Some(ref dsn_str) = dsn {
+        match parse_dsn(dsn_str) {
+            Ok(cfg) => (cfg, false),
+            Err(e) => {
+                let envelope = ErrorEnvelope::new(
+                    "",
+                    "introspect",
+                    plenum::ErrorInfo::new(
+                        e.error_code(),
+                        format!("{} (DSN: {})", e.message(), redact_dsn(dsn_str)),
+                    ),
+                );
+                output_error(&envelope);
+                return Err(1);
+            }
+        }
+    } else {
+        match build_connection_config(
+            name.as_deref(),
+            project_path.as_deref(),
+            engine,
+            host,
+            port,
+            user,
+            password,
+            database,
+            file,
+            tls,
+        ) {
+            Ok(cfg_tuple) => cfg_tuple,
+            Err(e) => {
+                let envelope = ErrorEnvelope::from_error("", "introspect", &e);
+                output_error(&envelope);
+                return Err(1);
+            }
         }
     };
 
@@ -1199,6 +1434,7 @@ async fn handle_introspect(
 }
 
 async fn handle_query(
+    dsn: Option<String>,
     name: Option<String>,
     project_path: Option<String>,
     engine: Option<String>,
@@ -1208,6 +1444,7 @@ async fn handle_query(
     password: Option<String>,
     database: Option<String>,
     file: Option<PathBuf>,
+    tls: Option<TlsConfig>,
     sql: Option<String>,
     sql_file: Option<PathBuf>,
     max_rows: Option<usize>,
@@ -1259,23 +1496,42 @@ async fn handle_query(
         }
     };
 
-    // Resolve connection config
-    let (config, _is_readonly) = match build_connection_config(
-        name.as_deref(),
-        project_path.as_deref(),
-        engine,
-        host,
-        port,
-        user,
-        password,
-        database,
-        file,
-    ) {
-        Ok(cfg_tuple) => cfg_tuple,
-        Err(e) => {
-            let envelope = ErrorEnvelope::from_error("", "query", &e);
-            output_error(&envelope);
-            return Err(1);
+    // Resolve connection config — DSN path bypasses saved config entirely
+    let (config, _is_readonly) = if let Some(ref dsn_str) = dsn {
+        match parse_dsn(dsn_str) {
+            Ok(cfg) => (cfg, false),
+            Err(e) => {
+                let envelope = ErrorEnvelope::new(
+                    "",
+                    "query",
+                    plenum::ErrorInfo::new(
+                        e.error_code(),
+                        format!("{} (DSN: {})", e.message(), redact_dsn(dsn_str)),
+                    ),
+                );
+                output_error(&envelope);
+                return Err(1);
+            }
+        }
+    } else {
+        match build_connection_config(
+            name.as_deref(),
+            project_path.as_deref(),
+            engine,
+            host,
+            port,
+            user,
+            password,
+            database,
+            file,
+            tls,
+        ) {
+            Ok(cfg_tuple) => cfg_tuple,
+            Err(e) => {
+                let envelope = ErrorEnvelope::from_error("", "query", &e);
+                output_error(&envelope);
+                return Err(1);
+            }
         }
     };
 
@@ -1454,6 +1710,26 @@ where
     (result, elapsed_ms)
 }
 
+/// Build an `Option<TlsConfig>` from raw CLI SSL args.
+/// Returns `None` when no SSL args are provided (default = no TLS).
+fn build_tls_config(
+    ssl_mode: Option<String>,
+    ssl_ca: Option<PathBuf>,
+    ssl_cert: Option<PathBuf>,
+    ssl_key: Option<PathBuf>,
+) -> Option<TlsConfig> {
+    if ssl_mode.is_none() && ssl_ca.is_none() && ssl_cert.is_none() && ssl_key.is_none() {
+        return None;
+    }
+    let sslmode = match ssl_mode.as_deref().unwrap_or("disable") {
+        "require" => SslMode::Require,
+        "verify-ca" => SslMode::VerifyCa,
+        "verify-full" => SslMode::VerifyFull,
+        _ => SslMode::Disable,
+    };
+    Some(TlsConfig { sslmode, ca_cert: ssl_ca, client_cert: ssl_cert, client_key: ssl_key })
+}
+
 /// Build connection config from CLI arguments
 ///
 /// This helper resolves a connection from config or builds one from CLI arguments.
@@ -1469,6 +1745,7 @@ fn build_connection_config(
     password: Option<String>,
     database: Option<String>,
     file: Option<PathBuf>,
+    tls: Option<TlsConfig>,
 ) -> Result<(ConnectionConfig, bool)> {
     let has_explicit_args = engine.is_some()
         || host.is_some()
@@ -1515,6 +1792,10 @@ fn build_connection_config(
         if file.is_some() {
             cfg.file = file;
         }
+        // TLS override: explicit CLI flags always win over stored config
+        if tls.is_some() {
+            cfg.tls = tls;
+        }
         return Ok((cfg.clone(), is_readonly));
     }
 
@@ -1527,7 +1808,7 @@ fn build_connection_config(
     })?;
     let engine = parse_engine(&engine_type)?;
 
-    let config = match engine {
+    let mut config = match engine {
         DatabaseType::Postgres | DatabaseType::MySQL => {
             let host = host.ok_or_else(|| {
                 PlenumError::invalid_input("--host is required for postgres/mysql")
@@ -1557,6 +1838,7 @@ fn build_connection_config(
             ConnectionConfig::sqlite(file)
         }
     };
+    config.tls = tls;
 
     Ok((config, false)) // CLI-only connections are never readonly
 }
