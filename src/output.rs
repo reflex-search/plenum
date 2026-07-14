@@ -108,19 +108,61 @@ pub struct Metadata {
     /// Number of rows returned (for query results, None for other operations)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows_returned: Option<usize>,
+
+    /// Whether the result set was capped by max_rows (query results only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows_truncated: Option<bool>,
+
+    /// Whether more rows are available beyond this page (query results only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_more: Option<bool>,
+
+    /// Offset to pass as --offset for the next page (present only when has_more is true)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
 }
 
 impl Metadata {
     /// Create new metadata with just execution time
     #[must_use]
     pub const fn new(execution_ms: u64) -> Self {
-        Self { execution_ms, rows_returned: None }
+        Self {
+            execution_ms,
+            rows_returned: None,
+            rows_truncated: None,
+            has_more: None,
+            next_offset: None,
+        }
     }
 
-    /// Create new metadata with execution time and row count
+    /// Create new metadata with execution time and row count (non-query operations)
     #[must_use]
     pub const fn with_rows(execution_ms: u64, rows_returned: usize) -> Self {
-        Self { execution_ms, rows_returned: Some(rows_returned) }
+        Self {
+            execution_ms,
+            rows_returned: Some(rows_returned),
+            rows_truncated: None,
+            has_more: None,
+            next_offset: None,
+        }
+    }
+
+    /// Create metadata for query results with truncation signalling and pagination info
+    #[must_use]
+    pub fn with_query(
+        execution_ms: u64,
+        rows_returned: usize,
+        truncated: bool,
+        offset: usize,
+    ) -> Self {
+        let next_offset = if truncated { Some(offset + rows_returned) } else { None };
+        Self {
+            execution_ms,
+            rows_returned: Some(rows_returned),
+            rows_truncated: Some(truncated),
+            has_more: Some(truncated),
+            next_offset,
+        }
     }
 }
 

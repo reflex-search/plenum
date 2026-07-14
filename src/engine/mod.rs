@@ -179,13 +179,18 @@ pub struct Capabilities {
     /// None means no timeout
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+
+    /// Number of rows to skip before collecting results (for pagination)
+    /// None means start from the first row
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<usize>,
 }
 
 impl Capabilities {
     /// Create new capabilities with optional constraints
     #[must_use]
     pub const fn new(max_rows: Option<usize>, timeout_ms: Option<u64>) -> Self {
-        Self { max_rows, timeout_ms }
+        Self { max_rows, timeout_ms, offset: None }
     }
 }
 
@@ -220,6 +225,12 @@ pub struct TableInfo {
     /// Indexes
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub indexes: Vec<IndexInfo>,
+
+    /// Table-level comment or description; null when not set or not supported by the engine
+    pub comment: Option<String>,
+
+    /// Estimated row count from engine statistics; null when not available
+    pub row_estimate: Option<i64>,
 }
 
 /// Column information
@@ -237,6 +248,9 @@ pub struct ColumnInfo {
     /// Default value (if any)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
+
+    /// Column comment; null when not set or not supported by the engine
+    pub comment: Option<String>,
 }
 
 /// Foreign key information
@@ -283,6 +297,10 @@ pub struct QueryResult {
 
     /// Query execution time in milliseconds
     pub execution_ms: u64,
+
+    /// Whether the result was truncated by max_rows; used to populate Metadata, not serialized
+    #[serde(skip)]
+    pub rows_truncated: bool,
 }
 
 /// Time-only query result (for benchmarking without token consumption)
@@ -510,9 +528,14 @@ pub trait DatabaseEngine {
     /// 5. Returns query results or error
     ///
     /// Capability violations MUST fail before query execution.
+    ///
+    /// `params` are bound server-side via each engine's native placeholders
+    /// (`$1`/`$2` for Postgres, `?` for MySQL/SQLite).  Pass an empty slice
+    /// when the query has no placeholders.
     fn execute(
         config: &ConnectionConfig,
         query: &str,
+        params: &[serde_json::Value],
         caps: &Capabilities,
     ) -> impl std::future::Future<Output = Result<QueryResult>> + Send;
 }

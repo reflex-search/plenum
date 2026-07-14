@@ -119,6 +119,7 @@ fn test_query_result_serializes_to_pure_json() {
         rows: vec![row],
         rows_affected: None,
         execution_ms: 0,
+        rows_truncated: false,
     };
 
     let json_str = serde_json::to_string(&result).expect("Should serialize");
@@ -348,7 +349,7 @@ async fn test_real_query_output_is_valid_json() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &[], &caps).await;
     assert!(result.is_ok());
 
     // Wrap in success envelope (like the CLI does)
@@ -392,4 +393,128 @@ async fn test_real_introspect_output_is_valid_json() {
     assert!(json_value["data"]["tables"].is_array());
 
     let _ = std::fs::remove_file(&temp_file);
+}
+
+// ============================================================================
+// Truncation Signalling + Pagination Tests (REF-262)
+// ============================================================================
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn test_truncated_result_signals_rows_truncated_true() {
+    // DB has 2 products; max_rows=1 means result is truncated
+    let temp_file = create_test_db();
+    let config = ConnectionConfig::sqlite(temp_file.clone());
+    let caps = Capabilities { max_rows: Some(1), timeout_ms: None, offset: None };
+
+    let result =
+        SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &[], &caps).await;
+    assert!(result.is_ok(), "Query should succeed");
+
+    let query_result = result.unwrap();
+    assert!(query_result.rows_truncated, "rows_truncated must be true when max_rows caps result");
+    assert_eq!(query_result.rows.len(), 1, "Should return exactly max_rows rows");
+
+    let meta = Metadata::with_query(0, query_result.rows.len(), query_result.rows_truncated, 0);
+    let json = serde_json::to_string(&meta).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["rows_truncated"], true);
+    assert_eq!(v["has_more"], true);
+    assert_eq!(v["next_offset"], 1);
+
+    let _ = std::fs::remove_file(&temp_file);
+}
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn test_uncapped_result_signals_rows_truncated_false() {
+    let temp_file = create_test_db();
+    let config = ConnectionConfig::sqlite(temp_file.clone());
+    let caps = Capabilities::default();
+
+    let result =
+        SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &[], &caps).await;
+    assert!(result.is_ok(), "Query should succeed");
+
+    let query_result = result.unwrap();
+    assert!(!query_result.rows_truncated, "rows_truncated must be false when result is not capped");
+
+    let meta =
+        Metadata::with_query(0, query_result.rows.len(), query_result.rows_truncated, 0);
+    let json = serde_json::to_string(&meta).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["rows_truncated"], false);
+    assert_eq!(v["has_more"], false);
+    assert!(v.get("next_offset").is_none() || v["next_offset"].is_null());
+
+    let _ = std::fs::remove_file(&temp_file);
+}
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn test_pagination_with_offset_returns_disjoint_pages() {
+    // DB has 2 products; page size 1 → page 1 has row 1, page 2 has row 2
+    let temp_file = create_test_db();
+    let config = ConnectionConfig::sqlite(temp_file.clone());
+
+    let caps_p1 = Capabilities { max_rows: Some(1), timeout_ms: None, offset: None };
+    let r1 = SqliteEngine::execute(
+        &config,
+        "SELECT id FROM products ORDER BY id",
+        &[],
+        &caps_p1,
+    )
+    .await
+    .unwrap();
+    assert!(r1.rows_truncated, "page 1 should be truncated (2 rows total, only 1 returned)");
+    assert_eq!(r1.rows.len(), 1);
+
+    let caps_p2 = Capabilities { max_rows: Some(1), timeout_ms: None, offset: Some(1) };
+    let r2 = SqliteEngine::execute(
+        &config,
+        "SELECT id FROM products ORDER BY id",
+        &[],
+        &caps_p2,
+    )
+    .await
+    .unwrap();
+    assert!(!r2.rows_truncated, "page 2 should not be truncated (last page)");
+    assert_eq!(r2.rows.len(), 1);
+    assert_ne!(r1.rows[0][0], r2.rows[0][0], "pages must return different rows");
+
+    let _ = std::fs::remove_file(&temp_file);
+}
+
+#[test]
+fn test_metadata_with_query_truncated_next_offset() {
+    let meta = Metadata::with_query(42, 5, true, 10);
+    let json = serde_json::to_string(&meta).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["rows_truncated"], true);
+    assert_eq!(v["has_more"], true);
+    assert_eq!(v["next_offset"], 15);
+    assert_eq!(v["rows_returned"], 5);
+    assert_eq!(v["execution_ms"], 42);
+}
+
+#[test]
+fn test_metadata_with_query_not_truncated_omits_next_offset() {
+    let meta = Metadata::with_query(10, 3, false, 0);
+    let json = serde_json::to_string(&meta).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["rows_truncated"], false);
+    assert_eq!(v["has_more"], false);
+    assert!(v.get("next_offset").is_none() || v["next_offset"].is_null());
+    assert_eq!(v["rows_returned"], 3);
+}
+
+#[test]
+fn test_non_query_metadata_omits_truncation_fields() {
+    let meta = Metadata::new(50);
+    let json = serde_json::to_string(&meta).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(v.get("rows_truncated").is_none() || v["rows_truncated"].is_null());
+    assert!(v.get("has_more").is_none() || v["has_more"].is_null());
+    assert!(v.get("next_offset").is_none() || v["next_offset"].is_null());
+    assert!(v.get("rows_returned").is_none() || v["rows_returned"].is_null());
 }

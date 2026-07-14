@@ -229,13 +229,24 @@ enum Commands {
         #[arg(long)]
         sql_file: Option<PathBuf>,
 
-        /// Max rows to return
+        /// Max rows to return per page
         #[arg(long)]
         max_rows: Option<usize>,
+
+        /// Number of rows to skip before collecting results (for pagination)
+        #[arg(long)]
+        offset: Option<usize>,
 
         /// Query timeout in milliseconds
         #[arg(long)]
         timeout_ms: Option<u64>,
+
+        /// Bound query parameters, one per flag invocation.
+        /// Parse rules: numeric literals bind as integers or floats, "true"/"false" as
+        /// booleans, "null" as NULL, JSON strings as strings, everything else as text.
+        /// Use $1/$2/… placeholders for PostgreSQL, ? for MySQL/SQLite.
+        #[arg(long = "param", action = clap::ArgAction::Append)]
+        param: Vec<String>,
 
         /// Return only timing information (excludes result data for benchmarking)
         #[arg(long)]
@@ -355,7 +366,9 @@ async fn main() {
             sql,
             sql_file,
             max_rows,
+            offset,
             timeout_ms,
+            param,
             time_only,
         }) => {
             handle_query(
@@ -371,7 +384,9 @@ async fn main() {
                 sql,
                 sql_file,
                 max_rows,
+                offset,
                 timeout_ms,
+                param,
                 time_only,
             )
             .await
@@ -973,7 +988,9 @@ async fn handle_query(
     sql: Option<String>,
     sql_file: Option<PathBuf>,
     max_rows: Option<usize>,
+    offset: Option<usize>,
     timeout_ms: Option<u64>,
+    raw_params: Vec<String>,
     time_only: bool,
 ) -> std::result::Result<(), i32> {
     // Resolve SQL input
@@ -1036,7 +1053,15 @@ async fn handle_query(
     };
 
     // Build capabilities (read-only only)
-    let capabilities = Capabilities { max_rows, timeout_ms };
+    let capabilities = Capabilities { max_rows, timeout_ms, offset };
+
+    // Parse --param strings into typed JSON values.
+    // Rule: try serde_json parsing first so that 5 → Number, true → Bool, null → Null,
+    // "text" → String. If parsing fails, treat as a plain text string.
+    let params: Vec<serde_json::Value> = raw_params
+        .iter()
+        .map(|s| serde_json::from_str(s).unwrap_or_else(|_| serde_json::Value::String(s.clone())))
+        .collect();
 
     // Validate query is read-only
     match plenum::validate_query(&sql_text, &capabilities, config.engine) {
@@ -1053,7 +1078,9 @@ async fn handle_query(
     // Call appropriate database engine for query execution
     let execute_result = match config.engine {
         #[cfg(feature = "sqlite")]
-        DatabaseType::SQLite => SqliteEngine::execute(&config, &sql_text, &capabilities).await,
+        DatabaseType::SQLite => {
+            SqliteEngine::execute(&config, &sql_text, &params, &capabilities).await
+        }
         #[cfg(not(feature = "sqlite"))]
         DatabaseType::SQLite => {
             Err(PlenumError::invalid_input(
@@ -1062,7 +1089,9 @@ async fn handle_query(
         }
 
         #[cfg(feature = "postgres")]
-        DatabaseType::Postgres => PostgresEngine::execute(&config, &sql_text, &capabilities).await,
+        DatabaseType::Postgres => {
+            PostgresEngine::execute(&config, &sql_text, &params, &capabilities).await
+        }
         #[cfg(not(feature = "postgres"))]
         DatabaseType::Postgres => {
             Err(PlenumError::invalid_input(
@@ -1071,7 +1100,9 @@ async fn handle_query(
         }
 
         #[cfg(feature = "mysql")]
-        DatabaseType::MySQL => MySqlEngine::execute(&config, &sql_text, &capabilities).await,
+        DatabaseType::MySQL => {
+            MySqlEngine::execute(&config, &sql_text, &params, &capabilities).await
+        }
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => {
             Err(PlenumError::invalid_input(
@@ -1084,6 +1115,10 @@ async fn handle_query(
         Ok(query_result) => {
             let execution_ms = query_result.execution_ms;
             let row_count = query_result.rows.len();
+            let rows_truncated = query_result.rows_truncated;
+            let effective_offset = offset.unwrap_or(0);
+            let query_meta =
+                Metadata::with_query(execution_ms, row_count, rows_truncated, effective_offset);
 
             if time_only {
                 // Return only timing information (for benchmarking)
@@ -1095,7 +1130,7 @@ async fn handle_query(
                     config.engine.as_str(),
                     "query",
                     time_only_result,
-                    Metadata::with_rows(execution_ms, row_count),
+                    query_meta,
                 );
                 output_success(&envelope);
             } else {
@@ -1104,7 +1139,7 @@ async fn handle_query(
                     config.engine.as_str(),
                     "query",
                     query_result,
-                    Metadata::with_rows(execution_ms, row_count),
+                    query_meta,
                 );
                 output_success(&envelope);
             }

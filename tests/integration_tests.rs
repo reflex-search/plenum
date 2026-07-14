@@ -97,7 +97,7 @@ async fn test_cross_engine_select_query_structure() {
     let caps = Capabilities::default();
 
     let result =
-        SqliteEngine::execute(&config, "SELECT name, email FROM users WHERE id = 1", &caps).await;
+        SqliteEngine::execute(&config, "SELECT name, email FROM users WHERE id = 1", &[], &caps).await;
     assert!(result.is_ok(), "SQLite SELECT query should succeed");
 
     let query_result = result.unwrap();
@@ -129,6 +129,7 @@ async fn test_cross_engine_insert_query_rejected() {
     let result = SqliteEngine::execute(
         &config,
         "INSERT INTO users (name, email, age) VALUES ('David', 'david@example.com', 40)",
+        &[],
         &caps,
     )
     .await;
@@ -157,6 +158,7 @@ async fn test_cross_engine_write_operation_rejected() {
     let result = SqliteEngine::execute(
         &config,
         "INSERT INTO users (name, email) VALUES ('Eve', 'eve@example.com')",
+        &[],
         &caps,
     )
     .await;
@@ -186,7 +188,7 @@ async fn test_cross_engine_ddl_operation_rejected() {
 
     // Try to CREATE TABLE (should always be rejected)
     let result =
-        SqliteEngine::execute(&config, "CREATE TABLE test (id INTEGER PRIMARY KEY)", &caps).await;
+        SqliteEngine::execute(&config, "CREATE TABLE test (id INTEGER PRIMARY KEY)", &[], &caps).await;
 
     assert!(result.is_err(), "Should reject DDL (Plenum is read-only)");
     let err = result.unwrap_err();
@@ -214,6 +216,7 @@ async fn test_cross_engine_null_handling() {
     let result = SqliteEngine::execute(
         &config,
         "SELECT name, email FROM users WHERE name = 'Charlie'",
+        &[],
         &caps,
     )
     .await;
@@ -238,9 +241,9 @@ async fn test_cross_engine_max_rows_enforcement() {
     // Test that max_rows is enforced uniformly across engines
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities { max_rows: Some(2), timeout_ms: None };
+    let caps = Capabilities { max_rows: Some(2), timeout_ms: None, offset: None };
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id", &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id", &[], &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -257,7 +260,7 @@ async fn test_cross_engine_empty_result_set() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM users WHERE id = 9999", &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT * FROM users WHERE id = 9999", &[], &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -367,7 +370,7 @@ async fn test_cross_engine_malformed_sql_error() {
 
     // Use a query with invalid column name (will pass capability check but fail at execution)
     let result =
-        SqliteEngine::execute(&config, "SELECT nonexistent_column FROM users", &caps).await;
+        SqliteEngine::execute(&config, "SELECT nonexistent_column FROM users", &[], &caps).await;
     assert!(result.is_err(), "Malformed SQL should error");
 
     // Error should be a query failed error
@@ -391,7 +394,7 @@ async fn test_cross_engine_missing_table_error() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM nonexistent_table", &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT * FROM nonexistent_table", &[], &caps).await;
     assert!(result.is_err(), "Missing table should error");
 
     let err = result.unwrap_err();
@@ -429,7 +432,7 @@ async fn test_json_serialization_of_query_result() {
     let caps = Capabilities::default();
 
     let result =
-        SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id LIMIT 1", &caps).await;
+        SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id LIMIT 1", &[], &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -492,8 +495,8 @@ async fn test_deterministic_query_results() {
 
     let sql = "SELECT name, email FROM users ORDER BY id";
 
-    let result1 = SqliteEngine::execute(&config, sql, &caps).await.unwrap();
-    let result2 = SqliteEngine::execute(&config, sql, &caps).await.unwrap();
+    let result1 = SqliteEngine::execute(&config, sql, &[], &caps).await.unwrap();
+    let result2 = SqliteEngine::execute(&config, sql, &[], &caps).await.unwrap();
 
     // Results should be identical (except timing metadata which is not part of QueryResult)
     assert_eq!(result1.columns, result2.columns, "Columns should be identical");

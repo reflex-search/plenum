@@ -577,7 +577,7 @@ async fn tool_query(args: &Value) -> Result<Value> {
     let time_only = args.get("time_only").and_then(serde_json::Value::as_bool).unwrap_or(false);
 
     // Build capabilities (read-only only)
-    let capabilities = Capabilities { max_rows, timeout_ms };
+    let capabilities = Capabilities { max_rows, timeout_ms, offset: None };
 
     // Validate query is read-only (pre-execution check)
     crate::validate_query(sql, &capabilities, config.engine).map_err(|e| anyhow!("{e}"))?;
@@ -764,7 +764,7 @@ async fn execute_query(
 ) -> Result<crate::QueryResult> {
     match config.engine {
         #[cfg(feature = "sqlite")]
-        DatabaseType::SQLite => SqliteEngine::execute(config, sql, capabilities)
+        DatabaseType::SQLite => SqliteEngine::execute(config, sql, &[], capabilities)
             .await
             .map_err(|e| anyhow!("SQLite query failed: {e}")),
         #[cfg(not(feature = "sqlite"))]
@@ -773,7 +773,7 @@ async fn execute_query(
         }
 
         #[cfg(feature = "postgres")]
-        DatabaseType::Postgres => PostgresEngine::execute(config, sql, capabilities)
+        DatabaseType::Postgres => PostgresEngine::execute(config, sql, &[], capabilities)
             .await
             .map_err(|e| anyhow!("PostgreSQL query failed: {e}")),
         #[cfg(not(feature = "postgres"))]
@@ -782,7 +782,7 @@ async fn execute_query(
         }
 
         #[cfg(feature = "mysql")]
-        DatabaseType::MySQL => MySqlEngine::execute(config, sql, capabilities)
+        DatabaseType::MySQL => MySqlEngine::execute(config, sql, &[], capabilities)
             .await
             .map_err(|e| anyhow!("MySQL query failed: {e}")),
         #[cfg(not(feature = "mysql"))]

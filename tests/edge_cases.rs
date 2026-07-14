@@ -89,9 +89,9 @@ async fn test_large_result_set_with_max_rows() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities { max_rows: Some(100), timeout_ms: None };
+    let caps = Capabilities { max_rows: Some(100), timeout_ms: None, offset: None };
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM large_table", &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT * FROM large_table", &[], &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -124,7 +124,7 @@ async fn test_very_large_result_set_without_limit() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM large_table", &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT * FROM large_table", &[], &caps).await;
     assert!(result.is_ok(), "Should handle large result sets");
 
     let query_result = result.unwrap();
@@ -168,7 +168,7 @@ async fn test_unicode_characters() {
     let caps = Capabilities::default();
 
     let result =
-        SqliteEngine::execute(&config, "SELECT * FROM unicode_test ORDER BY id", &caps).await;
+        SqliteEngine::execute(&config, "SELECT * FROM unicode_test ORDER BY id", &[], &caps).await;
     assert!(result.is_ok(), "Should handle Unicode characters");
 
     let query_result = result.unwrap();
@@ -218,7 +218,7 @@ async fn test_special_sql_characters() {
     let caps = Capabilities::default();
 
     let result =
-        SqliteEngine::execute(&config, "SELECT * FROM special_chars ORDER BY id", &caps).await;
+        SqliteEngine::execute(&config, "SELECT * FROM special_chars ORDER BY id", &[], &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -257,7 +257,7 @@ async fn test_binary_blob_data() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM blob_test", &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT * FROM blob_test", &[], &caps).await;
     assert!(result.is_ok(), "Should handle BLOB data");
 
     let query_result = result.unwrap();
@@ -305,7 +305,7 @@ async fn test_numeric_extremes() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM numeric_test", &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT * FROM numeric_test", &[], &caps).await;
     assert!(result.is_ok(), "Should handle numeric extremes");
 
     let query_result = result.unwrap();
@@ -343,7 +343,7 @@ async fn test_empty_string_vs_null() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM null_test ORDER BY id", &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT * FROM null_test ORDER BY id", &[], &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -393,7 +393,7 @@ async fn test_very_long_query() {
     }
     query.push(')');
 
-    let result = SqliteEngine::execute(&config, &query, &caps).await;
+    let result = SqliteEngine::execute(&config, &query, &[], &caps).await;
     assert!(result.is_ok(), "Should handle very long queries");
 
     cleanup_db(&temp_file);
@@ -427,7 +427,7 @@ async fn test_sql_injection_patterns_in_data() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM injection_test", &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT * FROM injection_test", &[], &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -464,10 +464,11 @@ async fn test_timeout_capability() {
     let caps = Capabilities {
         max_rows: None,
         timeout_ms: Some(5000), // 5 second timeout
+        offset: None,
     };
 
     // Simple query should complete within timeout
-    let result = SqliteEngine::execute(&config, "SELECT * FROM timeout_test", &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT * FROM timeout_test", &[], &caps).await;
     assert!(result.is_ok(), "Simple query should complete within timeout");
 
     cleanup_db(&temp_file);
@@ -495,7 +496,7 @@ async fn test_query_with_excessive_whitespace() {
     // Query with excessive whitespace
     let query = "  \n\n  SELECT   *   \n  FROM   test   \n\n  WHERE   id   =   1   \n\n  ";
 
-    let result = SqliteEngine::execute(&config, query, &caps).await;
+    let result = SqliteEngine::execute(&config, query, &[], &caps).await;
     assert!(result.is_ok(), "Should handle queries with excessive whitespace");
 
     cleanup_db(&temp_file);
@@ -522,10 +523,10 @@ async fn test_case_sensitivity_in_table_names() {
     let caps = Capabilities::default();
 
     // SQLite is case-insensitive for table names
-    let result1 = SqliteEngine::execute(&config, "SELECT * FROM TestTable", &caps).await;
+    let result1 = SqliteEngine::execute(&config, "SELECT * FROM TestTable", &[], &caps).await;
     assert!(result1.is_ok());
 
-    let result2 = SqliteEngine::execute(&config, "SELECT * FROM testtable", &caps).await;
+    let result2 = SqliteEngine::execute(&config, "SELECT * FROM testtable", &[], &caps).await;
     assert!(result2.is_ok());
 
     cleanup_db(&temp_file);
@@ -581,7 +582,7 @@ async fn test_numeric_affinity_promotes_real_to_integer() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
     let result =
-        SqliteEngine::execute(&config, "SELECT n FROM affinity_test ORDER BY id", &caps).await;
+        SqliteEngine::execute(&config, "SELECT n FROM affinity_test ORDER BY id", &[], &caps).await;
     assert!(result.is_ok());
     let query_result = result.unwrap();
     assert_eq!(query_result.rows.len(), 2);
@@ -617,6 +618,7 @@ async fn test_real_nan_and_infinity_become_null() {
     let result = SqliteEngine::execute(
         &config,
         "SELECT 1.0/0.0 AS pos_inf, -1.0/0.0 AS neg_inf, 0.0/0.0 AS nan",
+        &[],
         &caps,
     )
     .await;
@@ -660,7 +662,7 @@ async fn test_blob_with_valid_utf8_bytes_is_base64_encoded() {
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
-    let result = SqliteEngine::execute(&config, "SELECT data, txt FROM b", &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT data, txt FROM b", &[], &caps).await;
     assert!(result.is_ok());
     let query_result = result.unwrap();
     let row = &query_result.rows[0];
@@ -699,7 +701,7 @@ async fn test_dynamic_typing_all_storage_classes() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
     let result =
-        SqliteEngine::execute(&config, "SELECT v FROM dyn ORDER BY id", &caps).await;
+        SqliteEngine::execute(&config, "SELECT v FROM dyn ORDER BY id", &[], &caps).await;
     assert!(result.is_ok());
     let query_result = result.unwrap();
     assert_eq!(query_result.rows.len(), 5);

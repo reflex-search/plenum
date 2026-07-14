@@ -28,6 +28,10 @@ pub enum PlenumError {
     #[error("Query execution failed: {0}")]
     QueryFailed(String),
 
+    /// Query exceeded server-side or client-side timeout
+    #[error("Query timeout: {0}")]
+    QueryTimeout(String),
+
     /// Invalid input or missing required parameters
     #[error("Invalid input: {0}")]
     InvalidInput(String),
@@ -51,6 +55,7 @@ impl PlenumError {
             Self::CapabilityViolation(_) => "CAPABILITY_VIOLATION",
             Self::ConnectionFailed(_) => "CONNECTION_FAILED",
             Self::QueryFailed(_) => "QUERY_FAILED",
+            Self::QueryTimeout(_) => "QUERY_TIMEOUT",
             Self::InvalidInput(_) => "INVALID_INPUT",
             Self::EngineError { .. } => "ENGINE_ERROR",
             Self::ConfigError(_) => "CONFIG_ERROR",
@@ -82,6 +87,11 @@ impl PlenumError {
         Self::QueryFailed(message.into())
     }
 
+    /// Create a query timeout error (server-side or client-side timeout exceeded)
+    pub fn query_timeout(message: impl Into<String>) -> Self {
+        Self::QueryTimeout(message.into())
+    }
+
     /// Create an invalid input error
     pub fn invalid_input(message: impl Into<String>) -> Self {
         Self::InvalidInput(message.into())
@@ -110,6 +120,7 @@ mod tests {
         assert_eq!(PlenumError::capability_violation("test").error_code(), "CAPABILITY_VIOLATION");
         assert_eq!(PlenumError::connection_failed("test").error_code(), "CONNECTION_FAILED");
         assert_eq!(PlenumError::query_failed("test").error_code(), "QUERY_FAILED");
+        assert_eq!(PlenumError::query_timeout("test").error_code(), "QUERY_TIMEOUT");
         assert_eq!(PlenumError::invalid_input("test").error_code(), "INVALID_INPUT");
         assert_eq!(PlenumError::engine_error("mysql", "test").error_code(), "ENGINE_ERROR");
         assert_eq!(PlenumError::config_error("test").error_code(), "CONFIG_ERROR");
@@ -135,6 +146,10 @@ mod tests {
 
         let err = PlenumError::query_failed("test");
         assert!(matches!(err, PlenumError::QueryFailed(_)));
+
+        let err = PlenumError::query_timeout("test");
+        assert!(matches!(err, PlenumError::QueryTimeout(_)));
+        assert!(err.message().contains("test"));
 
         let err = PlenumError::invalid_input("test");
         assert!(matches!(err, PlenumError::InvalidInput(_)));
