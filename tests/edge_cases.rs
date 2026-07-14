@@ -89,7 +89,7 @@ async fn test_large_result_set_with_max_rows() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities { max_rows: Some(100), timeout_ms: None, offset: None };
+    let caps = Capabilities { max_rows: Some(100), timeout_ms: None, offset: None, max_bytes: None };
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM large_table", &[], &caps).await;
     assert!(result.is_ok());
@@ -465,6 +465,7 @@ async fn test_timeout_capability() {
         max_rows: None,
         timeout_ms: Some(5000), // 5 second timeout
         offset: None,
+        max_bytes: None,
     };
 
     // Simple query should complete within timeout

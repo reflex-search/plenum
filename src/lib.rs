@@ -39,15 +39,15 @@ pub mod output; // JSON output envelopes (Phase 1.2) // MCP server (Phase 7) - M
 // Re-export commonly used types for convenience
 pub use capability::validate_query;
 pub use config::{
-    list_connections, list_connections_for_project, resolve_connection, save_connection,
-    ConfigLocation, ConnectionRegistry, StoredConnection,
+    list_connections, list_connections_for_project, list_connections_raw, resolve_connection,
+    save_connection, ConfigLocation, ConnectionRegistry, StoredConnection,
 };
 pub use engine::{
-    Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine, DatabaseType,
-    ForeignKeyInfo, IndexInfo, QueryResult, SchemaInfo, TableInfo, TimeOnlyResult,
+    apply_byte_budget, Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine,
+    DatabaseType, ForeignKeyInfo, IndexInfo, QueryResult, SchemaInfo, TableInfo, TimeOnlyResult,
 };
 pub use error::{PlenumError, Result};
-pub use output::{ErrorEnvelope, ErrorInfo, Metadata, SuccessEnvelope};
+pub use output::{ErrorEnvelope, ErrorInfo, Metadata, SuccessEnvelope, CONTRACT_VERSION};
 
 #[cfg(test)]
 mod tests {

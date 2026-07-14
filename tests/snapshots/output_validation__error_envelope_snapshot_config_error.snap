@@ -9,5 +9,9 @@ expression: json_str
   "error": {
     "code": "CONFIG_ERROR",
     "message": "Configuration error: connection 'prod' not found"
+  },
+  "meta": {
+    "contract_version": "1",
+    "execution_ms": 0
   }
 }

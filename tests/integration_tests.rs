@@ -241,7 +241,7 @@ async fn test_cross_engine_max_rows_enforcement() {
     // Test that max_rows is enforced uniformly across engines
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities { max_rows: Some(2), timeout_ms: None, offset: None };
+    let caps = Capabilities { max_rows: Some(2), timeout_ms: None, offset: None, max_bytes: None };
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id", &[], &caps).await;
     assert!(result.is_ok());

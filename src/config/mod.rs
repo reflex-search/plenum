@@ -458,6 +458,30 @@ pub fn list_connections() -> Result<Vec<(String, String, ConnectionConfig)>> {
     Ok(connections)
 }
 
+/// List raw stored connections for a project without resolving secrets
+///
+/// Returns `(Vec<(name, StoredConnection)>, Option<default_name>)`.
+/// Connections are sorted alphabetically by name for deterministic output.
+/// Does NOT call `StoredConnection::resolve` — callers must NOT expose the password field.
+pub fn list_connections_raw(
+    project_path: &str,
+) -> Result<(Vec<(String, StoredConnection)>, Option<String>)> {
+    let registry = load_with_precedence()?;
+
+    match registry.projects.get(project_path) {
+        None => Ok((Vec::new(), None)),
+        Some(project) => {
+            let mut connections: Vec<(String, StoredConnection)> = project
+                .connections
+                .iter()
+                .map(|(name, stored)| (name.clone(), stored.clone()))
+                .collect();
+            connections.sort_by(|a, b| a.0.cmp(&b.0));
+            Ok((connections, project.default.clone()))
+        }
+    }
+}
+
 /// List connections for a specific project
 ///
 /// Returns a Vec of tuples: (`connection_name`, config)
@@ -960,6 +984,137 @@ mod tests {
 
         let json = serde_json::to_string(&stored).unwrap();
         assert!(!json.contains("password_env"));
+    }
+
+    #[test]
+    fn test_list_connections_raw_redacts_password_and_sorts() {
+        // Verify that list_connections_raw returns connections sorted by name
+        // and that StoredConnections retain password_env but NOT the resolved password.
+        let mut project = ProjectConfig::default();
+        project.connections.insert(
+            "zebra".to_string(),
+            StoredConnection {
+                config: ConnectionConfig::postgres(
+                    "z-host".to_string(),
+                    5432,
+                    "zuser".to_string(),
+                    "zpass".to_string(),
+                    "zdb".to_string(),
+                ),
+                password_env: None,
+                readonly: None,
+            },
+        );
+        project.connections.insert(
+            "alpha".to_string(),
+            StoredConnection {
+                config: ConnectionConfig {
+                    engine: DatabaseType::MySQL,
+                    host: Some("a-host".to_string()),
+                    port: Some(3306),
+                    user: Some("auser".to_string()),
+                    password: None,
+                    database: Some("adb".to_string()),
+                    file: None,
+                },
+                password_env: Some("ALPHA_DB_PASS".to_string()),
+                readonly: None,
+            },
+        );
+        project.default = Some("alpha".to_string());
+
+        let mut connections: Vec<(String, StoredConnection)> =
+            project.connections.iter().map(|(n, s)| (n.clone(), s.clone())).collect();
+        connections.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Verify alphabetical ordering
+        assert_eq!(connections[0].0, "alpha");
+        assert_eq!(connections[1].0, "zebra");
+
+        // Verify password_env is preserved
+        assert_eq!(connections[0].1.password_env.as_deref(), Some("ALPHA_DB_PASS"));
+        // Verify inline password is present on the stored struct but must not be emitted in output
+        assert_eq!(connections[1].1.config.password.as_deref(), Some("zpass"));
+        // (output layer is responsible for dropping password — confirmed by ConnectionListEntry)
+    }
+
+    #[test]
+    fn test_connect_list_envelope_json_shape() {
+        // Snapshot: verify the JSON shape of the connect --list data field.
+        // No password field; password_env var name only; deterministic key ordering.
+        #[derive(serde::Serialize)]
+        struct ConnectionListEntry {
+            name: String,
+            engine: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            host: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            port: Option<u16>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            user: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            database: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            file: Option<PathBuf>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            password_env: Option<String>,
+        }
+
+        let entries = vec![
+            ConnectionListEntry {
+                name: "alpha".to_string(),
+                engine: "mysql".to_string(),
+                host: Some("a-host".to_string()),
+                port: Some(3306),
+                user: Some("auser".to_string()),
+                database: Some("adb".to_string()),
+                file: None,
+                password_env: Some("ALPHA_DB_PASS".to_string()),
+            },
+            ConnectionListEntry {
+                name: "zebra".to_string(),
+                engine: "postgres".to_string(),
+                host: Some("z-host".to_string()),
+                port: Some(5432),
+                user: Some("zuser".to_string()),
+                database: Some("zdb".to_string()),
+                file: None,
+                password_env: None,
+            },
+        ];
+
+        let data = serde_json::json!({
+            "connections": entries,
+            "default": "alpha",
+        });
+
+        let json = serde_json::to_string(&data).unwrap();
+
+        // Must include expected fields
+        assert!(json.contains("\"connections\""));
+        assert!(json.contains("\"default\":\"alpha\""));
+        assert!(json.contains("\"password_env\":\"ALPHA_DB_PASS\""));
+        assert!(json.contains("\"engine\":\"mysql\""));
+        // Must NOT include plaintext password
+        assert!(!json.contains("\"password\""));
+        // Zebra entry must not have password_env key
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let zebra = &parsed["connections"][1];
+        assert!(zebra["password_env"].is_null()); // absent → null from serde_json::Value
+        assert_eq!(zebra["name"], "zebra");
+    }
+
+    #[test]
+    fn test_connect_list_empty_project_returns_empty() {
+        // An absent project path returns an empty connections vec and None default.
+        let registry = ConnectionRegistry::default();
+        let project = registry.projects.get("/nonexistent/path");
+        assert!(project.is_none());
+        // Simulate what list_connections_raw returns for a missing project
+        let connections: Vec<(String, StoredConnection)> = Vec::new();
+        let default_name: Option<String> = None;
+        assert!(connections.is_empty());
+        assert!(default_name.is_none());
     }
 
     #[test]

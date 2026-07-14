@@ -9,5 +9,9 @@ expression: json_str
   "error": {
     "code": "QUERY_FAILED",
     "message": "Query execution failed: relation \"users\" does not exist"
+  },
+  "meta": {
+    "contract_version": "1",
+    "execution_ms": 0
   }
 }

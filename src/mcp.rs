@@ -388,6 +388,10 @@ fn handle_list_tools() -> Result<Value> {
                             "type": "number",
                             "description": "CRITICAL: Maximum number of rows to return from SELECT queries. Due to MCP's 25k token response limit, this parameter is effectively REQUIRED for all queries against tables of unknown size. Omitting this will cause tool failure on large tables. Start small and increase if needed: Use 10 for initial exploration/preview, 50-100 for small known tables, 100-500 for medium tables (only after confirming size with COUNT(*) query). Even with columnar format (30-50% token reduction), a 100-row result with 10+ columns can approach token limits. Always prefer smaller limits initially."
                         },
+                        "max_bytes": {
+                            "type": "number",
+                            "description": "Optional: Maximum serialized byte size of the rows array. Truncates at row boundaries so partial rows are never returned. When triggered, the response includes rows_truncated:true and truncated_by:'bytes' in the meta section. Useful for tables with wide columns (BLOBs, large JSON) where max_rows alone may not bound the response size. Example: 50000 (50 KB)."
+                        },
                         "timeout_ms": {
                             "type": "number",
                             "description": "Optional: Query execution timeout in milliseconds. Recommended for potentially expensive queries to prevent long-running operations. Example: 5000 (5 seconds). No timeout if omitted."
@@ -403,6 +407,48 @@ fn handle_list_tools() -> Result<Value> {
                     },
                     "required": ["sql"]
                 }
+            },
+            {
+                "name": "connect",
+                "description": "Test a database connection and return server metadata (version, database name, user). Opens a connection, verifies liveness, returns ConnectionInfo, then disconnects immediately. Stateless and read-only — no config is saved or mutated. Use to health-check a saved connection before running queries, or to verify credentials after setup. IMPORTANT CONNECTION WORKFLOW: (1) RECOMMENDED: Auto-resolve (omit all connection params) — uses project's default saved connection, (2) COMMON: Named connection (use 'connection' param only) — references saved connection by name, (3) DISCOURAGED: Explicit credentials (engine + host/user/password) — ONLY for one-off checks. Possible error codes: CONNECTION_FAILED (unreachable host, bad credentials, missing file), INVALID_INPUT (missing required params), CONFIG_ERROR (no saved connection found).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "connection": {
+                            "type": "string",
+                            "description": "RECOMMENDED: Name of saved connection to test. Loads from .plenum/config.json (local) or ~/.config/plenum/connections.json (global). If omitted along with 'engine', auto-resolves project's default connection (BEST PRACTICE)."
+                        },
+                        "engine": {
+                            "type": "string",
+                            "enum": ["postgres", "mysql", "sqlite"],
+                            "description": "DISCOURAGED: Database engine type for explicit one-off connection tests. Only use if no saved connection exists."
+                        },
+                        "host": {
+                            "type": "string",
+                            "description": "DISCOURAGED: Database host (postgres/mysql). Only for explicit one-off tests."
+                        },
+                        "port": {
+                            "type": "number",
+                            "description": "DISCOURAGED: Database port (postgres/mysql). Defaults: postgres=5432, mysql=3306."
+                        },
+                        "user": {
+                            "type": "string",
+                            "description": "DISCOURAGED: Database username (postgres/mysql). Only for explicit one-off tests."
+                        },
+                        "password": {
+                            "type": "string",
+                            "description": "DISCOURAGED: Database password (postgres/mysql). Only for explicit one-off tests."
+                        },
+                        "database": {
+                            "type": "string",
+                            "description": "DISCOURAGED: Database name (postgres/mysql). Only for explicit one-off tests."
+                        },
+                        "file": {
+                            "type": "string",
+                            "description": "DISCOURAGED: SQLite database file path. Only for explicit one-off tests."
+                        }
+                    }
+                }
             }
         ]
     }))
@@ -417,6 +463,7 @@ async fn handle_call_tool(params: Option<Value>) -> Result<Value> {
     let arguments = &params["arguments"];
 
     match name {
+        "connect" => tool_connect(arguments).await,
         "introspect" => tool_introspect(arguments).await,
         "query" => tool_query(arguments).await,
         _ => Err(anyhow!("Unknown tool: {name}")),
@@ -426,6 +473,45 @@ async fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 // ============================================================================
 // Tool Implementations
 // ============================================================================
+
+/// MCP Tool: connect
+///
+/// Tests a database connection and returns server metadata.
+/// Stateless and read-only — no config is saved or mutated.
+async fn tool_connect(args: &Value) -> Result<Value> {
+    let (config, _is_readonly) = resolve_connection_from_args(args)?;
+
+    let connection_info = match config.engine {
+        #[cfg(feature = "sqlite")]
+        DatabaseType::SQLite => SqliteEngine::validate_connection(&config)
+            .await
+            .map_err(|e| anyhow!("SQLite connection test failed: {e}"))?,
+        #[cfg(not(feature = "sqlite"))]
+        DatabaseType::SQLite => {
+            return Err(anyhow!("SQLite engine not enabled. Build with --features sqlite"));
+        }
+
+        #[cfg(feature = "postgres")]
+        DatabaseType::Postgres => PostgresEngine::validate_connection(&config)
+            .await
+            .map_err(|e| anyhow!("PostgreSQL connection test failed: {e}"))?,
+        #[cfg(not(feature = "postgres"))]
+        DatabaseType::Postgres => {
+            return Err(anyhow!("PostgreSQL engine not enabled. Build with --features postgres"));
+        }
+
+        #[cfg(feature = "mysql")]
+        DatabaseType::MySQL => MySqlEngine::validate_connection(&config)
+            .await
+            .map_err(|e| anyhow!("MySQL connection test failed: {e}"))?,
+        #[cfg(not(feature = "mysql"))]
+        DatabaseType::MySQL => {
+            return Err(anyhow!("MySQL engine not enabled. Build with --features mysql"));
+        }
+    };
+
+    CallToolResult::success(connection_info)
+}
 
 /// MCP Tool: introspect
 ///
@@ -573,17 +659,31 @@ async fn tool_query(args: &Value) -> Result<Value> {
 
     // Extract safety parameters from args
     let max_rows = args.get("max_rows").and_then(serde_json::Value::as_u64).map(|n| n as usize);
+    let max_bytes = args.get("max_bytes").and_then(serde_json::Value::as_u64).map(|n| n as usize);
     let timeout_ms = args.get("timeout_ms").and_then(serde_json::Value::as_u64);
     let time_only = args.get("time_only").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let check_only = args.get("check_only").and_then(serde_json::Value::as_bool).unwrap_or(false);
 
-    // Build capabilities (read-only only)
-    let capabilities = Capabilities { max_rows, timeout_ms, offset: None };
+    // Build capabilities (read-only only; max_bytes is post-processed below)
+    let capabilities = Capabilities { max_rows, max_bytes: None, timeout_ms, offset: None };
 
     // Validate query is read-only (pre-execution check)
     crate::validate_query(sql, &capabilities, config.engine).map_err(|e| anyhow!("{e}"))?;
 
+    // check_only: return verdict without opening a database connection
+    if check_only {
+        return CallToolResult::success(
+            serde_json::json!({ "would_execute": true, "category": "read" }),
+        );
+    }
+
     // Execute query (opens and closes connection)
-    let query_result = execute_query(&config, sql, &capabilities).await?;
+    let mut query_result = execute_query(&config, sql, &capabilities).await?;
+
+    // Apply byte budget post-engine (row-boundary truncation)
+    if let Some(max_b) = max_bytes {
+        crate::engine::apply_byte_budget(&mut query_result, max_b);
+    }
 
     // Return time-only result if requested (for benchmarking)
     if time_only {

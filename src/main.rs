@@ -44,6 +44,10 @@ struct Cli {
 enum Commands {
     /// Configure and validate database connections
     Connect {
+        /// List saved connections for the project as JSON (no secrets emitted)
+        #[arg(long, conflicts_with_all = ["name", "engine", "host", "port", "user", "password", "password_env", "database", "file", "save", "test"])]
+        list: bool,
+
         /// Connection name (optional, defaults to "default")
         #[arg(long)]
         name: Option<String>,
@@ -85,8 +89,12 @@ enum Commands {
         file: Option<PathBuf>,
 
         /// Save location (local or global)
-        #[arg(long, value_parser = ["local", "global"])]
+        #[arg(long, value_parser = ["local", "global"], conflicts_with = "test")]
         save: Option<String>,
+
+        /// Test connection liveness and return server metadata without saving config
+        #[arg(long, conflicts_with = "save")]
+        test: bool,
     },
 
     /// Introspect database schema
@@ -233,6 +241,10 @@ enum Commands {
         #[arg(long)]
         max_rows: Option<usize>,
 
+        /// Max serialized byte size of the rows array; truncates at row boundaries and signals rows_truncated + truncated_by=bytes
+        #[arg(long)]
+        max_bytes: Option<usize>,
+
         /// Number of rows to skip before collecting results (for pagination)
         #[arg(long)]
         offset: Option<usize>,
@@ -251,6 +263,10 @@ enum Commands {
         /// Return only timing information (excludes result data for benchmarking)
         #[arg(long)]
         time_only: bool,
+
+        /// Validate SQL without executing: runs capability checks and returns a verdict, no DB call
+        #[arg(long)]
+        check_only: bool,
     },
 
     /// Start MCP server (hidden from help, for AI agent integration)
@@ -276,6 +292,7 @@ async fn main() {
     // Route to command handlers
     let result = match cli.command {
         Some(Commands::Connect {
+            list,
             name,
             project_path,
             engine,
@@ -287,21 +304,40 @@ async fn main() {
             database,
             file,
             save,
+            test,
         }) => {
-            handle_connect(
-                name,
-                project_path,
-                engine,
-                host,
-                port,
-                user,
-                password,
-                password_env,
-                database,
-                file,
-                save,
-            )
-            .await
+            if list {
+                handle_connect_list(project_path).await
+            } else if test {
+                handle_connect_test(
+                    name,
+                    project_path,
+                    engine,
+                    host,
+                    port,
+                    user,
+                    password,
+                    password_env,
+                    database,
+                    file,
+                )
+                .await
+            } else {
+                handle_connect(
+                    name,
+                    project_path,
+                    engine,
+                    host,
+                    port,
+                    user,
+                    password,
+                    password_env,
+                    database,
+                    file,
+                    save,
+                )
+                .await
+            }
         }
         Some(Commands::Introspect {
             name,
@@ -366,10 +402,12 @@ async fn main() {
             sql,
             sql_file,
             max_rows,
+            max_bytes,
             offset,
             timeout_ms,
             param,
             time_only,
+            check_only,
         }) => {
             handle_query(
                 name,
@@ -384,10 +422,12 @@ async fn main() {
                 sql,
                 sql_file,
                 max_rows,
+                max_bytes,
                 offset,
                 timeout_ms,
                 param,
                 time_only,
+                check_only,
             )
             .await
         }
@@ -416,6 +456,76 @@ async fn main() {
 // ============================================================================
 // Command Handlers
 // ============================================================================
+
+/// Redacted connection entry for `connect --list` JSON output.
+/// Never includes plaintext passwords; shows `password_env` var name only.
+#[derive(serde::Serialize)]
+struct ConnectionListEntry {
+    name: String,
+    engine: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    database: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password_env: Option<String>,
+}
+
+async fn handle_connect_list(project_path: Option<String>) -> std::result::Result<(), i32> {
+    let start = Instant::now();
+
+    let path = match project_path {
+        Some(p) => p,
+        None => match plenum::config::get_current_project_path() {
+            Ok(p) => p,
+            Err(e) => {
+                let envelope = ErrorEnvelope::from_error("", "connect", &e);
+                output_error(&envelope);
+                return Err(1);
+            }
+        },
+    };
+
+    match plenum::list_connections_raw(&path) {
+        Ok((connections, default)) => {
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let entries: Vec<ConnectionListEntry> = connections
+                .into_iter()
+                .map(|(name, stored)| ConnectionListEntry {
+                    name,
+                    engine: stored.config.engine.as_str().to_string(),
+                    host: stored.config.host,
+                    port: stored.config.port,
+                    user: stored.config.user,
+                    database: stored.config.database,
+                    file: stored.config.file,
+                    password_env: stored.password_env,
+                    // password intentionally omitted — never emitted
+                })
+                .collect();
+
+            let data = serde_json::json!({
+                "connections": entries,
+                "default": default,
+            });
+
+            let envelope = SuccessEnvelope::new("", "connect", data, Metadata::new(elapsed_ms));
+            output_success(&envelope);
+            Ok(())
+        }
+        Err(e) => {
+            let envelope = ErrorEnvelope::from_error("", "connect", &e);
+            output_error(&envelope);
+            Err(1)
+        }
+    }
+}
 
 async fn handle_connect(
     name: Option<String>,
@@ -506,6 +616,119 @@ async fn handle_connect(
         }
         Err(e) => {
             let envelope = ErrorEnvelope::from_error("", "connect", &e);
+            output_error(&envelope);
+            Err(1)
+        }
+    }
+}
+
+/// Test a connection: open, validate, return `ConnectionInfo`, then disconnect.
+/// No config is saved. On failure, returns a `CONNECTION_FAILED` envelope with no credentials.
+#[allow(clippy::too_many_arguments)]
+async fn handle_connect_test(
+    name: Option<String>,
+    project_path: Option<String>,
+    engine: Option<String>,
+    host: Option<String>,
+    port: Option<u16>,
+    user: Option<String>,
+    mut password: Option<String>,
+    password_env: Option<String>,
+    database: Option<String>,
+    file: Option<PathBuf>,
+) -> std::result::Result<(), i32> {
+    let start = Instant::now();
+
+    // Resolve password_env before building the config (explicit-arg path only)
+    if let Some(env_var) = &password_env {
+        match std::env::var(env_var) {
+            Ok(val) if !val.is_empty() => password = Some(val),
+            Ok(_) => {
+                let envelope = ErrorEnvelope::new(
+                    "",
+                    "connect",
+                    plenum::ErrorInfo::new(
+                        "INVALID_INPUT",
+                        format!("Environment variable {env_var} is set but empty"),
+                    ),
+                );
+                output_error(&envelope);
+                return Err(1);
+            }
+            Err(_) => {
+                let envelope = ErrorEnvelope::new(
+                    "",
+                    "connect",
+                    plenum::ErrorInfo::new(
+                        "INVALID_INPUT",
+                        format!("Environment variable {env_var} is not set"),
+                    ),
+                );
+                output_error(&envelope);
+                return Err(1);
+            }
+        }
+    }
+
+    // Resolve connection config from saved config or explicit CLI args
+    let (config, _is_readonly) = match build_connection_config(
+        name.as_deref(),
+        project_path.as_deref(),
+        engine,
+        host,
+        port,
+        user,
+        password,
+        database,
+        file,
+    ) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            let envelope = ErrorEnvelope::from_error("", "connect", &e);
+            output_error(&envelope);
+            return Err(1);
+        }
+    };
+
+    // Open, validate, and immediately close the connection
+    let result = match config.engine {
+        #[cfg(feature = "sqlite")]
+        DatabaseType::SQLite => SqliteEngine::validate_connection(&config).await,
+        #[cfg(not(feature = "sqlite"))]
+        DatabaseType::SQLite => Err(PlenumError::invalid_input(
+            "SQLite engine not enabled. Build with --features sqlite to enable SQLite support.",
+        )),
+
+        #[cfg(feature = "postgres")]
+        DatabaseType::Postgres => PostgresEngine::validate_connection(&config).await,
+        #[cfg(not(feature = "postgres"))]
+        DatabaseType::Postgres => Err(PlenumError::invalid_input(
+            "PostgreSQL engine not enabled. Build with --features postgres to enable PostgreSQL support.",
+        )),
+
+        #[cfg(feature = "mysql")]
+        DatabaseType::MySQL => MySqlEngine::validate_connection(&config).await,
+        #[cfg(not(feature = "mysql"))]
+        DatabaseType::MySQL => Err(PlenumError::invalid_input(
+            "MySQL engine not enabled. Build with --features mysql to enable MySQL support.",
+        )),
+    };
+
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+    match result {
+        Ok(connection_info) => {
+            let envelope = SuccessEnvelope::new(
+                config.engine.as_str(),
+                "connect",
+                connection_info,
+                Metadata::new(elapsed_ms),
+            );
+            output_success(&envelope);
+            Ok(())
+        }
+        Err(e) => {
+            let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "connect", &e);
             output_error(&envelope);
             Err(1)
         }
@@ -988,11 +1211,15 @@ async fn handle_query(
     sql: Option<String>,
     sql_file: Option<PathBuf>,
     max_rows: Option<usize>,
+    max_bytes: Option<usize>,
     offset: Option<usize>,
     timeout_ms: Option<u64>,
     raw_params: Vec<String>,
     time_only: bool,
+    check_only: bool,
 ) -> std::result::Result<(), i32> {
+    let start = Instant::now();
+
     // Resolve SQL input
     let sql_text = match (sql, sql_file) {
         (Some(s), None) => s,
@@ -1053,7 +1280,8 @@ async fn handle_query(
     };
 
     // Build capabilities (read-only only)
-    let capabilities = Capabilities { max_rows, timeout_ms, offset };
+    let capabilities = Capabilities { max_rows, max_bytes: None, timeout_ms, offset };
+    // max_bytes is applied post-engine as a post-processing step (see apply_byte_budget call below)
 
     // Parse --param strings into typed JSON values.
     // Rule: try serde_json parsing first so that 5 → Number, true → Bool, null → Null,
@@ -1066,7 +1294,18 @@ async fn handle_query(
     // Validate query is read-only
     match plenum::validate_query(&sql_text, &capabilities, config.engine) {
         Ok(()) => {
-            // Query is read-only and permitted
+            if check_only {
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+                let data = serde_json::json!({ "would_execute": true, "category": "read" });
+                let envelope = SuccessEnvelope::new(
+                    config.engine.as_str(),
+                    "query",
+                    data,
+                    Metadata::new(elapsed_ms),
+                );
+                output_success(&envelope);
+                return Ok(());
+            }
         }
         Err(e) => {
             let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "query", &e);
@@ -1112,13 +1351,24 @@ async fn handle_query(
     };
 
     match execute_result {
-        Ok(query_result) => {
+        Ok(mut query_result) => {
+            // Apply byte budget post-engine (row-boundary truncation)
+            if let Some(max_b) = max_bytes {
+                plenum::engine::apply_byte_budget(&mut query_result, max_b);
+            }
+
             let execution_ms = query_result.execution_ms;
             let row_count = query_result.rows.len();
             let rows_truncated = query_result.rows_truncated;
+            let truncated_by = query_result.truncated_by.clone();
             let effective_offset = offset.unwrap_or(0);
-            let query_meta =
-                Metadata::with_query(execution_ms, row_count, rows_truncated, effective_offset);
+            let query_meta = Metadata::with_query(
+                execution_ms,
+                row_count,
+                rows_truncated,
+                effective_offset,
+                truncated_by,
+            );
 
             if time_only {
                 // Return only timing information (for benchmarking)

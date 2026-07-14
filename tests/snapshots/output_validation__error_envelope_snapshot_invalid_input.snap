@@ -9,5 +9,9 @@ expression: json_str
   "error": {
     "code": "INVALID_INPUT",
     "message": "Invalid input: Query cannot be empty"
+  },
+  "meta": {
+    "contract_version": "1",
+    "execution_ms": 0
   }
 }

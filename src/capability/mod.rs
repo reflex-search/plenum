@@ -1263,6 +1263,92 @@ mod tests {
         assert_cte_allowed(sql, DatabaseType::Postgres);
     }
 
+    // REF-266: --check-only / check_only pre-execution validation tests.
+    //
+    // validate_query is the authorization gate for --check-only. The CLI and MCP
+    // layers call it first; if it returns Ok(()) the response is
+    // { would_execute: true, category: "read" } with no DB call.
+    // If it returns Err the standard CAPABILITY_VIOLATION error envelope is emitted.
+    // These tests pin the expected per-engine behavior.
+
+    #[test]
+    fn test_check_only_read_permitted_postgres() {
+        let caps = Capabilities::default();
+        assert!(validate_query("SELECT id, email FROM users", &caps, DatabaseType::Postgres).is_ok());
+    }
+
+    #[test]
+    fn test_check_only_write_rejected_postgres() {
+        let caps = Capabilities::default();
+        let err = validate_query("INSERT INTO users (name) VALUES ('x')", &caps, DatabaseType::Postgres).unwrap_err();
+        assert_eq!(err.error_code(), "CAPABILITY_VIOLATION");
+    }
+
+    #[test]
+    fn test_check_only_ddl_rejected_postgres() {
+        let caps = Capabilities::default();
+        let err = validate_query("CREATE TABLE t (id INT)", &caps, DatabaseType::Postgres).unwrap_err();
+        assert_eq!(err.error_code(), "CAPABILITY_VIOLATION");
+    }
+
+    #[test]
+    fn test_check_only_read_permitted_mysql() {
+        let caps = Capabilities::default();
+        assert!(validate_query("SELECT id FROM users", &caps, DatabaseType::MySQL).is_ok());
+    }
+
+    #[test]
+    fn test_check_only_write_rejected_mysql() {
+        let caps = Capabilities::default();
+        let err = validate_query("DELETE FROM users WHERE id = 1", &caps, DatabaseType::MySQL).unwrap_err();
+        assert_eq!(err.error_code(), "CAPABILITY_VIOLATION");
+    }
+
+    #[test]
+    fn test_check_only_ddl_rejected_mysql() {
+        let caps = Capabilities::default();
+        let err = validate_query("DROP TABLE users", &caps, DatabaseType::MySQL).unwrap_err();
+        assert_eq!(err.error_code(), "CAPABILITY_VIOLATION");
+    }
+
+    #[test]
+    fn test_check_only_read_permitted_sqlite() {
+        let caps = Capabilities::default();
+        assert!(validate_query("SELECT * FROM items", &caps, DatabaseType::SQLite).is_ok());
+    }
+
+    #[test]
+    fn test_check_only_write_rejected_sqlite() {
+        let caps = Capabilities::default();
+        let err = validate_query("UPDATE items SET qty = 0", &caps, DatabaseType::SQLite).unwrap_err();
+        assert_eq!(err.error_code(), "CAPABILITY_VIOLATION");
+    }
+
+    #[test]
+    fn test_check_only_ddl_rejected_sqlite() {
+        let caps = Capabilities::default();
+        let err = validate_query("ALTER TABLE items ADD COLUMN x TEXT", &caps, DatabaseType::SQLite).unwrap_err();
+        assert_eq!(err.error_code(), "CAPABILITY_VIOLATION");
+    }
+
+    #[test]
+    fn test_check_only_empty_rejected_all_engines() {
+        let caps = Capabilities::default();
+        for engine in [DatabaseType::Postgres, DatabaseType::MySQL, DatabaseType::SQLite] {
+            let err = validate_query("", &caps, engine).unwrap_err();
+            assert_eq!(err.error_code(), "INVALID_INPUT", "engine={engine:?}");
+        }
+    }
+
+    #[test]
+    fn test_check_only_multi_statement_rejected_all_engines() {
+        let caps = Capabilities::default();
+        for engine in [DatabaseType::Postgres, DatabaseType::MySQL, DatabaseType::SQLite] {
+            let err = validate_query("SELECT 1; SELECT 2", &caps, engine).unwrap_err();
+            assert_eq!(err.error_code(), "INVALID_INPUT", "engine={engine:?}");
+        }
+    }
+
     // Defense in depth: a CTE that smuggles a `SELECT ... INTO new_table` write
     // (Postgres CTAS-via-INTO) must be rejected too. The `INTO` token is in
     // `WRITE_KEYWORDS` so `is_safe_cte_query` rejects this regardless of

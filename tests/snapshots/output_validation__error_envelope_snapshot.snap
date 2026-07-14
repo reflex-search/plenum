@@ -1,5 +1,6 @@
 ---
 source: tests/output_validation.rs
+assertion_line: 251
 expression: json_str
 ---
 {
@@ -9,5 +10,9 @@ expression: json_str
   "error": {
     "code": "QUERY_FAILED",
     "message": "Column 'invalid' does not exist"
+  },
+  "meta": {
+    "contract_version": "1",
+    "execution_ms": 0
   }
 }
