@@ -9,6 +9,7 @@
 //!
 //! Output is stable, versioned, and suitable for programmatic parsing by agents.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::PlenumError;
@@ -19,7 +20,7 @@ pub const CONTRACT_VERSION: &str = "1";
 /// Success envelope for operation results
 ///
 /// Generic over the data type to support different operation return values.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SuccessEnvelope<T> {
     /// Always true for success envelopes
     pub ok: bool,
@@ -50,7 +51,7 @@ impl<T> SuccessEnvelope<T> {
 }
 
 /// Error envelope for operation failures
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ErrorEnvelope {
     /// Always false for error envelopes
     pub ok: bool,
@@ -95,7 +96,7 @@ impl ErrorEnvelope {
 }
 
 /// Error information structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ErrorInfo {
     /// Stable error code (e.g., "`CAPABILITY_VIOLATION`", "`CONNECTION_FAILED`")
     pub code: String,
@@ -112,9 +113,10 @@ impl ErrorInfo {
 }
 
 /// Execution metadata included in all responses
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Metadata {
     /// Output contract version — agents use this to guard against silent breaking changes
+    #[schemars(with = "String")]
     pub contract_version: &'static str,
 
     /// Execution time in milliseconds

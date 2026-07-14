@@ -11,6 +11,7 @@
 //! Each engine implementation is completely independent.
 //! No shared SQL helpers or cross-engine abstractions.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -149,7 +150,7 @@ impl ConnectionConfig {
 }
 
 /// Connection information returned after successful connection validation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConnectionInfo {
     /// Database server version string
     pub database_version: String,
@@ -201,14 +202,14 @@ impl Capabilities {
 }
 
 /// Schema introspection result
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SchemaInfo {
     /// List of tables in the schema
     pub tables: Vec<TableInfo>,
 }
 
 /// Table information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TableInfo {
     /// Table name
     pub name: String,
@@ -240,7 +241,7 @@ pub struct TableInfo {
 }
 
 /// Column information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ColumnInfo {
     /// Column name
     pub name: String,
@@ -260,7 +261,7 @@ pub struct ColumnInfo {
 }
 
 /// Foreign key information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ForeignKeyInfo {
     /// Foreign key constraint name
     pub name: String,
@@ -276,7 +277,7 @@ pub struct ForeignKeyInfo {
 }
 
 /// Index information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct IndexInfo {
     /// Index name
     pub name: String,
@@ -291,7 +292,7 @@ pub struct IndexInfo {
 fn is_false(b: &bool) -> bool { !b }
 
 /// Query execution result
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct QueryResult {
     /// Column names in result set
     pub columns: Vec<String>,
@@ -307,7 +308,7 @@ pub struct QueryResult {
     pub execution_ms: u64,
 
     /// Whether the result was truncated (by max_rows or max_bytes); present in output when true
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub rows_truncated: bool,
 
     /// Why the result was truncated: "rows" (max_rows) or "bytes" (max_bytes); absent when not truncated
@@ -429,7 +430,7 @@ impl TableFields {
 ///
 /// The result type depends on which `IntrospectOperation` was requested.
 /// Only the relevant variant will be populated.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum IntrospectResult {
     /// List of database names
@@ -476,7 +477,7 @@ pub enum IntrospectResult {
 }
 
 /// Index summary (used in `ListIndexes` operation)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct IndexSummary {
     /// Index name
     pub name: String,
@@ -492,7 +493,7 @@ pub struct IndexSummary {
 }
 
 /// View information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ViewInfo {
     /// View name
     pub name: String,

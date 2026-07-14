@@ -44,7 +44,8 @@ pub use config::{
 };
 pub use engine::{
     apply_byte_budget, Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine,
-    DatabaseType, ForeignKeyInfo, IndexInfo, QueryResult, SchemaInfo, TableInfo, TimeOnlyResult,
+    DatabaseType, ForeignKeyInfo, IndexInfo, IndexSummary, IntrospectResult, QueryResult, SchemaInfo,
+    TableInfo, TimeOnlyResult, ViewInfo,
 };
 pub use error::{PlenumError, Result};
 pub use output::{ErrorEnvelope, ErrorInfo, Metadata, SuccessEnvelope, CONTRACT_VERSION};

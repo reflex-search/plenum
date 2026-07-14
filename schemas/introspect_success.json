@@ -1,0 +1,502 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SuccessEnvelope_for_IntrospectResult",
+  "description": "Success envelope for operation results\n\nGeneric over the data type to support different operation return values.",
+  "type": "object",
+  "required": [
+    "command",
+    "data",
+    "engine",
+    "meta",
+    "ok"
+  ],
+  "properties": {
+    "command": {
+      "description": "Command that was executed (connect, introspect, query)",
+      "type": "string"
+    },
+    "data": {
+      "description": "Operation-specific data",
+      "allOf": [
+        {
+          "$ref": "#/definitions/IntrospectResult"
+        }
+      ]
+    },
+    "engine": {
+      "description": "Database engine used for this operation (postgres, mysql, sqlite)",
+      "type": "string"
+    },
+    "meta": {
+      "description": "Execution metadata",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Metadata"
+        }
+      ]
+    },
+    "ok": {
+      "description": "Always true for success envelopes",
+      "type": "boolean"
+    }
+  },
+  "definitions": {
+    "ColumnInfo": {
+      "description": "Column information",
+      "type": "object",
+      "required": [
+        "data_type",
+        "name",
+        "nullable"
+      ],
+      "properties": {
+        "comment": {
+          "description": "Column comment; null when not set or not supported by the engine",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "data_type": {
+          "description": "Column data type (engine-specific)",
+          "type": "string"
+        },
+        "default": {
+          "description": "Default value (if any)",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Column name",
+          "type": "string"
+        },
+        "nullable": {
+          "description": "Whether column allows NULL values",
+          "type": "boolean"
+        }
+      }
+    },
+    "ForeignKeyInfo": {
+      "description": "Foreign key information",
+      "type": "object",
+      "required": [
+        "columns",
+        "name",
+        "referenced_columns",
+        "referenced_table"
+      ],
+      "properties": {
+        "columns": {
+          "description": "Column names in this table",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Foreign key constraint name",
+          "type": "string"
+        },
+        "referenced_columns": {
+          "description": "Referenced column names",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "referenced_table": {
+          "description": "Referenced table name",
+          "type": "string"
+        }
+      }
+    },
+    "IndexInfo": {
+      "description": "Index information",
+      "type": "object",
+      "required": [
+        "columns",
+        "name",
+        "unique"
+      ],
+      "properties": {
+        "columns": {
+          "description": "Column names included in the index",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Index name",
+          "type": "string"
+        },
+        "unique": {
+          "description": "Whether this is a unique index",
+          "type": "boolean"
+        }
+      }
+    },
+    "IndexSummary": {
+      "description": "Index summary (used in `ListIndexes` operation)",
+      "type": "object",
+      "required": [
+        "columns",
+        "name",
+        "table",
+        "unique"
+      ],
+      "properties": {
+        "columns": {
+          "description": "Column names included in the index",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Index name",
+          "type": "string"
+        },
+        "table": {
+          "description": "Table the index belongs to",
+          "type": "string"
+        },
+        "unique": {
+          "description": "Whether this is a unique index",
+          "type": "boolean"
+        }
+      }
+    },
+    "IntrospectResult": {
+      "description": "Introspection result\n\nThe result type depends on which `IntrospectOperation` was requested. Only the relevant variant will be populated.",
+      "oneOf": [
+        {
+          "description": "List of database names",
+          "type": "object",
+          "required": [
+            "databases",
+            "type"
+          ],
+          "properties": {
+            "databases": {
+              "description": "Database names",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "database_list"
+              ]
+            }
+          }
+        },
+        {
+          "description": "List of schema names",
+          "type": "object",
+          "required": [
+            "schemas",
+            "type"
+          ],
+          "properties": {
+            "schemas": {
+              "description": "Schema names",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "schema_list"
+              ]
+            }
+          }
+        },
+        {
+          "description": "List of table names",
+          "type": "object",
+          "required": [
+            "tables",
+            "type"
+          ],
+          "properties": {
+            "tables": {
+              "description": "Table names",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "table_list"
+              ]
+            }
+          }
+        },
+        {
+          "description": "List of view names",
+          "type": "object",
+          "required": [
+            "type",
+            "views"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "view_list"
+              ]
+            },
+            "views": {
+              "description": "View names",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "description": "List of indexes",
+          "type": "object",
+          "required": [
+            "indexes",
+            "type"
+          ],
+          "properties": {
+            "indexes": {
+              "description": "Index summaries",
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/IndexSummary"
+              }
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "index_list"
+              ]
+            }
+          }
+        },
+        {
+          "description": "Full table details",
+          "type": "object",
+          "required": [
+            "table",
+            "type"
+          ],
+          "properties": {
+            "table": {
+              "description": "Table information",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/TableInfo"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "table_details"
+              ]
+            }
+          }
+        },
+        {
+          "description": "View details",
+          "type": "object",
+          "required": [
+            "type",
+            "view"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "view_details"
+              ]
+            },
+            "view": {
+              "description": "View information",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ViewInfo"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "Metadata": {
+      "description": "Execution metadata included in all responses",
+      "type": "object",
+      "required": [
+        "contract_version",
+        "execution_ms"
+      ],
+      "properties": {
+        "contract_version": {
+          "description": "Output contract version — agents use this to guard against silent breaking changes",
+          "type": "string"
+        },
+        "execution_ms": {
+          "description": "Execution time in milliseconds",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "has_more": {
+          "description": "Whether more rows are available beyond this page (query results only)",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "next_offset": {
+          "description": "Offset to pass as --offset for the next page (present only when has_more is true)",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "rows_returned": {
+          "description": "Number of rows returned (for query results, None for other operations)",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "rows_truncated": {
+          "description": "Whether the result set was capped by max_rows (query results only)",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "truncated_by": {
+          "description": "Why the result was truncated: \"bytes\" when max_bytes triggered the cut; absent for row-count truncation or when rows are not truncated",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "TableInfo": {
+      "description": "Table information",
+      "type": "object",
+      "required": [
+        "columns",
+        "name"
+      ],
+      "properties": {
+        "columns": {
+          "description": "Table columns",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ColumnInfo"
+          }
+        },
+        "comment": {
+          "description": "Table-level comment or description; null when not set or not supported by the engine",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "foreign_keys": {
+          "description": "Foreign keys",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ForeignKeyInfo"
+          }
+        },
+        "indexes": {
+          "description": "Indexes",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IndexInfo"
+          }
+        },
+        "name": {
+          "description": "Table name",
+          "type": "string"
+        },
+        "primary_key": {
+          "description": "Primary key columns",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "row_estimate": {
+          "description": "Estimated row count from engine statistics; null when not available",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "schema": {
+          "description": "Schema name (for engines that support schemas)",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ViewInfo": {
+      "description": "View information",
+      "type": "object",
+      "required": [
+        "columns",
+        "name"
+      ],
+      "properties": {
+        "columns": {
+          "description": "View columns",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ColumnInfo"
+          }
+        },
+        "definition": {
+          "description": "View definition (SQL source, if available)",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "View name",
+          "type": "string"
+        },
+        "schema": {
+          "description": "Schema name (for engines that support schemas)",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}
