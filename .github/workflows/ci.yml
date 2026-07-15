@@ -92,68 +92,39 @@ jobs:
   live-db-tests:
     name: Live DB integration tests
     runs-on: ubuntu-latest
-    # Runs the engine integration tests previously marked `#[ignore]` because
-    # they need a real database. Kept in a separate job so a transient service
-    # outage doesn't poison the main test signal.
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: password
-          MYSQL_DATABASE: test
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd "mysqladmin ping -h localhost -uroot -ppassword"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
+    # Separate job so a DB/container failure doesn't block the fast offline
+    # signal. Drives scripts/test-live.sh which owns the full lifecycle:
+    #   docker compose up --wait (seeded, healthchecked)
+    #   cargo test --test live_mysql --test live_postgres -- --include-ignored
+    #   docker compose down --volumes  (always, via trap EXIT)
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Wait for Postgres
-        run: |
-          for i in $(seq 1 30); do
-            if pg_isready -h 127.0.0.1 -p 5432 -U postgres >/dev/null 2>&1; then
-              echo "Postgres is ready"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "Postgres did not become ready" >&2
-          exit 1
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-live-cargo-registry-${{ hashFiles('**/Cargo.toml') }}
 
-      - name: Wait for MySQL
-        run: |
-          for i in $(seq 1 30); do
-            if mysqladmin ping -h 127.0.0.1 -P 3306 -uroot -ppassword --silent >/dev/null 2>&1; then
-              echo "MySQL is ready"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "MySQL did not become ready" >&2
-          exit 1
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-live-cargo-build-${{ hashFiles('**/Cargo.toml') }}
 
-      - name: Run ignored live-DB tests (Postgres + MySQL)
-        run: cargo test --features postgres,mysql -- --ignored
+      - name: Run live DB integration tests
+        # bash invocation avoids relying on execute-bit surviving git checkout.
+        # The script handles: compose up --wait, DSN exports, cargo test,
+        # and compose down --volumes via trap EXIT (runs even on test failure).
+        run: bash scripts/test-live.sh
         env:
-          # Surface real assertion output even on success so we can see which
-          # ignored tests actually executed.
-          RUST_BACKTRACE: 1
+          # Non-standard host ports to avoid collisions with any system DB
+          # that might be present on the runner; these are the compose defaults,
+          # set explicitly here so the job is self-documenting.
+          PLENUM_TEST_MYSQL80_PORT: "43306"
+          PLENUM_TEST_MYSQL84_PORT: "43307"
+          PLENUM_TEST_POSTGRES16_PORT: "45432"
+          RUST_BACKTRACE: "1"
