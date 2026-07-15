@@ -125,21 +125,90 @@ fn is_read_only(sql: &str, engine: DatabaseType) -> bool {
     }
 }
 
-/// Strip EXPLAIN/EXPLAIN ANALYZE prefix from query
+/// Strip a leading keyword token from `s` if present as a whole word.
+///
+/// Matching is case-insensitive and only succeeds when the keyword is followed
+/// by a token boundary (whitespace, `(`, `=`, or end of string), so `FORMAT`
+/// does not match a column named `FORMATTED`. Returns the remainder after the
+/// keyword (not trimmed). `kw` may contain spaces (e.g. `QUERY PLAN`).
+fn strip_leading_keyword<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
+    let s = s.trim_start();
+    if s.len() >= kw.len() && s[..kw.len()].eq_ignore_ascii_case(kw) {
+        let after = &s[kw.len()..];
+        if after.is_empty()
+            || after.starts_with(|c: char| c.is_whitespace() || c == '(' || c == '=')
+        {
+            return Some(after);
+        }
+    }
+    None
+}
+
+/// Strip an `EXPLAIN` prefix (with any of its option/modifier forms) from a
+/// query, returning the underlying statement to be validated.
+///
+/// `EXPLAIN` is read-only for every engine, but each dialect spells its options
+/// differently. All of the following must reduce to the trailing statement so
+/// that the normal read-only checks apply to it (REF-258, Bug 3):
+/// * `EXPLAIN ANALYZE` / `VERBOSE` / `EXTENDED` / `PARTITIONS` (Postgres/MySQL)
+/// * `EXPLAIN FORMAT=JSON` / `FORMAT=TREE` / `FORMAT JSON` (MySQL/Postgres)
+/// * `EXPLAIN ( FORMAT JSON, ANALYZE )` — parenthesized option list (Postgres)
+/// * `EXPLAIN QUERY PLAN` (`SQLite`)
+///
+/// Only the format/modifier decorations are stripped; the trailing statement is
+/// returned verbatim so a hidden write (e.g. `EXPLAIN FORMAT=JSON DELETE ...`)
+/// is still rejected by the caller.
 fn strip_explain_prefix(sql: &str) -> String {
     let sql = sql.trim();
 
-    // Handle EXPLAIN ANALYZE
-    if let Some(stripped) = sql.strip_prefix("EXPLAIN ANALYZE") {
-        return stripped.trim().to_string();
+    let Some(after_explain) = strip_leading_keyword(sql, "EXPLAIN") else {
+        return sql.to_string();
+    };
+
+    let mut rest = after_explain.trim();
+    loop {
+        // Parenthesized option list (PostgreSQL): EXPLAIN ( ... ) statement
+        if let Some(inner) = rest.strip_prefix('(') {
+            if let Some(close) = inner.find(')') {
+                rest = inner[close + 1..].trim();
+                continue;
+            }
+            break; // malformed; leave as-is for the caller to reject
+        }
+
+        // FORMAT=<value> or FORMAT <value> (MySQL/PostgreSQL)
+        if let Some(after_format) = strip_leading_keyword(rest, "FORMAT") {
+            let after_value = after_format.trim_start();
+            let after_value = after_value.strip_prefix('=').unwrap_or(after_value).trim_start();
+            // Drop the format identifier itself (JSON/TREE/TRADITIONAL/...).
+            let end = after_value.find(char::is_whitespace).unwrap_or(after_value.len());
+            rest = after_value[end..].trim();
+            continue;
+        }
+
+        // SQLite: EXPLAIN QUERY PLAN statement
+        if let Some(after) = strip_leading_keyword(rest, "QUERY PLAN") {
+            rest = after.trim();
+            continue;
+        }
+
+        // Bare modifiers (Postgres/MySQL) that precede the statement.
+        let mut matched = false;
+        for kw in ["ANALYZE", "VERBOSE", "EXTENDED", "PARTITIONS"] {
+            if let Some(after) = strip_leading_keyword(rest, kw) {
+                rest = after.trim();
+                matched = true;
+                break;
+            }
+        }
+        if matched {
+            continue;
+        }
+
+        break;
     }
 
-    // Handle EXPLAIN
-    if let Some(stripped) = sql.strip_prefix("EXPLAIN") {
-        return stripped.trim().to_string();
-    }
-
-    sql.to_string()
+    rest.to_string()
 }
 
 /// DML/DDL keywords that must never appear in a read-only query.
@@ -1355,5 +1424,121 @@ mod tests {
     fn test_cte_with_select_into_rejected_postgres() {
         let sql = "WITH cte AS (SELECT * FROM users) SELECT * INTO archive FROM cte";
         assert_cte_rejected(sql, DatabaseType::Postgres);
+    }
+
+    // EXPLAIN-variant classification tests (REF-258, Bug 3).
+    //
+    // Plain `EXPLAIN SELECT ...` was already accepted, but decorated EXPLAIN
+    // forms (`FORMAT=...`, `ANALYZE`, `EXTENDED`, parenthesized option lists,
+    // `QUERY PLAN`) were wrongly rejected as writes because the option tokens
+    // survived the prefix strip. These pin the fix per engine and confirm that
+    // a write hidden behind an EXPLAIN decoration is still rejected.
+
+    fn assert_allowed(sql: &str, engine: DatabaseType) {
+        let caps = Capabilities::default();
+        let result = validate_query(sql, &caps, engine);
+        assert!(result.is_ok(), "expected {engine:?} to allow: {sql} (err={:?})", result.err());
+    }
+
+    fn assert_rejected(sql: &str, engine: DatabaseType) {
+        let caps = Capabilities::default();
+        let result = validate_query(sql, &caps, engine);
+        assert!(result.is_err(), "expected {engine:?} to reject: {sql}");
+        assert_eq!(
+            result.unwrap_err().error_code(),
+            "CAPABILITY_VIOLATION",
+            "engine={engine:?} sql={sql}"
+        );
+    }
+
+    // --- MySQL EXPLAIN variants ---
+
+    #[test]
+    fn test_mysql_explain_format_json_allowed() {
+        assert_allowed("EXPLAIN FORMAT=JSON SELECT id FROM courts", DatabaseType::MySQL);
+    }
+
+    #[test]
+    fn test_mysql_explain_format_tree_allowed() {
+        assert_allowed("EXPLAIN FORMAT=TREE SELECT id FROM courts", DatabaseType::MySQL);
+    }
+
+    #[test]
+    fn test_mysql_explain_analyze_allowed() {
+        assert_allowed("EXPLAIN ANALYZE SELECT id FROM courts", DatabaseType::MySQL);
+    }
+
+    #[test]
+    fn test_mysql_explain_extended_allowed() {
+        assert_allowed("EXPLAIN EXTENDED SELECT id FROM courts", DatabaseType::MySQL);
+    }
+
+    #[test]
+    fn test_mysql_plain_explain_allowed() {
+        assert_allowed("EXPLAIN SELECT id FROM courts", DatabaseType::MySQL);
+    }
+
+    // Writes hidden behind an EXPLAIN decoration must still be rejected.
+    #[test]
+    fn test_mysql_explain_format_json_delete_rejected() {
+        assert_rejected("EXPLAIN FORMAT=JSON DELETE FROM courts", DatabaseType::MySQL);
+    }
+
+    #[test]
+    fn test_mysql_explain_analyze_update_rejected() {
+        assert_rejected("EXPLAIN ANALYZE UPDATE courts SET x = 1", DatabaseType::MySQL);
+    }
+
+    #[test]
+    fn test_mysql_explain_format_json_cte_dml_rejected() {
+        assert_rejected(
+            "EXPLAIN FORMAT=JSON WITH x AS (INSERT INTO t VALUES (1) RETURNING id) SELECT * FROM x",
+            DatabaseType::MySQL,
+        );
+    }
+
+    // --- PostgreSQL EXPLAIN variants ---
+
+    #[test]
+    fn test_postgres_explain_paren_format_json_allowed() {
+        assert_allowed("EXPLAIN (FORMAT JSON) SELECT * FROM users", DatabaseType::Postgres);
+    }
+
+    #[test]
+    fn test_postgres_explain_paren_multi_option_allowed() {
+        assert_allowed(
+            "EXPLAIN (FORMAT JSON, ANALYZE, VERBOSE) SELECT * FROM users",
+            DatabaseType::Postgres,
+        );
+    }
+
+    #[test]
+    fn test_postgres_explain_verbose_allowed() {
+        assert_allowed("EXPLAIN VERBOSE SELECT * FROM users", DatabaseType::Postgres);
+    }
+
+    #[test]
+    fn test_postgres_explain_paren_format_json_insert_rejected() {
+        assert_rejected(
+            "EXPLAIN (FORMAT JSON) INSERT INTO users (name) VALUES ('x')",
+            DatabaseType::Postgres,
+        );
+    }
+
+    // --- SQLite EXPLAIN variants ---
+
+    #[test]
+    fn test_sqlite_explain_query_plan_allowed() {
+        assert_allowed("EXPLAIN QUERY PLAN SELECT * FROM items", DatabaseType::SQLite);
+    }
+
+    #[test]
+    fn test_sqlite_plain_explain_allowed() {
+        assert_allowed("EXPLAIN SELECT * FROM items", DatabaseType::SQLite);
+    }
+
+    #[test]
+    fn test_sqlite_explain_query_plan_delete_rejected() {
+        assert_rejected("EXPLAIN QUERY PLAN DELETE FROM items", DatabaseType::SQLite);
     }
 }

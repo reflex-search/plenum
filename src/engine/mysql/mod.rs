@@ -31,10 +31,18 @@ use crate::engine::{
 };
 use crate::error::{PlenumError, Result};
 
-/// Extra grace added to the client-side timeout backstop on top of the server-side
-/// `MAX_EXECUTION_TIME`. Ensures `MySQL` cancels the query and reports `QUERY_TIMEOUT`
-/// before the client-side guard trips; the guard only matters if the server never responds.
-const CLIENT_TIMEOUT_BACKSTOP_GRACE: Duration = Duration::from_secs(5);
+/// Extra grace added to the server-side `MAX_EXECUTION_TIME` on top of the
+/// client-side deadline.
+///
+/// The client-side `tokio::time::timeout` (set to exactly `timeout_ms`) is the
+/// authoritative timeout and surfaces `QUERY_TIMEOUT`. The server-side
+/// `MAX_EXECUTION_TIME` is deliberately set *longer* so it acts only as a
+/// server-side cleanup backstop for a query the client has already abandoned —
+/// it must NOT fire first. Firing first would let statements that swallow the
+/// interrupt (notably `SELECT SLEEP(n)`, which returns `1` when interrupted
+/// rather than erroring) complete "successfully" and report partial data as a
+/// success, defeating the timeout (REF-258 Bug 4).
+const SERVER_TIMEOUT_BACKSTOP_GRACE: Duration = Duration::from_secs(5);
 
 /// `MySQL` database engine implementation
 pub struct MySqlEngine;
@@ -221,36 +229,39 @@ impl DatabaseEngine for MySqlEngine {
             )
         })?;
 
-        // Set server-side MAX_EXECUTION_TIME so MySQL cancels the query if it exceeds the
-        // limit. Only applies to SELECT statements in MySQL; the client-side guard backstops
-        // other statement types.
+        // Set server-side MAX_EXECUTION_TIME as a cleanup backstop so MySQL eventually
+        // cancels a query the client has abandoned. It is set LONGER than the client-side
+        // deadline (see SERVER_TIMEOUT_BACKSTOP_GRACE): the client-side timeout is the
+        // authoritative one, because MAX_EXECUTION_TIME does not reliably error for
+        // statements that swallow the interrupt (e.g. SELECT SLEEP()). Only applies to
+        // SELECT statements in MySQL.
         if let Some(timeout_ms) = caps.timeout_ms {
-            conn.exec_drop(format!("SET SESSION MAX_EXECUTION_TIME = {timeout_ms}"), ())
-                .await
-                .map_err(|e| {
-                    PlenumError::engine_error(
-                        "mysql",
-                        format!("Failed to set MAX_EXECUTION_TIME: {e}"),
-                    )
-                })?;
+            let server_limit = Duration::from_millis(timeout_ms) + SERVER_TIMEOUT_BACKSTOP_GRACE;
+            conn.exec_drop(
+                format!("SET SESSION MAX_EXECUTION_TIME = {}", server_limit.as_millis()),
+                (),
+            )
+            .await
+            .map_err(|e| {
+                PlenumError::engine_error("mysql", format!("Failed to set MAX_EXECUTION_TIME: {e}"))
+            })?;
         }
 
-        // Execute with a client-side tokio timeout as a backstop for unresponsive servers.
-        // The backstop is deliberately longer than the server-side MAX_EXECUTION_TIME (by a
-        // fixed grace) so MySQL cancels the query first and surfaces QUERY_TIMEOUT; the
-        // client-side guard only fires if the server never responds (e.g. a stalled socket),
-        // avoiding a race where both fire at the same deadline.
+        // The client-side tokio timeout is the authoritative deadline: it fires at exactly
+        // timeout_ms and surfaces QUERY_TIMEOUT. This guarantees a bounded query that runs
+        // to the limit is reported as a timeout error rather than as a success with partial
+        // or interrupted data (REF-258 Bug 4) — even for statements like SELECT SLEEP() that
+        // the server-side MAX_EXECUTION_TIME would let return "successfully".
         let start = Instant::now();
         let mut query_result = if let Some(timeout_ms) = caps.timeout_ms {
-            let backstop = Duration::from_millis(timeout_ms) + CLIENT_TIMEOUT_BACKSTOP_GRACE;
-            tokio::time::timeout(backstop, execute_query(&mut conn, query, params, caps))
+            let deadline = Duration::from_millis(timeout_ms);
+            tokio::time::timeout(deadline, execute_query(&mut conn, query, params, caps))
                 .await
                 .map_err(|_| {
-                    PlenumError::query_failed(format!(
-                        "Client-side timeout of {}ms exceeded (server-side MAX_EXECUTION_TIME should have fired first)",
-                        backstop.as_millis()
-                    ))
-                })??
+                PlenumError::query_timeout(format!(
+                    "Query exceeded the client-side timeout of {timeout_ms}ms"
+                ))
+            })??
         } else {
             execute_query(&mut conn, query, params, caps).await?
         };
@@ -924,6 +935,19 @@ fn is_mysql_statement_timeout(e: &mysql_async::Error) -> bool {
     }
 }
 
+/// Map a `mysql_async` execution error to a `PlenumError`, surfacing server-side
+/// `MAX_EXECUTION_TIME` cancellation as `QUERY_TIMEOUT` and everything else as a
+/// generic query failure.
+fn map_mysql_exec_error(e: &mysql_async::Error) -> PlenumError {
+    if is_mysql_statement_timeout(e) {
+        PlenumError::query_timeout(format!(
+            "Query cancelled by MySQL server-side MAX_EXECUTION_TIME: {e}"
+        ))
+    } else {
+        PlenumError::query_failed(format!("Failed to execute query: {e}"))
+    }
+}
+
 /// Execute query and return `QueryResult`
 async fn execute_query(
     conn: &mut Conn,
@@ -931,34 +955,43 @@ async fn execute_query(
     params: &[serde_json::Value],
     caps: &Capabilities,
 ) -> Result<QueryResult> {
-    // Execute query and determine if it returns rows.
-    // MySQL async doesn't have a prepare-then-check pattern like tokio-postgres;
-    // use a keyword heuristic for statement classification.
-    let query_upper = query.trim().to_uppercase();
-    let is_select = query_upper.starts_with("SELECT")
+    // Classify the statement. MySQL async doesn't have a prepare-then-check
+    // pattern like tokio-postgres, so use a keyword heuristic. `EXPLAIN` (in all
+    // its FORMAT/ANALYZE/EXTENDED forms) returns a result set and must be treated
+    // as row-returning, otherwise its plan rows are silently dropped (REF-258 Bug 2).
+    let query_upper = query.trim_start().to_uppercase();
+    let returns_rows = query_upper.starts_with("SELECT")
         || query_upper.starts_with("SHOW")
         || query_upper.starts_with("DESCRIBE")
         || query_upper.starts_with("DESC")
+        || query_upper.starts_with("EXPLAIN")
         || (query_upper.starts_with("WITH") && query_upper.contains("SELECT"));
 
-    // Convert JSON params → mysql_async positional params
+    // Protocol selection: the binary prepared-statement protocol (exec/exec_iter)
+    // rejects several permitted statement classes — notably transaction-control
+    // statements (BEGIN, START TRANSACTION) fail with error 1295 "not supported in
+    // the prepared statement protocol yet" (REF-258 Bug 1). Route through the text
+    // protocol (query/query_iter) whenever there are no parameters to bind, and only
+    // fall back to the prepared protocol when bound params require it.
+    let use_text_protocol = params.is_empty();
+
+    // Convert JSON params → mysql_async positional params (only used when binding).
     let mysql_params: Params = if params.is_empty() {
         Params::Empty
     } else {
         Params::Positional(params.iter().map(json_to_mysql_value).collect())
     };
 
-    if is_select {
-        // Query returns rows — use exec() to support bound params
-        let rows: Vec<Row> = conn.exec(query, mysql_params).await.map_err(|e| {
-            if is_mysql_statement_timeout(&e) {
-                PlenumError::query_timeout(format!(
-                    "Query cancelled by MySQL server-side MAX_EXECUTION_TIME: {e}"
-                ))
-            } else {
-                PlenumError::query_failed(format!("Failed to execute query: {e}"))
-            }
-        })?;
+    if returns_rows {
+        // Query returns rows. Use the text protocol for unparameterized queries
+        // (so EXPLAIN/transaction-adjacent statements execute) and the prepared
+        // protocol only when bound params are present.
+        let rows: Vec<Row> = if use_text_protocol {
+            conn.query(query).await
+        } else {
+            conn.exec(query, mysql_params).await
+        }
+        .map_err(|e| map_mysql_exec_error(&e))?;
 
         // Get column names from first row (if any)
         let column_names: Vec<String> = if let Some(first_row) = rows.first() {
@@ -988,19 +1021,21 @@ async fn execute_query(
             truncated_by: None,
         })
     } else {
-        // Non-SELECT query — use exec_iter() to support bound params
-        let result = conn.exec_iter(query, mysql_params).await.map_err(|e| {
-            if is_mysql_statement_timeout(&e) {
-                PlenumError::query_timeout(format!(
-                    "Query cancelled by MySQL server-side MAX_EXECUTION_TIME: {e}"
-                ))
-            } else {
-                PlenumError::query_failed(format!("Failed to execute query: {e}"))
-            }
-        })?;
-
-        let rows_affected = result.affected_rows();
-        drop(result);
+        // Non-row statement (e.g. transaction control: BEGIN/START TRANSACTION).
+        // These have no result set; capture affected rows. Prefer the text protocol
+        // for unparameterized statements so transaction control succeeds (Bug 1).
+        let rows_affected = if use_text_protocol {
+            let result = conn.query_iter(query).await.map_err(|e| map_mysql_exec_error(&e))?;
+            let affected = result.affected_rows();
+            drop(result);
+            affected
+        } else {
+            let result =
+                conn.exec_iter(query, mysql_params).await.map_err(|e| map_mysql_exec_error(&e))?;
+            let affected = result.affected_rows();
+            drop(result);
+            affected
+        };
 
         Ok(QueryResult {
             columns: Vec::new(),
@@ -1419,7 +1454,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires running MySQL instance"]
-    async fn test_max_execution_time_fires_server_side() {
+    async fn test_timeout_fires_on_heavy_query() {
         let config = ConnectionConfig::mysql(
             "localhost".to_string(),
             3306,
@@ -1428,10 +1463,8 @@ mod tests {
             "test".to_string(),
         );
 
-        // 50ms timeout against a heavy cartesian join over information_schema — the server
-        // must cancel this SELECT with error 3024. NOTE: `SELECT SLEEP(N)` is unsuitable here:
-        // MAX_EXECUTION_TIME interrupts SLEEP but the statement still returns successfully
-        // (SLEEP returns 1), so it never surfaces a timeout error.
+        // 50ms timeout against a heavy cartesian join over information_schema. The
+        // authoritative client-side timeout must cancel it and surface QUERY_TIMEOUT.
         let caps = Capabilities { timeout_ms: Some(50), ..Capabilities::default() };
         let result = MySqlEngine::execute(
             &config,
@@ -1450,10 +1483,109 @@ mod tests {
             "Expected QUERY_TIMEOUT error code, got: {err:?}"
         );
         assert!(
-            err.message().contains("MAX_EXECUTION_TIME"),
-            "Expected message to mention MAX_EXECUTION_TIME, got: {}",
+            err.message().to_lowercase().contains("timeout"),
+            "Expected message to mention timeout, got: {}",
             err.message()
         );
+    }
+
+    /// REF-258 Bug 4: `SELECT SLEEP(n)` swallows the server-side `MAX_EXECUTION_TIME`
+    /// interrupt (returns `1` instead of erroring), so relying on the server alone
+    /// reports partial/interrupted data as a success. The authoritative client-side
+    /// timeout must turn this into a distinct `QUERY_TIMEOUT` error instead.
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_timeout_sleep_reports_error_not_partial_success() {
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+
+        let caps = Capabilities { timeout_ms: Some(500), ..Capabilities::default() };
+        let result = MySqlEngine::execute(&config, "SELECT SLEEP(3)", &[], &caps).await;
+
+        assert!(result.is_err(), "SLEEP past the timeout must be an error, not a success");
+        assert_eq!(
+            result.unwrap_err().error_code(),
+            "QUERY_TIMEOUT",
+            "Expected QUERY_TIMEOUT for an interrupted SLEEP"
+        );
+    }
+
+    /// REF-258 Bug 1: transaction-control statements fail under the binary
+    /// prepared-statement protocol (error 1295). They must execute via the text
+    /// protocol instead.
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_transaction_control_executes() {
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+
+        let caps = Capabilities::default();
+        for stmt in ["BEGIN", "START TRANSACTION", "COMMIT", "ROLLBACK"] {
+            let result = MySqlEngine::execute(&config, stmt, &[], &caps).await;
+            assert!(result.is_ok(), "{stmt} should execute via text protocol: {:?}", result.err());
+        }
+    }
+
+    /// REF-258 Bug 2: `EXPLAIN` returns a result set whose rows were previously
+    /// dropped (classified as a non-row statement). The plan rows must be captured.
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_explain_captures_plan_rows() {
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+
+        // Seed a table via a separate writable connection (Plenum's engine is read-only).
+        let opts = build_mysql_opts(&config).expect("opts");
+        let mut setup = Conn::new(opts).await.expect("connect");
+        setup.exec_drop("DROP TABLE IF EXISTS ref258_explain", ()).await.expect("drop");
+        setup
+            .exec_drop("CREATE TABLE ref258_explain (id INT PRIMARY KEY)", ())
+            .await
+            .expect("create");
+        setup.disconnect().await.ok();
+
+        let caps = Capabilities::default();
+
+        // Plain EXPLAIN must return the plan rows (non-empty result set).
+        let result =
+            MySqlEngine::execute(&config, "EXPLAIN SELECT id FROM ref258_explain", &[], &caps)
+                .await
+                .expect("EXPLAIN should succeed");
+        assert!(!result.columns.is_empty(), "EXPLAIN must return columns");
+        assert!(!result.rows.is_empty(), "EXPLAIN must return plan rows");
+        assert!(result.rows_affected.is_none(), "EXPLAIN is a row-returning statement");
+
+        // EXPLAIN FORMAT=JSON must also return its single plan row.
+        let json_result = MySqlEngine::execute(
+            &config,
+            "EXPLAIN FORMAT=JSON SELECT id FROM ref258_explain",
+            &[],
+            &caps,
+        )
+        .await
+        .expect("EXPLAIN FORMAT=JSON should succeed");
+        assert!(!json_result.rows.is_empty(), "EXPLAIN FORMAT=JSON must return a plan row");
+
+        // Cleanup.
+        let opts2 = build_mysql_opts(&config).expect("opts2");
+        let mut conn2 = Conn::new(opts2).await.expect("connect2");
+        conn2.exec_drop("DROP TABLE IF EXISTS ref258_explain", ()).await.ok();
+        conn2.disconnect().await.ok();
     }
 
     // -------------------------------------------------------------------------
