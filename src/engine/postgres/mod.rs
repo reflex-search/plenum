@@ -31,6 +31,11 @@ use crate::engine::{
 };
 use crate::error::{PlenumError, Result};
 
+/// Extra grace added to the client-side timeout backstop on top of the server-side
+/// `statement_timeout`. Ensures `PostgreSQL` cancels the query and reports `QUERY_TIMEOUT`
+/// before the client-side guard trips; the guard only matters if the server never responds.
+const CLIENT_TIMEOUT_BACKSTOP_GRACE: Duration = Duration::from_secs(5);
+
 /// `PostgreSQL` database engine implementation
 pub struct PostgresEngine;
 
@@ -176,15 +181,12 @@ impl DatabaseEngine for PostgresEngine {
 
         // Defense in depth: enforce session-level read-only at the database layer.
         // This rejects writes even if the SQL parser is somehow bypassed (REF-261).
-        client
-            .execute("SET default_transaction_read_only = ON", &[])
-            .await
-            .map_err(|e| {
-                PlenumError::engine_error(
-                    "postgres",
-                    format!("Failed to enforce session read-only mode: {e}"),
-                )
-            })?;
+        client.execute("SET default_transaction_read_only = ON", &[]).await.map_err(|e| {
+            PlenumError::engine_error(
+                "postgres",
+                format!("Failed to enforce session read-only mode: {e}"),
+            )
+        })?;
 
         // Set server-side statement timeout so PostgreSQL cancels the query if it exceeds
         // the limit. This prevents resource leaks — the server kills the query rather than
@@ -201,15 +203,20 @@ impl DatabaseEngine for PostgresEngine {
                 })?;
         }
 
-        // Execute with client-side tokio timeout as a backstop for unresponsive servers
+        // Execute with a client-side tokio timeout as a backstop for unresponsive servers.
+        // The backstop is deliberately longer than the server-side statement_timeout (by a
+        // fixed grace) so PostgreSQL cancels the query first and surfaces QUERY_TIMEOUT; the
+        // client-side guard only fires if the server never responds (e.g. a stalled socket),
+        // avoiding a race where both fire at the same deadline.
         let start = Instant::now();
         let mut query_result = if let Some(timeout_ms) = caps.timeout_ms {
-            let timeout_duration = Duration::from_millis(timeout_ms);
-            tokio::time::timeout(timeout_duration, execute_query(&client, query, params, caps))
+            let backstop = Duration::from_millis(timeout_ms) + CLIENT_TIMEOUT_BACKSTOP_GRACE;
+            tokio::time::timeout(backstop, execute_query(&client, query, params, caps))
                 .await
                 .map_err(|_| {
                     PlenumError::query_failed(format!(
-                        "Client-side timeout of {timeout_ms}ms exceeded (server-side statement_timeout should have fired first)"
+                        "Client-side timeout of {}ms exceeded (server-side statement_timeout should have fired first)",
+                        backstop.as_millis()
                     ))
                 })??
         } else {
@@ -264,33 +271,32 @@ fn build_pg_config(config: &ConnectionConfig) -> Result<Config> {
     Ok(pg_config)
 }
 
-/// Connect to PostgreSQL, branching on TLS config.
+/// Connect to `PostgreSQL`, branching on TLS config.
 ///
 /// Returns only the `Client`; the background `Connection` is spawned into the tokio runtime.
 /// No credentials or cert paths appear in error messages.
 async fn pg_connect(pg_config: &Config, tls_config: Option<&TlsConfig>) -> Result<Client> {
-    let sslmode = tls_config.map(|t| &t.sslmode).unwrap_or(&SslMode::Disable);
+    let sslmode = tls_config.map_or(&SslMode::Disable, |t| &t.sslmode);
 
-    match sslmode {
-        SslMode::Disable => {
-            let (client, connection) = pg_config
-                .connect(NoTls)
-                .await
-                .map_err(|e| PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {e}")))?;
-            tokio::spawn(async move { let _ = connection.await; });
-            Ok(client)
-        }
-        _ => {
-            // SAFETY: only reachable when tls_config is Some (sslmode != Disable).
-            let connector = build_pg_native_tls(tls_config.unwrap())?;
-            let tls = postgres_native_tls::MakeTlsConnector::new(connector);
-            let (client, connection) = pg_config
-                .connect(tls)
-                .await
-                .map_err(|e| PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {e}")))?;
-            tokio::spawn(async move { let _ = connection.await; });
-            Ok(client)
-        }
+    if sslmode == &SslMode::Disable {
+        let (client, connection) = pg_config.connect(NoTls).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {e}"))
+        })?;
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        Ok(client)
+    } else {
+        // SAFETY: only reachable when tls_config is Some (sslmode != Disable).
+        let connector = build_pg_native_tls(tls_config.unwrap())?;
+        let tls = postgres_native_tls::MakeTlsConnector::new(connector);
+        let (client, connection) = pg_config.connect(tls).await.map_err(|e| {
+            PlenumError::connection_failed(format!("Failed to connect to PostgreSQL: {e}"))
+        })?;
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        Ok(client)
     }
 }
 
@@ -344,14 +350,13 @@ fn build_pg_native_tls(tls: &TlsConfig) -> Result<native_tls::TlsConnector> {
             .map_err(|_| PlenumError::connection_failed("Failed to read client certificate"))?;
         let key_pem = std::fs::read(key_path)
             .map_err(|_| PlenumError::connection_failed("Failed to read client key"))?;
-        let identity = native_tls::Identity::from_pkcs8(&cert_pem, &key_pem)
-            .map_err(|_| PlenumError::connection_failed("Failed to parse client certificate or key"))?;
+        let identity = native_tls::Identity::from_pkcs8(&cert_pem, &key_pem).map_err(|_| {
+            PlenumError::connection_failed("Failed to parse client certificate or key")
+        })?;
         builder.identity(identity);
     }
 
-    builder
-        .build()
-        .map_err(|_| PlenumError::connection_failed("Failed to build TLS connector"))
+    builder.build().map_err(|_| PlenumError::connection_failed("Failed to build TLS connector"))
 }
 
 /// Determine target schema from filter or current schema
@@ -413,7 +418,10 @@ async fn list_tables_postgres(client: &Client, schema: &str) -> Result<Introspec
         ORDER BY table_name";
 
     let rows = client.query(query, &[&schema]).await.map_err(|e| {
-        PlenumError::engine_error("postgres", format!("Failed to list tables in schema '{schema}': {e}"))
+        PlenumError::engine_error(
+            "postgres",
+            format!("Failed to list tables in schema '{schema}': {e}"),
+        )
     })?;
 
     let tables: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
@@ -430,7 +438,10 @@ async fn list_views_postgres(client: &Client, schema: &str) -> Result<Introspect
         ORDER BY table_name";
 
     let rows = client.query(query, &[&schema]).await.map_err(|e| {
-        PlenumError::engine_error("postgres", format!("Failed to list views in schema '{schema}': {e}"))
+        PlenumError::engine_error(
+            "postgres",
+            format!("Failed to list views in schema '{schema}': {e}"),
+        )
     })?;
 
     let views: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
@@ -462,7 +473,10 @@ async fn list_indexes_postgres(
     };
 
     let rows = client.query(&query, &[&schema]).await.map_err(|e| {
-        PlenumError::engine_error("postgres", format!("Failed to list indexes in schema '{schema}': {e}"))
+        PlenumError::engine_error(
+            "postgres",
+            format!("Failed to list indexes in schema '{schema}': {e}"),
+        )
     })?;
 
     let mut indexes = Vec::new();
@@ -592,7 +606,7 @@ async fn get_view_details_postgres(
     Ok(IntrospectResult::ViewDetails { view })
 }
 
-/// Introspect table columns (includes column comments from pg_description)
+/// Introspect table columns (includes column comments from `pg_description`)
 async fn introspect_columns(
     client: &Client,
     schema: &str,
@@ -636,7 +650,7 @@ async fn introspect_columns(
     Ok(columns)
 }
 
-/// Fetch table-level comment and row estimate from pg_class / pg_description
+/// Fetch table-level comment and row estimate from `pg_class` / `pg_description`
 async fn introspect_table_meta(
     client: &Client,
     schema: &str,
@@ -659,9 +673,9 @@ async fn introspect_table_meta(
         None => Ok((None, None)),
         Some(r) => {
             let comment: Option<String> = r.get(0);
-            let raw_estimate: Option<i64> = r.get(1);
+            let reltuples: Option<i64> = r.get(1);
             // reltuples is -1 when the table has never been analyzed; treat as unavailable
-            let row_estimate = raw_estimate.filter(|&v| v >= 0);
+            let row_estimate = reltuples.filter(|&v| v >= 0);
             Ok((comment, row_estimate))
         }
     }
@@ -820,11 +834,9 @@ fn extract_index_columns(index_def: &str) -> Vec<String> {
 
 /// Returns true when a tokio-postgres error is a server-side statement timeout (SQLSTATE 57014).
 fn is_statement_timeout(e: &tokio_postgres::Error) -> bool {
-    e.as_db_error()
-        .map(|db| {
-            *db.code() == SqlState::QUERY_CANCELED && db.message().contains("statement timeout")
-        })
-        .unwrap_or(false)
+    e.as_db_error().is_some_and(|db| {
+        *db.code() == SqlState::QUERY_CANCELED && db.message().contains("statement timeout")
+    })
 }
 
 /// Convert a JSON value to a boxed `tokio-postgres` `ToSql` trait object for parameter binding.
@@ -834,9 +846,7 @@ fn json_to_pg_value(
 ) -> Box<dyn tokio_postgres::types::ToSql + Sync + Send> {
     use tokio_postgres::types::ToSql;
     match val {
-        serde_json::Value::Null => {
-            Box::new(Option::<String>::None) as Box<dyn ToSql + Sync + Send>
-        }
+        serde_json::Value::Null => Box::new(Option::<String>::None) as Box<dyn ToSql + Sync + Send>,
         serde_json::Value::Bool(b) => Box::new(*b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
@@ -877,18 +887,15 @@ async fn execute_query(
 
     if is_select {
         // SELECT query - execute and collect rows
-        let rows = client
-            .query(&stmt, &param_refs)
-            .await
-            .map_err(|e| {
-                if is_statement_timeout(&e) {
-                    PlenumError::query_timeout(format!(
-                        "Query cancelled by PostgreSQL server-side statement_timeout: {e}"
-                    ))
-                } else {
-                    PlenumError::query_failed(format!("Failed to execute query: {e}"))
-                }
-            })?;
+        let rows = client.query(&stmt, &param_refs).await.map_err(|e| {
+            if is_statement_timeout(&e) {
+                PlenumError::query_timeout(format!(
+                    "Query cancelled by PostgreSQL server-side statement_timeout: {e}"
+                ))
+            } else {
+                PlenumError::query_failed(format!("Failed to execute query: {e}"))
+            }
+        })?;
 
         // Get column names
         let column_names: Vec<String> =
@@ -916,18 +923,15 @@ async fn execute_query(
         })
     } else {
         // Non-SELECT query (INSERT, UPDATE, DELETE, DDL)
-        let rows_affected = client
-            .execute(&stmt, &param_refs)
-            .await
-            .map_err(|e| {
-                if is_statement_timeout(&e) {
-                    PlenumError::query_timeout(format!(
-                        "Query cancelled by PostgreSQL server-side statement_timeout: {e}"
-                    ))
-                } else {
-                    PlenumError::query_failed(format!("Failed to execute query: {e}"))
-                }
-            })?;
+        let rows_affected = client.execute(&stmt, &param_refs).await.map_err(|e| {
+            if is_statement_timeout(&e) {
+                PlenumError::query_timeout(format!(
+                    "Query cancelled by PostgreSQL server-side statement_timeout: {e}"
+                ))
+            } else {
+                PlenumError::query_failed(format!("Failed to execute query: {e}"))
+            }
+        })?;
 
         Ok(QueryResult {
             columns: Vec::new(),
@@ -1114,6 +1118,22 @@ mod tests {
     // They are integration tests that should be run with:
     // cargo test --features postgres -- --ignored
 
+    /// Open a raw, writable `tokio_postgres` client for test fixture setup.
+    ///
+    /// Plenum's own `execute()` path enforces session-level read-only, so it cannot create
+    /// or populate fixture tables. Integration tests use this helper to seed data through a
+    /// separate, unconstrained connection (the same pattern the read-only enforcement test
+    /// uses), then exercise Plenum's read-only APIs against the seeded schema.
+    #[cfg(test)]
+    async fn setup_client(config: &ConnectionConfig) -> Client {
+        let pg_config = build_pg_config(config).expect("build pg config");
+        let (client, connection) = pg_config.connect(NoTls).await.expect("connect setup client");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+    }
+
     #[test]
     fn test_wildcard_database_config() {
         // Test that wildcard database is accepted
@@ -1217,7 +1237,7 @@ mod tests {
         let result = PostgresEngine::execute(
             &config,
             "SELECT datname FROM pg_catalog.pg_database WHERE datistemplate = false",
-    &[],
+            &[],
             &caps,
         )
         .await;
@@ -1273,21 +1293,20 @@ mod tests {
             "postgres".to_string(),
         );
 
-        // Create test table first
-        let create_caps = Capabilities::default();
-        let _ =
-            PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_users", &[], &create_caps).await;
-        let _ = PostgresEngine::execute(
-            &config,
-            "CREATE TABLE test_users (
+        // Create test table first via a raw writable client (Plenum's engine is read-only).
+        let setup = setup_client(&config).await;
+        setup.execute("DROP TABLE IF EXISTS test_users", &[]).await.expect("drop");
+        setup
+            .execute(
+                "CREATE TABLE test_users (
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(100) NOT NULL,
                 email VARCHAR(255)
             )",
-            &[],
-            &create_caps,
-        )
-        .await;
+                &[],
+            )
+            .await
+            .expect("create table");
 
         // Introspect
         let result = PostgresEngine::introspect(
@@ -1317,7 +1336,7 @@ mod tests {
         assert_eq!(pk[0], "id");
 
         // Cleanup
-        let _ = PostgresEngine::execute(&config, "DROP TABLE test_users", &[], &create_caps).await;
+        setup.execute("DROP TABLE test_users", &[]).await.ok();
     }
 
     #[tokio::test]
@@ -1357,74 +1376,20 @@ mod tests {
             "postgres".to_string(),
         );
 
-        // Create test table
-        let ddl_caps = Capabilities::default();
-        let _ =
-            PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_insert", &[], &ddl_caps).await;
-        let _ = PostgresEngine::execute(
-            &config,
-            "CREATE TABLE test_insert (id SERIAL PRIMARY KEY, name TEXT)",
-    &[],
-            &ddl_caps,
-        )
-        .await;
-
-        // Try to insert without write capability
+        // Plenum is strictly read-only: INSERT is rejected by the capability layer before it
+        // ever reaches the database, so no fixture table is required. There is no capability
+        // that permits writes (REF-261 / read-only spec).
         let caps = Capabilities::default();
         let result = PostgresEngine::execute(
             &config,
             "INSERT INTO test_insert (name) VALUES ('test')",
-    &[],
+            &[],
             &caps,
         )
         .await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().message().contains("Write operations require --allow-write"));
-
-        // Cleanup
-        let _ = PostgresEngine::execute(&config, "DROP TABLE test_insert", &[], &ddl_caps).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires running PostgreSQL instance"]
-    async fn test_execute_insert_with_capability() {
-        let config = ConnectionConfig::postgres(
-            "localhost".to_string(),
-            5432,
-            "postgres".to_string(),
-            "postgres".to_string(),
-            "postgres".to_string(),
-        );
-
-        // Create test table
-        let ddl_caps = Capabilities::default();
-        let _ =
-            PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_insert2", &[], &ddl_caps).await;
-        let _ = PostgresEngine::execute(
-            &config,
-            "CREATE TABLE test_insert2 (id SERIAL PRIMARY KEY, name TEXT)",
-    &[],
-            &ddl_caps,
-        )
-        .await;
-
-        // Insert with write capability
-        let write_caps = Capabilities::default();
-        let result = PostgresEngine::execute(
-            &config,
-            "INSERT INTO test_insert2 (name) VALUES ('test')",
-    &[],
-            &write_caps,
-        )
-        .await;
-
-        assert!(result.is_ok(), "Insert failed: {:?}", result.err());
-        let query_result = result.unwrap();
-        assert_eq!(query_result.rows_affected, Some(1));
-
-        // Cleanup
-        let _ = PostgresEngine::execute(&config, "DROP TABLE test_insert2", &[], &ddl_caps).await;
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
     }
 
     #[tokio::test]
@@ -1438,44 +1403,18 @@ mod tests {
             "postgres".to_string(),
         );
 
+        // DDL is rejected by the capability layer; Plenum never executes CREATE TABLE.
         let caps = Capabilities::default();
         let result = PostgresEngine::execute(
             &config,
             "CREATE TABLE test_ddl (id SERIAL PRIMARY KEY)",
-    &[],
+            &[],
             &caps,
         )
         .await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().message().contains("DDL operations require --allow-ddl"));
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires running PostgreSQL instance"]
-    async fn test_execute_ddl_with_capability() {
-        let config = ConnectionConfig::postgres(
-            "localhost".to_string(),
-            5432,
-            "postgres".to_string(),
-            "postgres".to_string(),
-            "postgres".to_string(),
-        );
-
-        let caps = Capabilities::default();
-        let _ = PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_ddl2", &[], &caps).await;
-        let result = PostgresEngine::execute(
-            &config,
-            "CREATE TABLE test_ddl2 (id SERIAL PRIMARY KEY)",
-    &[],
-            &caps,
-        )
-        .await;
-
-        assert!(result.is_ok(), "DDL execution failed: {:?}", result.err());
-
-        // Cleanup
-        let _ = PostgresEngine::execute(&config, "DROP TABLE test_ddl2", &[], &caps).await;
+        assert!(result.unwrap_err().message().contains("Plenum is read-only"));
     }
 
     #[tokio::test]
@@ -1489,30 +1428,21 @@ mod tests {
             "postgres".to_string(),
         );
 
-        // Create and populate test table
-        let ddl_caps = Capabilities::default();
-        let _ =
-            PostgresEngine::execute(&config, "DROP TABLE IF EXISTS test_limit", &[], &ddl_caps).await;
-        let _ = PostgresEngine::execute(
-            &config,
-            "CREATE TABLE test_limit (id SERIAL PRIMARY KEY, name TEXT)",
-    &[],
-            &ddl_caps,
-        )
-        .await;
-
-        let write_caps = Capabilities::default();
+        // Create and populate test table via a raw writable client (Plenum's engine is read-only).
+        let setup = setup_client(&config).await;
+        setup.execute("DROP TABLE IF EXISTS test_limit", &[]).await.expect("drop");
+        setup
+            .execute("CREATE TABLE test_limit (id SERIAL PRIMARY KEY, name TEXT)", &[])
+            .await
+            .expect("create table");
         for i in 1..=10 {
-            let _ = PostgresEngine::execute(
-                &config,
-                &format!("INSERT INTO test_limit (name) VALUES ('User {i}')"),
-    &[],
-                &write_caps,
-            )
-            .await;
+            setup
+                .execute(&format!("INSERT INTO test_limit (name) VALUES ('User {i}')"), &[])
+                .await
+                .expect("insert row");
         }
 
-        // Query with row limit
+        // Query with row limit (read-only path)
         let caps = Capabilities { max_rows: Some(5), ..Capabilities::default() };
         let result = PostgresEngine::execute(&config, "SELECT * FROM test_limit", &[], &caps).await;
 
@@ -1521,7 +1451,7 @@ mod tests {
         assert_eq!(query_result.rows.len(), 5); // Limited to 5 rows
 
         // Cleanup
-        let _ = PostgresEngine::execute(&config, "DROP TABLE test_limit", &[], &ddl_caps).await;
+        setup.execute("DROP TABLE test_limit", &[]).await.ok();
     }
 
     // -------------------------------------------------------------------------
@@ -1538,7 +1468,7 @@ mod tests {
         };
         let result = build_pg_native_tls(&tls);
         assert!(result.is_err());
-        let msg = result.unwrap_err().message().to_string();
+        let msg = result.unwrap_err().message();
         // Must report connection failed, must NOT leak paths
         assert!(msg.contains("CA certificate"), "expected mention of CA cert");
         assert!(!msg.contains('/'), "must not contain file path in error");
@@ -1554,7 +1484,7 @@ mod tests {
         };
         let result = build_pg_native_tls(&tls);
         assert!(result.is_err());
-        let msg = result.unwrap_err().message().to_string();
+        let msg = result.unwrap_err().message();
         assert!(msg.contains("CA certificate"));
         assert!(!msg.contains('/'));
     }
@@ -1569,7 +1499,7 @@ mod tests {
         };
         let result = build_pg_native_tls(&tls);
         assert!(result.is_err());
-        let msg = result.unwrap_err().message().to_string();
+        let msg = result.unwrap_err().message();
         // Error must not leak the path "/nonexistent/ca.pem"
         assert!(!msg.contains("nonexistent"), "path must not appear in error: {msg}");
         assert!(!msg.contains("/nonexistent"), "path must not appear in error: {msg}");
@@ -1620,11 +1550,11 @@ mod tests {
         assert_eq!(columns_multi, vec!["user_id", "order_date"]);
     }
 
-    /// Prove that writes fail at the PostgreSQL session layer independently of the parser.
+    /// Prove that writes fail at the `PostgreSQL` session layer independently of the parser.
     ///
     /// Opens a raw connection, applies `SET default_transaction_read_only = ON` (same as
     /// `execute()` does), then attempts a direct write without going through Plenum's
-    /// `validate_query`. The write must be rejected by PostgreSQL itself (REF-261).
+    /// `validate_query`. The write must be rejected by `PostgreSQL` itself (REF-261).
     #[tokio::test]
     #[ignore = "Requires running PostgreSQL instance"]
     async fn test_postgres_session_read_only_enforcement() {
@@ -1638,7 +1568,9 @@ mod tests {
 
         let pg_config = build_pg_config(&config).unwrap();
         let (client, connection) = pg_config.connect(NoTls).await.unwrap();
-        tokio::spawn(async move { let _ = connection.await; });
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
 
         // Apply session-level read-only (same as execute() does)
         client.execute("SET default_transaction_read_only = ON", &[]).await.unwrap();
@@ -1659,9 +1591,7 @@ mod tests {
         assert!(result.is_err(), "INSERT must be rejected by PostgreSQL session read-only mode");
 
         // Attempt DDL directly — must also fail.
-        let ddl_result = client
-            .execute("CREATE TABLE _plenum_ro_test_pg (id INT)", &[])
-            .await;
+        let ddl_result = client.execute("CREATE TABLE _plenum_ro_test_pg (id INT)", &[]).await;
         assert!(
             ddl_result.is_err(),
             "CREATE TABLE must be rejected by PostgreSQL session read-only mode"
@@ -1688,8 +1618,7 @@ mod tests {
         assert_eq!(
             err.error_code(),
             "QUERY_TIMEOUT",
-            "Expected QUERY_TIMEOUT error code, got: {:?}",
-            err
+            "Expected QUERY_TIMEOUT error code, got: {err:?}"
         );
         assert!(
             err.message().contains("statement_timeout"),
@@ -1722,62 +1651,40 @@ mod tests {
             "postgres".to_string(),
         );
 
-        // Setup: create table, add comments, insert rows, analyze
-        let ddl_caps = Capabilities::default();
-        let _ =
-            PostgresEngine::execute(&config, "DROP TABLE IF EXISTS ref263_pg", &[], &ddl_caps)
-                .await;
-        let _ = PostgresEngine::execute(
-            &config,
-            "CREATE TABLE ref263_pg (
+        // Setup: create table, add comments, insert rows, analyze — via a raw writable client,
+        // since Plenum's engine is strictly read-only and cannot run DDL/DML.
+        let setup = setup_client(&config).await;
+        setup.execute("DROP TABLE IF EXISTS ref263_pg", &[]).await.expect("drop");
+        setup
+            .execute(
+                "CREATE TABLE ref263_pg (
                 id SERIAL PRIMARY KEY,
                 label TEXT NOT NULL
             )",
-            &[],
-            &ddl_caps,
-        )
-        .await
-        .expect("create table");
-
-        let _ = PostgresEngine::execute(
-            &config,
-            "COMMENT ON TABLE ref263_pg IS 'REF-263 test table'",
-            &[],
-            &ddl_caps,
-        )
-        .await
-        .expect("table comment");
-
-        let _ = PostgresEngine::execute(
-            &config,
-            "COMMENT ON COLUMN ref263_pg.id IS 'PK column'",
-            &[],
-            &ddl_caps,
-        )
-        .await
-        .expect("id comment");
-
-        let _ = PostgresEngine::execute(
-            &config,
-            "COMMENT ON COLUMN ref263_pg.label IS 'Human readable name'",
-            &[],
-            &ddl_caps,
-        )
-        .await
-        .expect("label comment");
-
-        let _ = PostgresEngine::execute(
-            &config,
-            "INSERT INTO ref263_pg (label) SELECT 'row' || g FROM generate_series(1,10) g",
-            &[],
-            &ddl_caps,
-        )
-        .await
-        .expect("insert");
-
-        let _ = PostgresEngine::execute(&config, "ANALYZE ref263_pg", &[], &ddl_caps)
+                &[],
+            )
             .await
-            .expect("analyze");
+            .expect("create table");
+        setup
+            .execute("COMMENT ON TABLE ref263_pg IS 'REF-263 test table'", &[])
+            .await
+            .expect("table comment");
+        setup
+            .execute("COMMENT ON COLUMN ref263_pg.id IS 'PK column'", &[])
+            .await
+            .expect("id comment");
+        setup
+            .execute("COMMENT ON COLUMN ref263_pg.label IS 'Human readable name'", &[])
+            .await
+            .expect("label comment");
+        setup
+            .execute(
+                "INSERT INTO ref263_pg (label) SELECT 'row' || g FROM generate_series(1,10) g",
+                &[],
+            )
+            .await
+            .expect("insert");
+        setup.execute("ANALYZE ref263_pg", &[]).await.expect("analyze");
 
         // Introspect
         let result = PostgresEngine::introspect(
@@ -1797,11 +1704,7 @@ mod tests {
         };
 
         // Table comment
-        assert_eq!(
-            table.comment.as_deref(),
-            Some("REF-263 test table"),
-            "table comment mismatch"
-        );
+        assert_eq!(table.comment.as_deref(), Some("REF-263 test table"), "table comment mismatch");
 
         // row_estimate should be populated after ANALYZE
         assert!(table.row_estimate.is_some(), "row_estimate should be set after ANALYZE");
@@ -1823,8 +1726,6 @@ mod tests {
         }
 
         // Cleanup
-        let _ =
-            PostgresEngine::execute(&config, "DROP TABLE IF EXISTS ref263_pg", &[], &ddl_caps)
-                .await;
+        setup.execute("DROP TABLE IF EXISTS ref263_pg", &[]).await.ok();
     }
 }
