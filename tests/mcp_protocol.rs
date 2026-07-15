@@ -100,10 +100,7 @@ fn assert_valid_response(value: &Value) {
 
     let has_result = obj.contains_key("result");
     let has_error = obj.contains_key("error");
-    assert!(
-        has_result ^ has_error,
-        "exactly one of result/error must be present: {value}"
-    );
+    assert!(has_result ^ has_error, "exactly one of result/error must be present: {value}");
 
     let allowed: HashSet<&str> = ["jsonrpc", "id", "result", "error"].into_iter().collect();
     for key in obj.keys() {
@@ -179,7 +176,11 @@ fn mcp_does_not_respond_to_unparseable_input() {
         .unwrap_or_else(|e| panic!("first stdout line not JSON: {e}: {buf:?}"));
 
     assert_valid_response(&value);
-    assert_eq!(value["id"], json!(42), "first response should be for the initialize request, not the garbage line: {value}");
+    assert_eq!(
+        value["id"],
+        json!(42),
+        "first response should be for the initialize request, not the garbage line: {value}"
+    );
 
     let _ = child.kill();
     let _ = child.wait();

@@ -97,7 +97,8 @@ async fn test_cross_engine_select_query_structure() {
     let caps = Capabilities::default();
 
     let result =
-        SqliteEngine::execute(&config, "SELECT name, email FROM users WHERE id = 1", &[], &caps).await;
+        SqliteEngine::execute(&config, "SELECT name, email FROM users WHERE id = 1", &[], &caps)
+            .await;
     assert!(result.is_ok(), "SQLite SELECT query should succeed");
 
     let query_result = result.unwrap();
@@ -188,7 +189,8 @@ async fn test_cross_engine_ddl_operation_rejected() {
 
     // Try to CREATE TABLE (should always be rejected)
     let result =
-        SqliteEngine::execute(&config, "CREATE TABLE test (id INTEGER PRIMARY KEY)", &[], &caps).await;
+        SqliteEngine::execute(&config, "CREATE TABLE test (id INTEGER PRIMARY KEY)", &[], &caps)
+            .await;
 
     assert!(result.is_err(), "Should reject DDL (Plenum is read-only)");
     let err = result.unwrap_err();
@@ -243,7 +245,8 @@ async fn test_cross_engine_max_rows_enforcement() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities { max_rows: Some(2), timeout_ms: None, offset: None, max_bytes: None };
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id", &[], &caps).await;
+    let result =
+        SqliteEngine::execute(&config, "SELECT * FROM users ORDER BY id", &[], &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -260,7 +263,8 @@ async fn test_cross_engine_empty_result_set() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM users WHERE id = 9999", &[], &caps).await;
+    let result =
+        SqliteEngine::execute(&config, "SELECT * FROM users WHERE id = 9999", &[], &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -281,7 +285,8 @@ async fn test_cross_engine_schema_introspection_structure() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
     // First, list tables to verify there's 1 table
-    let result = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await;
+    let result =
+        SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await;
     assert!(result.is_ok());
 
     let IntrospectResult::TableList { tables: table_names } = result.unwrap() else {
@@ -394,7 +399,8 @@ async fn test_cross_engine_missing_table_error() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM nonexistent_table", &[], &caps).await;
+    let result =
+        SqliteEngine::execute(&config, "SELECT * FROM nonexistent_table", &[], &caps).await;
     assert!(result.is_err(), "Missing table should error");
 
     let err = result.unwrap_err();
@@ -461,7 +467,8 @@ async fn test_json_serialization_of_schema_info() {
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let result = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await;
+    let result =
+        SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await;
     assert!(result.is_ok());
 
     let introspect_result = result.unwrap();
@@ -515,8 +522,12 @@ async fn test_deterministic_introspection() {
     let temp_file = create_test_sqlite_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let result1 = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await.unwrap();
-    let result2 = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await.unwrap();
+    let result1 = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None)
+        .await
+        .unwrap();
+    let result2 = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None)
+        .await
+        .unwrap();
 
     // Results should be identical
     let IntrospectResult::TableList { tables: tables1 } = result1 else {

@@ -13,9 +13,9 @@ use crate::error::{PlenumError, Result};
 /// Parse a DSN/URL into a `ConnectionConfig`.
 ///
 /// Supported schemes:
-/// - `postgres://…` or `postgresql://…` → PostgreSQL
-/// - `mysql://…` → MySQL
-/// - `sqlite:…` (various path forms) → SQLite
+/// - `postgres://…` or `postgresql://…` → `PostgreSQL`
+/// - `mysql://…` → `MySQL`
+/// - `sqlite:…` (various path forms) → `SQLite`
 ///
 /// Engine is inferred from the scheme. Error messages never echo credentials.
 /// Use [`redact_dsn`] when including the original DSN string in any output.
@@ -37,8 +37,9 @@ pub fn parse_dsn(dsn: &str) -> Result<ConnectionConfig> {
 ///
 /// Replaces the password (between `:` and `@` in the authority section)
 /// with `****`. Returns the original string unchanged when no credentials
-/// are found (e.g. SQLite paths) or when there is no password component.
+/// are found (e.g. `SQLite` paths) or when there is no password component.
 /// Never panics.
+#[must_use]
 pub fn redact_dsn(dsn: &str) -> String {
     let Some(scheme_end) = dsn.find("://") else {
         return dsn.to_string(); // single-colon form (sqlite:) — no credentials
@@ -141,7 +142,7 @@ fn parse_network_authority(
         (&rest[..at_pos], &rest[at_pos + 1..])
     } else {
         return Err(
-            "missing credentials — expected user:password@host:port/database format".to_string(),
+            "missing credentials — expected user:password@host:port/database format".to_string()
         );
     };
 
@@ -188,8 +189,7 @@ fn parse_host_port(s: &str, default_port: u16) -> std::result::Result<(String, u
     } else if let Some(colon_pos) = s.rfind(':') {
         let host = &s[..colon_pos];
         let port_str = &s[colon_pos + 1..];
-        let port =
-            port_str.parse::<u16>().map_err(|_| format!("invalid port '{port_str}'"))?;
+        let port = port_str.parse::<u16>().map_err(|_| format!("invalid port '{port_str}'"))?;
         Ok((host.to_string(), port))
     } else {
         if s.is_empty() {
@@ -265,8 +265,7 @@ mod tests {
 
     #[test]
     fn postgres_query_string_stripped() {
-        let cfg =
-            parse_dsn("postgres://alice:secret@localhost:5432/mydb?sslmode=require").unwrap();
+        let cfg = parse_dsn("postgres://alice:secret@localhost:5432/mydb?sslmode=require").unwrap();
         assert_eq!(cfg.database.as_deref(), Some("mydb"));
         assert_eq!(cfg.host.as_deref(), Some("localhost"));
     }
@@ -286,11 +285,7 @@ mod tests {
     #[test]
     fn postgres_missing_database_fails() {
         let err = parse_dsn("postgres://alice:secret@localhost:5432").unwrap_err();
-        assert!(
-            err.message().contains("Invalid PostgreSQL DSN"),
-            "got: {}",
-            err.message()
-        );
+        assert!(err.message().contains("Invalid PostgreSQL DSN"), "got: {}", err.message());
     }
 
     #[test]

@@ -89,7 +89,8 @@ async fn test_large_result_set_with_max_rows() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities { max_rows: Some(100), timeout_ms: None, offset: None, max_bytes: None };
+    let caps =
+        Capabilities { max_rows: Some(100), timeout_ms: None, offset: None, max_bytes: None };
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM large_table", &[], &caps).await;
     assert!(result.is_ok());
@@ -343,7 +344,8 @@ async fn test_empty_string_vs_null() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM null_test ORDER BY id", &[], &caps).await;
+    let result =
+        SqliteEngine::execute(&config, "SELECT * FROM null_test ORDER BY id", &[], &caps).await;
     assert!(result.is_ok());
 
     let query_result = result.unwrap();
@@ -657,8 +659,11 @@ async fn test_blob_with_valid_utf8_bytes_is_base64_encoded() {
 
         // "Hello" — five ASCII bytes, valid UTF-8, but inserted as BLOB.
         let utf8_bytes: Vec<u8> = b"Hello".to_vec();
-        conn.execute("INSERT INTO b (data, txt) VALUES (?, ?)", rusqlite::params![utf8_bytes, "Hello"])
-            .expect("Failed to insert");
+        conn.execute(
+            "INSERT INTO b (data, txt) VALUES (?, ?)",
+            rusqlite::params![utf8_bytes, "Hello"],
+        )
+        .expect("Failed to insert");
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
@@ -701,8 +706,7 @@ async fn test_dynamic_typing_all_storage_classes() {
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
-    let result =
-        SqliteEngine::execute(&config, "SELECT v FROM dyn ORDER BY id", &[], &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT v FROM dyn ORDER BY id", &[], &caps).await;
     assert!(result.is_ok());
     let query_result = result.unwrap();
     assert_eq!(query_result.rows.len(), 5);
@@ -711,7 +715,10 @@ async fn test_dynamic_typing_all_storage_classes() {
 
     assert_eq!(v(0).as_i64(), Some(42));
     assert!(v(1).is_f64());
-    assert!((v(1).as_f64().unwrap() - 3.14).abs() < 1e-12);
+    // 3.14 is a literal test fixture value, not an approximation of PI.
+    #[allow(clippy::approx_constant)]
+    let expected_float = 3.14_f64;
+    assert!((v(1).as_f64().unwrap() - expected_float).abs() < 1e-12);
     assert_eq!(v(2).as_str(), Some("hi"));
     assert_eq!(v(3).as_str(), Some("SGVsbG8="), "BLOB x'48656c6c6f' must be base64");
     assert!(v(4).is_null());

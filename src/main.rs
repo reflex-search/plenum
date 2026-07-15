@@ -13,11 +13,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::Instant;
 
+use plenum::engine::{SslMode, TlsConfig};
 use plenum::{
     parse_dsn, redact_dsn, Capabilities, ConfigLocation, ConnectionConfig, DatabaseEngine,
     DatabaseType, ErrorEnvelope, KeychainEntry, Metadata, PlenumError, Result, SuccessEnvelope,
 };
-use plenum::engine::{SslMode, TlsConfig};
 
 // Import database engines
 #[cfg(feature = "mysql")]
@@ -28,7 +28,7 @@ use plenum::engine::postgres::PostgresEngine;
 use plenum::engine::sqlite::SqliteEngine;
 
 /// Resolved arguments for `plenum connect`:
-/// connection name, project path, config, password_env, password_command, keychain_entry, save location.
+/// connection name, project path, config, `password_env`, `password_command`, `keychain_entry`, save location.
 type ConnectArgs = (
     String,
     Option<String>,
@@ -320,7 +320,7 @@ enum Commands {
         #[arg(long)]
         max_rows: Option<usize>,
 
-        /// Max serialized byte size of the rows array; truncates at row boundaries and signals rows_truncated + truncated_by=bytes
+        /// Max serialized byte size of the rows array; truncates at row boundaries and signals `rows_truncated` + `truncated_by=bytes`
         #[arg(long)]
         max_bytes: Option<usize>,
 
@@ -335,7 +335,7 @@ enum Commands {
         /// Bound query parameters, one per flag invocation.
         /// Parse rules: numeric literals bind as integers or floats, "true"/"false" as
         /// booleans, "null" as NULL, JSON strings as strings, everything else as text.
-        /// Use $1/$2/… placeholders for PostgreSQL, ? for MySQL/SQLite.
+        /// Use $1/$2/… placeholders for `PostgreSQL`, ? for MySQL/SQLite.
         #[arg(long = "param", action = clap::ArgAction::Append)]
         param: Vec<String>,
 
@@ -392,7 +392,7 @@ async fn main() {
             ssl_key,
             test,
         }) => {
-            let tls = build_tls_config(ssl_mode, ssl_ca, ssl_cert, ssl_key);
+            let tls = build_tls_config(ssl_mode.as_deref(), ssl_ca, ssl_cert, ssl_key);
             let keychain_entry = match (keychain_service, keychain_account) {
                 (Some(service), Some(account)) => Some(KeychainEntry { service, account }),
                 _ => None,
@@ -465,7 +465,7 @@ async fn main() {
             foreign_keys,
             indexes,
         }) => {
-            let tls = build_tls_config(ssl_mode, ssl_ca, ssl_cert, ssl_key);
+            let tls = build_tls_config(ssl_mode.as_deref(), ssl_ca, ssl_cert, ssl_key);
             handle_introspect(
                 dsn,
                 name,
@@ -519,7 +519,7 @@ async fn main() {
             time_only,
             check_only,
         }) => {
-            let tls = build_tls_config(ssl_mode, ssl_ca, ssl_cert, ssl_key);
+            let tls = build_tls_config(ssl_mode.as_deref(), ssl_ca, ssl_cert, ssl_key);
             handle_query(
                 dsn,
                 name,
@@ -711,7 +711,15 @@ async fn handle_connect(
     };
 
     match result {
-        Ok((conn_name, proj_path, config, password_env, password_command, keychain_entry, location)) => {
+        Ok((
+            conn_name,
+            proj_path,
+            config,
+            password_env,
+            password_command,
+            keychain_entry,
+            location,
+        )) => {
             // Save connection
             match plenum::save_connection(
                 proj_path,
@@ -780,14 +788,11 @@ async fn handle_connect_test(
     let start = Instant::now();
 
     // Enforce: at most one indirect credential source in test mode
-    let source_count = [
-        password_env.is_some(),
-        password_command.is_some(),
-        keychain_entry.is_some(),
-    ]
-    .iter()
-    .filter(|&&b| b)
-    .count();
+    let source_count =
+        [password_env.is_some(), password_command.is_some(), keychain_entry.is_some()]
+            .iter()
+            .filter(|&&b| b)
+            .count();
     if source_count > 1 {
         let envelope = ErrorEnvelope::new(
             "",
@@ -1082,14 +1087,11 @@ async fn non_interactive_connect(
     let engine_type = parse_engine(&engine_str)?;
 
     // Enforce: at most one indirect credential source
-    let indirect_count = [
-        password_env.is_some(),
-        password_command.is_some(),
-        keychain_entry.is_some(),
-    ]
-    .iter()
-    .filter(|&&b| b)
-    .count();
+    let indirect_count =
+        [password_env.is_some(), password_command.is_some(), keychain_entry.is_some()]
+            .iter()
+            .filter(|&&b| b)
+            .count();
     if indirect_count > 1 {
         return Err(PlenumError::invalid_input(
             "Only one of --password-env, --password-command, or --keychain-service/--keychain-account may be used",
@@ -1124,19 +1126,29 @@ async fn non_interactive_connect(
     // If --password-command is provided, do a test run to validate it resolves now.
     if let Some(cmd) = password_command.as_deref() {
         plenum::config::run_password_command_pub(cmd).map_err(|e| {
-            PlenumError::invalid_input(format!("--password-command failed validation: {}", e.message()))
+            PlenumError::invalid_input(format!(
+                "--password-command failed validation: {}",
+                e.message()
+            ))
         })?;
     }
 
     // If keychain entry provided, validate it resolves now.
     if let Some(ref entry) = keychain_entry {
-        plenum::config::lookup_keychain_password_pub(&entry.service, &entry.account).map_err(|e| {
-            PlenumError::invalid_input(format!("--keychain-service/--keychain-account failed validation: {}", e.message()))
-        })?;
+        plenum::config::lookup_keychain_password_pub(&entry.service, &entry.account).map_err(
+            |e| {
+                PlenumError::invalid_input(format!(
+                    "--keychain-service/--keychain-account failed validation: {}",
+                    e.message()
+                ))
+            },
+        )?;
     }
 
     // Indirect sources are only meaningful for engines that use passwords.
-    if engine_type == DatabaseType::SQLite && (password_env.is_some() || password_command.is_some() || keychain_entry.is_some()) {
+    if engine_type == DatabaseType::SQLite
+        && (password_env.is_some() || password_command.is_some() || keychain_entry.is_some())
+    {
         return Err(PlenumError::invalid_input(
             "--password-env, --password-command, and --keychain-service are not applicable to sqlite (no authentication)",
         ));
@@ -1628,10 +1640,8 @@ async fn handle_query(
 
             if time_only {
                 // Return only timing information (for benchmarking)
-                let time_only_result = plenum::TimeOnlyResult {
-                    execution_ms,
-                    rows_matched: row_count,
-                };
+                let time_only_result =
+                    plenum::TimeOnlyResult { execution_ms, rows_matched: row_count };
                 let envelope = SuccessEnvelope::new(
                     config.engine.as_str(),
                     "query",
@@ -1641,12 +1651,8 @@ async fn handle_query(
                 output_success(&envelope);
             } else {
                 // Return full query results
-                let envelope = SuccessEnvelope::new(
-                    config.engine.as_str(),
-                    "query",
-                    query_result,
-                    query_meta,
-                );
+                let envelope =
+                    SuccessEnvelope::new(config.engine.as_str(), "query", query_result, query_meta);
                 output_success(&envelope);
             }
             Ok(())
@@ -1713,7 +1719,7 @@ where
 /// Build an `Option<TlsConfig>` from raw CLI SSL args.
 /// Returns `None` when no SSL args are provided (default = no TLS).
 fn build_tls_config(
-    ssl_mode: Option<String>,
+    ssl_mode: Option<&str>,
     ssl_ca: Option<PathBuf>,
     ssl_cert: Option<PathBuf>,
     ssl_key: Option<PathBuf>,
@@ -1721,13 +1727,13 @@ fn build_tls_config(
     if ssl_mode.is_none() && ssl_ca.is_none() && ssl_cert.is_none() && ssl_key.is_none() {
         return None;
     }
-    let sslmode = match ssl_mode.as_deref().unwrap_or("disable") {
+    let mode = match ssl_mode.unwrap_or("disable") {
         "require" => SslMode::Require,
         "verify-ca" => SslMode::VerifyCa,
         "verify-full" => SslMode::VerifyFull,
         _ => SslMode::Disable,
     };
-    Some(TlsConfig { sslmode, ca_cert: ssl_ca, client_cert: ssl_cert, client_key: ssl_key })
+    Some(TlsConfig { sslmode: mode, ca_cert: ssl_ca, client_cert: ssl_cert, client_key: ssl_key })
 }
 
 /// Build connection config from CLI arguments

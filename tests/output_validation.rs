@@ -355,7 +355,8 @@ async fn test_real_query_output_is_valid_json() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &[], &caps).await;
+    let result =
+        SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &[], &caps).await;
     assert!(result.is_ok());
 
     // Wrap in success envelope (like the CLI does)
@@ -381,7 +382,8 @@ async fn test_real_introspect_output_is_valid_json() {
     let temp_file = create_test_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let result = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await;
+    let result =
+        SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await;
     assert!(result.is_ok());
 
     // Wrap in success envelope
@@ -421,7 +423,8 @@ async fn test_truncated_result_signals_rows_truncated_true() {
     assert!(query_result.rows_truncated, "rows_truncated must be true when max_rows caps result");
     assert_eq!(query_result.rows.len(), 1, "Should return exactly max_rows rows");
 
-    let meta = Metadata::with_query(0, query_result.rows.len(), query_result.rows_truncated, 0, None);
+    let meta =
+        Metadata::with_query(0, query_result.rows.len(), query_result.rows_truncated, 0, None);
     let json = serde_json::to_string(&meta).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(v["rows_truncated"], true);
@@ -463,27 +466,19 @@ async fn test_pagination_with_offset_returns_disjoint_pages() {
     let temp_file = create_test_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let caps_p1 = Capabilities { max_rows: Some(1), max_bytes: None, timeout_ms: None, offset: None };
-    let r1 = SqliteEngine::execute(
-        &config,
-        "SELECT id FROM products ORDER BY id",
-        &[],
-        &caps_p1,
-    )
-    .await
-    .unwrap();
+    let caps_p1 =
+        Capabilities { max_rows: Some(1), max_bytes: None, timeout_ms: None, offset: None };
+    let r1 = SqliteEngine::execute(&config, "SELECT id FROM products ORDER BY id", &[], &caps_p1)
+        .await
+        .unwrap();
     assert!(r1.rows_truncated, "page 1 should be truncated (2 rows total, only 1 returned)");
     assert_eq!(r1.rows.len(), 1);
 
-    let caps_p2 = Capabilities { max_rows: Some(1), max_bytes: None, timeout_ms: None, offset: Some(1) };
-    let r2 = SqliteEngine::execute(
-        &config,
-        "SELECT id FROM products ORDER BY id",
-        &[],
-        &caps_p2,
-    )
-    .await
-    .unwrap();
+    let caps_p2 =
+        Capabilities { max_rows: Some(1), max_bytes: None, timeout_ms: None, offset: Some(1) };
+    let r2 = SqliteEngine::execute(&config, "SELECT id FROM products ORDER BY id", &[], &caps_p2)
+        .await
+        .unwrap();
     assert!(!r2.rows_truncated, "page 2 should not be truncated (last page)");
     assert_eq!(r2.rows.len(), 1);
     assert_ne!(r1.rows[0][0], r2.rows[0][0], "pages must return different rows");
@@ -538,7 +533,7 @@ async fn test_max_bytes_truncates_at_row_boundary() {
     let row = vec![serde_json::json!("aaaaaaaaaa")]; // ~14 bytes per row when serialized
     let mut result = QueryResult {
         columns: vec!["v".to_string()],
-        rows: vec![row.clone(), row.clone(), row.clone()],
+        rows: vec![row.clone(), row.clone(), row],
         rows_affected: None,
         execution_ms: 0,
         rows_truncated: false,
@@ -582,7 +577,7 @@ async fn test_max_bytes_signals_in_metadata() {
     let row = vec![serde_json::json!("aaaaaaaaaa")];
     let mut result = QueryResult {
         columns: vec!["v".to_string()],
-        rows: vec![row.clone(), row.clone(), row.clone()],
+        rows: vec![row.clone(), row.clone(), row],
         rows_affected: None,
         execution_ms: 0,
         rows_truncated: false,
@@ -590,7 +585,13 @@ async fn test_max_bytes_signals_in_metadata() {
     };
     apply_byte_budget(&mut result, 30);
 
-    let meta = Metadata::with_query(0, result.rows.len(), result.rows_truncated, 0, result.truncated_by.clone());
+    let meta = Metadata::with_query(
+        0,
+        result.rows.len(),
+        result.rows_truncated,
+        0,
+        result.truncated_by.clone(),
+    );
     let json = serde_json::to_string(&meta).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
 

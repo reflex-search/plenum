@@ -149,8 +149,8 @@ fn strip_explain_prefix(sql: &str) -> String {
 /// matched as whole identifier tokens against the already-uppercased query.
 const WRITE_KEYWORDS: &[&str] = &[
     "INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE", "COPY", "TRUNCATE", "DROP", "ALTER",
-    "CREATE", "GRANT", "REVOKE", "RENAME", "ATTACH", "DETACH", "LOAD", "VACUUM", "REINDEX",
-    "LOCK", "UNLOCK", "CALL", "INTO",
+    "CREATE", "GRANT", "REVOKE", "RENAME", "ATTACH", "DETACH", "LOAD", "VACUUM", "REINDEX", "LOCK",
+    "UNLOCK", "CALL", "INTO",
 ];
 
 /// Scan an uppercase, comment-stripped SQL string for any DML/DDL keyword,
@@ -237,7 +237,7 @@ fn scan_for_write_keyword(sql: &str) -> Option<&'static str> {
 ///    statement after the CTE definitions.
 ///
 /// This closes the WITH-CTE DML bypass class for all three engines (REF-41):
-/// PostgreSQL writable CTEs (`WITH x AS (INSERT...) SELECT...`), MySQL/SQLite
+/// `PostgreSQL` writable CTEs (`WITH x AS (INSERT...) SELECT...`), MySQL/SQLite
 /// `WITH ... INSERT/UPDATE/DELETE ...` and similar trailing-DML forms.
 fn is_safe_cte_query(sql: &str) -> bool {
     sql.starts_with("WITH ") && scan_for_write_keyword(sql).is_none()
@@ -313,7 +313,7 @@ fn is_read_only_mysql(sql: &str) -> bool {
     true
 }
 
-/// SQLite PRAGMAs that are read-only when invoked in argument form
+/// `SQLite` PRAGMAs that are read-only when invoked in argument form
 /// (`PRAGMA name(arg)`). These either always require an argument
 /// (e.g. `table_info`) or treat the argument as a query parameter rather than
 /// a setter value, so the parenthesized form does not write state.
@@ -332,7 +332,7 @@ const READ_ONLY_SQLITE_PRAGMAS_WITH_ARGS: &[&str] = &[
     "QUICK_CHECK",
 ];
 
-/// SQLite PRAGMAs whose bare form (`PRAGMA name`) is a pure read.
+/// `SQLite` PRAGMAs whose bare form (`PRAGMA name`) is a pure read.
 ///
 /// Several entries (`JOURNAL_MODE`, `USER_VERSION`, `PAGE_SIZE`, …) are
 /// settable PRAGMAs: their `= value` and `(value)` invocation forms mutate
@@ -369,7 +369,7 @@ const READ_ONLY_SQLITE_PRAGMAS_BARE: &[&str] = &[
     "CACHE_SIZE",
 ];
 
-/// Validate a `PRAGMA …` statement against the SQLite read-only allowlist.
+/// Validate a `PRAGMA …` statement against the `SQLite` read-only allowlist.
 ///
 /// Closes the write-PRAGMA bypass (REF-44) where the previous blanket
 /// `starts_with("PRAGMA ")` check admitted destructive PRAGMAs such as
@@ -778,11 +778,8 @@ mod tests {
     #[test]
     fn test_mysql_select_into_outfile_lowercase_rejected() {
         let caps = Capabilities::default();
-        let result = validate_query(
-            "select * from users into outfile '/tmp/x'",
-            &caps,
-            DatabaseType::MySQL,
-        );
+        let result =
+            validate_query("select * from users into outfile '/tmp/x'", &caps, DatabaseType::MySQL);
         assert!(result.is_err());
     }
 
@@ -792,9 +789,7 @@ mod tests {
     fn test_mysql_plain_select_still_allowed() {
         let caps = Capabilities::default();
         assert!(validate_query("SELECT * FROM users", &caps, DatabaseType::MySQL).is_ok());
-        assert!(
-            validate_query("SELECT * FROM outfile_log", &caps, DatabaseType::MySQL).is_ok()
-        );
+        assert!(validate_query("SELECT * FROM outfile_log", &caps, DatabaseType::MySQL).is_ok());
     }
 
     // WITH-CTE path is covered by `is_safe_cte_query`'s INTO keyword scan
@@ -1077,10 +1072,7 @@ mod tests {
     fn assert_multi_statement_rejected(sql: &str, engine: DatabaseType) {
         let caps = Capabilities::default();
         let result = validate_query(sql, &caps, engine);
-        assert!(
-            result.is_err(),
-            "expected {engine:?} to reject multi-statement query: {sql}"
-        );
+        assert!(result.is_err(), "expected {engine:?} to reject multi-statement query: {sql}");
         let err = result.unwrap_err();
         assert_eq!(err.error_code(), "INVALID_INPUT", "engine={engine:?}");
         assert!(
@@ -1137,11 +1129,7 @@ mod tests {
     fn assert_cte_allowed(sql: &str, engine: DatabaseType) {
         let caps = Capabilities::default();
         let result = validate_query(sql, &caps, engine);
-        assert!(
-            result.is_ok(),
-            "expected {engine:?} to allow CTE: {sql} (err={:?})",
-            result.err()
-        );
+        assert!(result.is_ok(), "expected {engine:?} to allow CTE: {sql} (err={:?})", result.err());
     }
 
     // Postgres writable CTE: INSERT inside CTE body.
@@ -1228,7 +1216,8 @@ mod tests {
     // The tokenizer must not match keywords that occur inside string literals.
     #[test]
     fn test_cte_with_keyword_in_string_literal_allowed() {
-        let sql = "WITH cte AS (SELECT * FROM users WHERE note = 'INSERT INTO denied') SELECT * FROM cte";
+        let sql =
+            "WITH cte AS (SELECT * FROM users WHERE note = 'INSERT INTO denied') SELECT * FROM cte";
         for engine in [DatabaseType::Postgres, DatabaseType::MySQL, DatabaseType::SQLite] {
             assert_cte_allowed(sql, engine);
         }
@@ -1274,20 +1263,25 @@ mod tests {
     #[test]
     fn test_check_only_read_permitted_postgres() {
         let caps = Capabilities::default();
-        assert!(validate_query("SELECT id, email FROM users", &caps, DatabaseType::Postgres).is_ok());
+        assert!(
+            validate_query("SELECT id, email FROM users", &caps, DatabaseType::Postgres).is_ok()
+        );
     }
 
     #[test]
     fn test_check_only_write_rejected_postgres() {
         let caps = Capabilities::default();
-        let err = validate_query("INSERT INTO users (name) VALUES ('x')", &caps, DatabaseType::Postgres).unwrap_err();
+        let err =
+            validate_query("INSERT INTO users (name) VALUES ('x')", &caps, DatabaseType::Postgres)
+                .unwrap_err();
         assert_eq!(err.error_code(), "CAPABILITY_VIOLATION");
     }
 
     #[test]
     fn test_check_only_ddl_rejected_postgres() {
         let caps = Capabilities::default();
-        let err = validate_query("CREATE TABLE t (id INT)", &caps, DatabaseType::Postgres).unwrap_err();
+        let err =
+            validate_query("CREATE TABLE t (id INT)", &caps, DatabaseType::Postgres).unwrap_err();
         assert_eq!(err.error_code(), "CAPABILITY_VIOLATION");
     }
 
@@ -1300,7 +1294,8 @@ mod tests {
     #[test]
     fn test_check_only_write_rejected_mysql() {
         let caps = Capabilities::default();
-        let err = validate_query("DELETE FROM users WHERE id = 1", &caps, DatabaseType::MySQL).unwrap_err();
+        let err = validate_query("DELETE FROM users WHERE id = 1", &caps, DatabaseType::MySQL)
+            .unwrap_err();
         assert_eq!(err.error_code(), "CAPABILITY_VIOLATION");
     }
 
@@ -1320,14 +1315,17 @@ mod tests {
     #[test]
     fn test_check_only_write_rejected_sqlite() {
         let caps = Capabilities::default();
-        let err = validate_query("UPDATE items SET qty = 0", &caps, DatabaseType::SQLite).unwrap_err();
+        let err =
+            validate_query("UPDATE items SET qty = 0", &caps, DatabaseType::SQLite).unwrap_err();
         assert_eq!(err.error_code(), "CAPABILITY_VIOLATION");
     }
 
     #[test]
     fn test_check_only_ddl_rejected_sqlite() {
         let caps = Capabilities::default();
-        let err = validate_query("ALTER TABLE items ADD COLUMN x TEXT", &caps, DatabaseType::SQLite).unwrap_err();
+        let err =
+            validate_query("ALTER TABLE items ADD COLUMN x TEXT", &caps, DatabaseType::SQLite)
+                .unwrap_err();
         assert_eq!(err.error_code(), "CAPABILITY_VIOLATION");
     }
 

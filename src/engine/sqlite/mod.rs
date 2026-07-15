@@ -108,7 +108,7 @@ impl DatabaseEngine for SqliteEngine {
         // Note: SQLite doesn't have schemas like Postgres/MySQL
         if schema.is_some() {
             return Err(PlenumError::invalid_input(
-                "SQLite does not support --schema parameter (SQLite has no schema concept)"
+                "SQLite does not support --schema parameter (SQLite has no schema concept)",
             ));
         }
 
@@ -126,7 +126,7 @@ impl DatabaseEngine for SqliteEngine {
             IntrospectOperation::ListSchemas => {
                 // SQLite doesn't have schemas
                 return Err(PlenumError::invalid_input(
-                    "SQLite does not support ListSchemas operation (SQLite has no schema concept)"
+                    "SQLite does not support ListSchemas operation (SQLite has no schema concept)",
                 ));
             }
 
@@ -256,7 +256,9 @@ fn list_views_sqlite(conn: &Connection) -> Result<IntrospectResult> {
 
     let views: Vec<String> = stmt
         .query_map([], |row| row.get(0))
-        .map_err(|e| PlenumError::engine_error("sqlite", format!("Failed to fetch view names: {e}")))?
+        .map_err(|e| {
+            PlenumError::engine_error("sqlite", format!("Failed to fetch view names: {e}"))
+        })?
         .collect::<std::result::Result<Vec<String>, _>>()
         .map_err(|e| {
             PlenumError::engine_error("sqlite", format!("Failed to collect view names: {e}"))
@@ -284,9 +286,9 @@ fn list_indexes_sqlite(conn: &Connection, table_filter: Option<&str>) -> Result<
             .to_string()
     };
 
-    let mut stmt = conn
-        .prepare(&query)
-        .map_err(|e| PlenumError::engine_error("sqlite", format!("Failed to query indexes: {e}")))?;
+    let mut stmt = conn.prepare(&query).map_err(|e| {
+        PlenumError::engine_error("sqlite", format!("Failed to query indexes: {e}"))
+    })?;
 
     let index_data: Vec<(String, String)> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -306,9 +308,8 @@ fn list_indexes_sqlite(conn: &Connection, table_filter: Option<&str>) -> Result<
         }
 
         // Get index info using PRAGMA
-        let mut idx_info_stmt = conn
-            .prepare(&format!("PRAGMA index_info({index_name})"))
-            .map_err(|e| {
+        let mut idx_info_stmt =
+            conn.prepare(&format!("PRAGMA index_info({index_name})")).map_err(|e| {
                 PlenumError::engine_error(
                     "sqlite",
                     format!("Failed to prepare index_info for {index_name}: {e}"),
@@ -327,9 +328,8 @@ fn list_indexes_sqlite(conn: &Connection, table_filter: Option<&str>) -> Result<
             .collect();
 
         // Check if index is unique using PRAGMA index_list
-        let mut idx_list_stmt = conn
-            .prepare(&format!("PRAGMA index_list({table_name})"))
-            .map_err(|e| {
+        let mut idx_list_stmt =
+            conn.prepare(&format!("PRAGMA index_list({table_name})")).map_err(|e| {
                 PlenumError::engine_error(
                     "sqlite",
                     format!("Failed to prepare index_list for {table_name}: {e}"),
@@ -411,11 +411,10 @@ fn get_view_details_sqlite(conn: &Connection, view_name: &str) -> Result<Introsp
     use crate::engine::ViewInfo;
 
     // Get view definition from sqlite_master
-    let mut def_stmt = conn
-        .prepare("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?")
-        .map_err(|e| {
-            PlenumError::engine_error("sqlite", format!("Failed to prepare view query: {e}"))
-        })?;
+    let mut def_stmt =
+        conn.prepare("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?").map_err(
+            |e| PlenumError::engine_error("sqlite", format!("Failed to prepare view query: {e}")),
+        )?;
 
     let definition: Option<String> =
         def_stmt.query_row([view_name], |row| row.get(0)).map_err(|e| {
@@ -635,7 +634,7 @@ fn introspect_table(conn: &Connection, table_name: &str) -> Result<TableInfo> {
     })
 }
 
-/// Try to get a row estimate from sqlite_stat1 (populated by ANALYZE).
+/// Try to get a row estimate from `sqlite_stat1` (populated by ANALYZE).
 /// Returns None when ANALYZE has not been run or the table is absent from the stats table.
 fn get_sqlite_row_estimate(conn: &Connection, table_name: &str) -> Option<i64> {
     conn.query_row(
@@ -665,8 +664,8 @@ fn json_to_sqlite_value(val: &serde_json::Value) -> rusqlite::types::Value {
     }
 }
 
-/// Returns true when a rusqlite error is SQLITE_INTERRUPT (code 9), meaning
-/// the interrupt handle fired and SQLite cancelled the running statement.
+/// Returns true when a rusqlite error is `SQLITE_INTERRUPT` (code 9), meaning
+/// the interrupt handle fired and `SQLite` cancelled the running statement.
 fn is_sqlite_interrupt(e: &rusqlite::Error) -> bool {
     matches!(
         e,
@@ -703,32 +702,29 @@ fn execute_query(
     if column_names.is_empty() {
         // Non-SELECT query (INSERT, UPDATE, DELETE, DDL) — blocked by capability checks in
         // practice; handled here for completeness.
-        stmt.execute(rusqlite::params_from_iter(&sqlite_params))
-            .map_err(|e| {
-                if is_sqlite_interrupt(&e) {
-                    PlenumError::query_timeout(
-                        "Query interrupted by SQLite server-side timeout".to_string(),
-                    )
-                } else {
-                    PlenumError::query_failed(format!("Failed to execute query: {e}"))
-                }
-            })?;
+        stmt.execute(rusqlite::params_from_iter(&sqlite_params)).map_err(|e| {
+            if is_sqlite_interrupt(&e) {
+                PlenumError::query_timeout(
+                    "Query interrupted by SQLite server-side timeout".to_string(),
+                )
+            } else {
+                PlenumError::query_failed(format!("Failed to execute query: {e}"))
+            }
+        })?;
 
         // Get rows affected (only for DML statements)
         rows_affected = Some(conn.changes());
     } else {
         // SELECT query - collect result set
-        let rows = stmt
-            .query(rusqlite::params_from_iter(&sqlite_params))
-            .map_err(|e| {
-                if is_sqlite_interrupt(&e) {
-                    PlenumError::query_timeout(
-                        "Query interrupted by SQLite server-side timeout".to_string(),
-                    )
-                } else {
-                    PlenumError::query_failed(format!("Failed to execute query: {e}"))
-                }
-            })?;
+        let rows = stmt.query(rusqlite::params_from_iter(&sqlite_params)).map_err(|e| {
+            if is_sqlite_interrupt(&e) {
+                PlenumError::query_timeout(
+                    "Query interrupted by SQLite server-side timeout".to_string(),
+                )
+            } else {
+                PlenumError::query_failed(format!("Failed to execute query: {e}"))
+            }
+        })?;
 
         let mapped_rows = rows.mapped(|row| row_to_json(&column_names, row)).collect::<Vec<_>>();
 
@@ -737,17 +733,16 @@ fn execute_query(
         let mut pos = 0usize;
 
         for row_result in mapped_rows {
-            let row = row_result
-                .map_err(|e| {
-                    if is_sqlite_interrupt(&e) {
-                        PlenumError::query_timeout(
-                            "Query interrupted by SQLite server-side timeout during row fetch"
-                                .to_string(),
-                        )
-                    } else {
-                        PlenumError::query_failed(format!("Failed to fetch row: {e}"))
-                    }
-                })?;
+            let row = row_result.map_err(|e| {
+                if is_sqlite_interrupt(&e) {
+                    PlenumError::query_timeout(
+                        "Query interrupted by SQLite server-side timeout during row fetch"
+                            .to_string(),
+                    )
+                } else {
+                    PlenumError::query_failed(format!("Failed to fetch row: {e}"))
+                }
+            })?;
 
             // Skip offset rows
             if pos < offset {
@@ -965,7 +960,8 @@ mod tests {
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::default();
         let result =
-            SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &[], &caps).await;
+            SqliteEngine::execute(&config, "INSERT INTO users (name) VALUES ('Bob')", &[], &caps)
+                .await;
 
         assert!(result.is_err());
         let error_message = result.unwrap_err().message();
@@ -991,9 +987,13 @@ mod tests {
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::default();
-        let result =
-            SqliteEngine::execute(&config, "UPDATE users SET name = 'Bob' WHERE id = 1", &[], &caps)
-                .await;
+        let result = SqliteEngine::execute(
+            &config,
+            "UPDATE users SET name = 'Bob' WHERE id = 1",
+            &[],
+            &caps,
+        )
+        .await;
 
         assert!(result.is_err());
         let error_message = result.unwrap_err().message();
@@ -1015,9 +1015,13 @@ mod tests {
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::default();
-        let result =
-            SqliteEngine::execute(&config, "CREATE TABLE users (id INTEGER PRIMARY KEY)", &[], &caps)
-                .await;
+        let result = SqliteEngine::execute(
+            &config,
+            "CREATE TABLE users (id INTEGER PRIMARY KEY)",
+            &[],
+            &caps,
+        )
+        .await;
 
         assert!(result.is_err());
         let error_message = result.unwrap_err().message();
@@ -1043,7 +1047,8 @@ mod tests {
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let caps = Capabilities::default();
-        let result = SqliteEngine::execute(&config, "DELETE FROM users WHERE id = 1", &[], &caps).await;
+        let result =
+            SqliteEngine::execute(&config, "DELETE FROM users WHERE id = 1", &[], &caps).await;
 
         assert!(result.is_err());
         let error_message = result.unwrap_err().message();
@@ -1194,11 +1199,11 @@ mod tests {
         let _ = std::fs::remove_file(&temp_file);
     }
 
-    /// Prove that writes fail at the SQLite session layer independently of the parser.
+    /// Prove that writes fail at the `SQLite` session layer independently of the parser.
     ///
     /// This test opens a connection using the same `SQLITE_OPEN_READ_ONLY` flags that
     /// `execute()` uses, then attempts a direct rusqlite write without going through
-    /// `validate_query`. The write must be rejected by SQLite itself, not by Plenum's
+    /// `validate_query`. The write must be rejected by `SQLite` itself, not by Plenum's
     /// parser, demonstrating true defense-in-depth (REF-261).
     #[test]
     fn test_sqlite_session_read_only_enforcement() {
@@ -1217,12 +1222,15 @@ mod tests {
         let conn = open_connection(path_str, true).expect("Failed to open read-only connection");
 
         // Attempt DML directly — no Plenum parser involved.
-        let dml_result = conn.execute("INSERT INTO t (id) VALUES (1)", []);
-        assert!(dml_result.is_err(), "INSERT must be rejected at the SQLite session layer");
+        let insert_result = conn.execute("INSERT INTO t (id) VALUES (1)", []);
+        assert!(insert_result.is_err(), "INSERT must be rejected at the SQLite session layer");
 
         // Attempt DDL directly — no Plenum parser involved.
-        let ddl_result = conn.execute("CREATE TABLE t2 (id INTEGER)", []);
-        assert!(ddl_result.is_err(), "CREATE TABLE must be rejected at the SQLite session layer");
+        let create_result = conn.execute("CREATE TABLE t2 (id INTEGER)", []);
+        assert!(
+            create_result.is_err(),
+            "CREATE TABLE must be rejected at the SQLite session layer"
+        );
 
         let _ = std::fs::remove_file(&temp_file);
     }
@@ -1289,11 +1297,8 @@ mod tests {
 
         {
             let conn = Connection::open(&temp_file).expect("Failed to open db");
-            conn.execute(
-                "CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT NOT NULL)",
-                [],
-            )
-            .expect("Failed to create table");
+            conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT NOT NULL)", [])
+                .expect("Failed to create table");
         }
 
         let config = ConnectionConfig::sqlite(temp_file.clone());
@@ -1374,14 +1379,8 @@ mod tests {
             panic!("Expected TableDetails")
         };
 
-        assert!(
-            table.row_estimate.is_some(),
-            "row_estimate must be populated after ANALYZE"
-        );
-        assert!(
-            table.row_estimate.unwrap() >= 0,
-            "row_estimate must be non-negative"
-        );
+        assert!(table.row_estimate.is_some(), "row_estimate must be populated after ANALYZE");
+        assert!(table.row_estimate.unwrap() >= 0, "row_estimate must be non-negative");
 
         let _ = std::fs::remove_file(&temp_file);
     }
@@ -1430,8 +1429,13 @@ mod tests {
         }
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let params = vec![serde_json::json!(1)];
-        let result =
-            SqliteEngine::execute(&config, "SELECT name FROM t WHERE id = ?", &params, &Capabilities::default()).await;
+        let result = SqliteEngine::execute(
+            &config,
+            "SELECT name FROM t WHERE id = ?",
+            &params,
+            &Capabilities::default(),
+        )
+        .await;
         assert!(result.is_ok(), "bound integer param should succeed: {:?}", result.err());
         let qr = result.unwrap();
         assert_eq!(qr.rows.len(), 1);
@@ -1451,8 +1455,13 @@ mod tests {
         }
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let params = vec![serde_json::json!("bob")];
-        let result =
-            SqliteEngine::execute(&config, "SELECT id FROM t WHERE name = ?", &params, &Capabilities::default()).await;
+        let result = SqliteEngine::execute(
+            &config,
+            "SELECT id FROM t WHERE name = ?",
+            &params,
+            &Capabilities::default(),
+        )
+        .await;
         assert!(result.is_ok(), "bound text param should succeed: {:?}", result.err());
         let qr = result.unwrap();
         assert_eq!(qr.rows.len(), 1);
@@ -1502,8 +1511,13 @@ mod tests {
         // SQLite: "col IS ?" with NULL doesn't work the same as IS NULL; use IS NULL directly.
         // Instead verify that binding NULL as a text param filters correctly.
         let params = vec![serde_json::json!("present")];
-        let result =
-            SqliteEngine::execute(&config, "SELECT id FROM t WHERE val = ?", &params, &Capabilities::default()).await;
+        let result = SqliteEngine::execute(
+            &config,
+            "SELECT id FROM t WHERE val = ?",
+            &params,
+            &Capabilities::default(),
+        )
+        .await;
         assert!(result.is_ok(), "null-adjacent bound param should succeed: {:?}", result.err());
         let qr = result.unwrap();
         assert_eq!(qr.rows.len(), 1, "should return exactly the non-null row");
@@ -1523,8 +1537,13 @@ mod tests {
         }
         let config = ConnectionConfig::sqlite(temp_file.clone());
         let params = vec![serde_json::json!("supersecret")];
-        let result =
-            SqliteEngine::execute(&config, "SELECT id FROM t WHERE secret = ?", &params, &Capabilities::default()).await;
+        let result = SqliteEngine::execute(
+            &config,
+            "SELECT id FROM t WHERE secret = ?",
+            &params,
+            &Capabilities::default(),
+        )
+        .await;
         assert!(result.is_ok());
         let qr = result.unwrap();
         // Column names must not contain the bound param value
@@ -1539,13 +1558,8 @@ mod tests {
         let config = ConnectionConfig::sqlite(":memory:".into());
         let params = vec![serde_json::json!(42), serde_json::json!("evil")];
         let caps = Capabilities::default();
-        let result = SqliteEngine::execute(
-            &config,
-            "INSERT INTO t VALUES (?, ?)",
-            &params,
-            &caps,
-        )
-        .await;
+        let result =
+            SqliteEngine::execute(&config, "INSERT INTO t VALUES (?, ?)", &params, &caps).await;
         assert!(result.is_err(), "write must be rejected even with params");
         assert!(result.unwrap_err().message().contains("Plenum is read-only"));
     }

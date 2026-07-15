@@ -12,8 +12,9 @@ fn expected_schema(schema: &schemars::schema::RootSchema) -> String {
 
 fn on_disk(filename: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("schemas").join(filename);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|_| panic!("Schema file missing: {path:?}\nRun: cargo run --bin generate-schemas"))
+    std::fs::read_to_string(&path).unwrap_or_else(|_| {
+        panic!("Schema file missing: {}\nRun: cargo run --bin generate-schemas", path.display())
+    })
 }
 
 #[test]

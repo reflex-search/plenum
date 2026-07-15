@@ -43,12 +43,12 @@ pub use config::{
     list_connections, list_connections_for_project, list_connections_raw, resolve_connection,
     save_connection, ConfigLocation, ConnectionRegistry, KeychainEntry, StoredConnection,
 };
+pub use dsn::{parse_dsn, redact_dsn};
 pub use engine::{
     apply_byte_budget, Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine,
-    DatabaseType, ForeignKeyInfo, IndexInfo, IndexSummary, IntrospectResult, QueryResult, SchemaInfo,
-    TableInfo, TimeOnlyResult, ViewInfo,
+    DatabaseType, ForeignKeyInfo, IndexInfo, IndexSummary, IntrospectResult, QueryResult,
+    SchemaInfo, TableInfo, TimeOnlyResult, ViewInfo,
 };
-pub use dsn::{parse_dsn, redact_dsn};
 pub use error::{PlenumError, Result};
 pub use output::{ErrorEnvelope, ErrorInfo, Metadata, SuccessEnvelope, CONTRACT_VERSION};
 

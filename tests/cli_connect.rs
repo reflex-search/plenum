@@ -7,7 +7,6 @@
 //!   - a missing/empty env var produces a clear error,
 //!   - error output never leaks the resolved credential.
 
-use rusqlite;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,8 +18,7 @@ fn unique_tmp_dir(tag: &str) -> PathBuf {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     let dir = std::env::temp_dir().join(format!("plenum_cli_connect_{tag}_{pid}_{id}_{nanos}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create scratch dir");
@@ -91,8 +89,7 @@ fn connect_password_env_persists_variable_name_not_value() {
     // Inspect persisted config: must reference the env var by name only.
     let cfg_path = dir.join(".plenum").join("config.json");
     let contents = std::fs::read_to_string(&cfg_path).expect("local config written");
-    let parsed: Value =
-        serde_json::from_str(&contents).expect("local config is valid JSON");
+    let parsed: Value = serde_json::from_str(&contents).expect("local config is valid JSON");
 
     let conn = parsed
         .pointer("/connections/default")
@@ -141,10 +138,7 @@ fn connect_password_env_missing_var_errors_without_leaking() {
     let envelope: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("error envelope must be JSON: {e}: {stdout:?}"));
     assert_eq!(envelope.get("ok").and_then(Value::as_bool), Some(false));
-    let message = envelope
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let message = envelope.pointer("/error/message").and_then(Value::as_str).unwrap_or("");
     assert!(
         message.contains("PLENUM_TEST_PWD_MISSING_VAR_XYZ"),
         "error message should name the missing variable, got {message:?}"
@@ -191,10 +185,7 @@ fn connect_rejects_password_and_password_env_together() {
 
     let envelope: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("error envelope must be JSON: {e}: {stdout:?}"));
-    let message = envelope
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let message = envelope.pointer("/error/message").and_then(Value::as_str).unwrap_or("");
     assert!(
         message.contains("mutually exclusive"),
         "expected mutual-exclusion error, got {message:?}"
@@ -207,12 +198,11 @@ fn connect_rejects_password_and_password_env_together() {
 // --test (connection ping) tests
 // ============================================================================
 
-/// Create a minimal valid SQLite database file and return its path.
+/// Create a minimal valid `SQLite` database file and return its path.
 fn create_sqlite_db(dir: &Path) -> PathBuf {
     let db_path = dir.join("test.db");
     let conn = rusqlite::Connection::open(&db_path).expect("create sqlite db");
-    conn.execute("CREATE TABLE _ping (id INTEGER PRIMARY KEY)", [])
-        .expect("create ping table");
+    conn.execute("CREATE TABLE _ping (id INTEGER PRIMARY KEY)", []).expect("create ping table");
     db_path
 }
 
@@ -236,9 +226,15 @@ fn connect_test_reachable_sqlite_returns_connection_info() {
     assert_eq!(envelope.get("engine").and_then(Value::as_str), Some("sqlite"));
 
     let data = envelope.get("data").expect("data field present");
-    assert!(data.get("database_version").and_then(Value::as_str).is_some(), "database_version present");
+    assert!(
+        data.get("database_version").and_then(Value::as_str).is_some(),
+        "database_version present"
+    );
     assert!(data.get("server_info").and_then(Value::as_str).is_some(), "server_info present");
-    assert!(data.get("connected_database").and_then(Value::as_str).is_some(), "connected_database present");
+    assert!(
+        data.get("connected_database").and_then(Value::as_str).is_some(),
+        "connected_database present"
+    );
     assert!(data.get("user").and_then(Value::as_str).is_some(), "user present");
 
     // --test must not write a config file
@@ -285,10 +281,14 @@ fn connect_test_uses_saved_connection_by_name() {
         &dir,
         &[],
         &[
-            "--name", "myconn",
-            "--engine", "sqlite",
-            "--file", db_path.to_str().unwrap(),
-            "--save", "local",
+            "--name",
+            "myconn",
+            "--engine",
+            "sqlite",
+            "--file",
+            db_path.to_str().unwrap(),
+            "--save",
+            "local",
         ],
     );
     assert_eq!(save_code, 0, "save should succeed");
@@ -320,10 +320,7 @@ fn connect_test_does_not_save_config() {
     assert_eq!(code, 0, "expected success, stdout={stdout}");
 
     // Verify no config directory or file was created
-    assert!(
-        !dir.join(".plenum").exists(),
-        ".plenum dir must not exist after --test"
-    );
+    assert!(!dir.join(".plenum").exists(), ".plenum dir must not exist after --test");
 
     cleanup(&dir);
 }
@@ -337,12 +334,7 @@ fn connect_test_and_save_are_mutually_exclusive() {
     let (code, stdout, stderr) = run_connect(
         &dir,
         &[],
-        &[
-            "--test",
-            "--save", "local",
-            "--engine", "sqlite",
-            "--file", db_path.to_str().unwrap(),
-        ],
+        &["--test", "--save", "local", "--engine", "sqlite", "--file", db_path.to_str().unwrap()],
     );
 
     assert_ne!(code, 0, "expected failure: stdout={stdout} stderr={stderr}");

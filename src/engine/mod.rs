@@ -19,8 +19,8 @@ use crate::error::Result;
 
 /// TLS/SSL mode for database connections
 ///
-/// Maps to PostgreSQL's `sslmode` parameter and equivalent MySQL semantics.
-/// SQLite ignores this field (no network TLS).
+/// Maps to `PostgreSQL`'s `sslmode` parameter and equivalent `MySQL` semantics.
+/// `SQLite` ignores this field (no network TLS).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum SslMode {
@@ -230,7 +230,7 @@ pub struct Capabilities {
     pub max_rows: Option<usize>,
 
     /// Maximum serialized byte size of the rows array in the response.
-    /// Truncation occurs at row boundaries; sets truncated_by="bytes" when triggered.
+    /// Truncation occurs at row boundaries; sets `truncated_by="bytes`" when triggered.
     /// None means no limit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<usize>,
@@ -342,7 +342,11 @@ pub struct IndexInfo {
     pub unique: bool,
 }
 
-fn is_false(b: &bool) -> bool { !b }
+// Signature is dictated by serde's `skip_serializing_if`, which requires `fn(&T) -> bool`.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(b: &bool) -> bool {
+    !b
+}
 
 /// Query execution result
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -360,11 +364,11 @@ pub struct QueryResult {
     /// Query execution time in milliseconds
     pub execution_ms: u64,
 
-    /// Whether the result was truncated (by max_rows or max_bytes); present in output when true
+    /// Whether the result was truncated (by `max_rows` or `max_bytes`); present in output when true
     #[serde(default, skip_serializing_if = "is_false")]
     pub rows_truncated: bool,
 
-    /// Why the result was truncated: "rows" (max_rows) or "bytes" (max_bytes); absent when not truncated
+    /// Why the result was truncated: "rows" (`max_rows`) or "bytes" (`max_bytes`); absent when not truncated
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_by: Option<String>,
 }
@@ -378,7 +382,7 @@ pub fn apply_byte_budget(result: &mut QueryResult, max_bytes: usize) {
     let mut byte_count: usize = 0;
     let mut cutoff: Option<usize> = None;
     for (i, row) in result.rows.iter().enumerate() {
-        let row_bytes = serde_json::to_string(row).map(|s| s.len()).unwrap_or(0);
+        let row_bytes = serde_json::to_string(row).map_or(0, |s| s.len());
         if byte_count + row_bytes > max_bytes {
             cutoff = Some(i);
             break;
@@ -672,22 +676,10 @@ mod tests {
 
     #[test]
     fn test_ssl_mode_serialization() {
-        assert_eq!(
-            serde_json::to_string(&SslMode::Disable).unwrap(),
-            r#""disable""#
-        );
-        assert_eq!(
-            serde_json::to_string(&SslMode::Require).unwrap(),
-            r#""require""#
-        );
-        assert_eq!(
-            serde_json::to_string(&SslMode::VerifyCa).unwrap(),
-            r#""verify-ca""#
-        );
-        assert_eq!(
-            serde_json::to_string(&SslMode::VerifyFull).unwrap(),
-            r#""verify-full""#
-        );
+        assert_eq!(serde_json::to_string(&SslMode::Disable).unwrap(), r#""disable""#);
+        assert_eq!(serde_json::to_string(&SslMode::Require).unwrap(), r#""require""#);
+        assert_eq!(serde_json::to_string(&SslMode::VerifyCa).unwrap(), r#""verify-ca""#);
+        assert_eq!(serde_json::to_string(&SslMode::VerifyFull).unwrap(), r#""verify-full""#);
     }
 
     #[test]
@@ -698,7 +690,12 @@ mod tests {
 
     #[test]
     fn test_tls_config_serialization_omits_none_fields() {
-        let tls = TlsConfig { sslmode: SslMode::Require, ca_cert: None, client_cert: None, client_key: None };
+        let tls = TlsConfig {
+            sslmode: SslMode::Require,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+        };
         let json = serde_json::to_string(&tls).unwrap();
         assert!(json.contains("\"sslmode\":\"require\""));
         assert!(!json.contains("ca_cert"));

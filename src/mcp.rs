@@ -538,33 +538,27 @@ async fn tool_introspect(args: &Value) -> Result<Value> {
     // Call engine's introspect method (opens and closes connection)
     let result = match config.engine {
         #[cfg(feature = "sqlite")]
-        DatabaseType::SQLite => {
-            SqliteEngine::introspect(&config, &operation, database, schema)
-                .await
-                .map_err(|e| anyhow!("SQLite introspection failed: {e}"))?
-        }
+        DatabaseType::SQLite => SqliteEngine::introspect(&config, &operation, database, schema)
+            .await
+            .map_err(|e| anyhow!("SQLite introspection failed: {e}"))?,
         #[cfg(not(feature = "sqlite"))]
         DatabaseType::SQLite => {
             return Err(anyhow!("SQLite engine not enabled. Build with --features sqlite"));
         }
 
         #[cfg(feature = "postgres")]
-        DatabaseType::Postgres => {
-            PostgresEngine::introspect(&config, &operation, database, schema)
-                .await
-                .map_err(|e| anyhow!("PostgreSQL introspection failed: {e}"))?
-        }
+        DatabaseType::Postgres => PostgresEngine::introspect(&config, &operation, database, schema)
+            .await
+            .map_err(|e| anyhow!("PostgreSQL introspection failed: {e}"))?,
         #[cfg(not(feature = "postgres"))]
         DatabaseType::Postgres => {
             return Err(anyhow!("PostgreSQL engine not enabled. Build with --features postgres"));
         }
 
         #[cfg(feature = "mysql")]
-        DatabaseType::MySQL => {
-            MySqlEngine::introspect(&config, &operation, database, schema)
-                .await
-                .map_err(|e| anyhow!("MySQL introspection failed: {e}"))?
-        }
+        DatabaseType::MySQL => MySqlEngine::introspect(&config, &operation, database, schema)
+            .await
+            .map_err(|e| anyhow!("MySQL introspection failed: {e}"))?,
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => {
             return Err(anyhow!("MySQL engine not enabled. Build with --features mysql"));
@@ -588,10 +582,18 @@ fn parse_introspect_operation(args: &Value) -> Result<crate::engine::IntrospectO
     let view_name = args.get("view").and_then(|v| v.as_str());
 
     // Count how many operations were specified
-    let op_count = [is_list_databases, is_list_schemas, is_list_tables, is_list_views, is_list_indexes, table_name.is_some(), view_name.is_some()]
-        .iter()
-        .filter(|&&x| x)
-        .count();
+    let op_count = [
+        is_list_databases,
+        is_list_schemas,
+        is_list_tables,
+        is_list_views,
+        is_list_indexes,
+        table_name.is_some(),
+        view_name.is_some(),
+    ]
+    .iter()
+    .filter(|&&x| x)
+    .count();
 
     if op_count == 0 {
         return Err(anyhow!(
@@ -637,10 +639,7 @@ fn parse_introspect_operation(args: &Value) -> Result<crate::engine::IntrospectO
             indexes: args.get("indexes").and_then(Value::as_bool).unwrap_or(true),
         };
 
-        return Ok(IntrospectOperation::TableDetails {
-            name: name.to_string(),
-            fields,
-        });
+        return Ok(IntrospectOperation::TableDetails { name: name.to_string(), fields });
     }
 
     if let Some(name) = view_name {
@@ -774,9 +773,8 @@ fn resolve_connection_from_args(args: &Value) -> Result<(ConnectionConfig, bool)
         if args.get("engine").and_then(|v| v.as_str()).is_some() {
             return Err(anyhow!("'dsn' and 'engine' are mutually exclusive"));
         }
-        let config = parse_dsn(dsn_str).map_err(|e| {
-            anyhow!("{} (DSN: {})", e.message(), redact_dsn(dsn_str))
-        })?;
+        let config = parse_dsn(dsn_str)
+            .map_err(|e| anyhow!("{} (DSN: {})", e.message(), redact_dsn(dsn_str)))?;
         return Ok((config, false));
     }
 

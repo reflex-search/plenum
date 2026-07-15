@@ -65,7 +65,7 @@ pub struct ErrorEnvelope {
     /// Error information
     pub error: ErrorInfo,
 
-    /// Envelope metadata (includes contract_version for agent compatibility checks)
+    /// Envelope metadata (includes `contract_version` for agent compatibility checks)
     pub meta: Metadata,
 }
 
@@ -126,7 +126,7 @@ pub struct Metadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows_returned: Option<usize>,
 
-    /// Whether the result set was capped by max_rows (query results only)
+    /// Whether the result set was capped by `max_rows` (query results only)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows_truncated: Option<bool>,
 
@@ -134,11 +134,11 @@ pub struct Metadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_more: Option<bool>,
 
-    /// Offset to pass as --offset for the next page (present only when has_more is true)
+    /// Offset to pass as --offset for the next page (present only when `has_more` is true)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_offset: Option<usize>,
 
-    /// Why the result was truncated: "bytes" when max_bytes triggered the cut;
+    /// Why the result was truncated: "bytes" when `max_bytes` triggered the cut;
     /// absent for row-count truncation or when rows are not truncated
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_by: Option<String>,

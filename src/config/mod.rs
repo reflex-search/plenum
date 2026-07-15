@@ -175,11 +175,9 @@ pub fn run_password_command_pub(command: &str) -> Result<String> {
 }
 
 fn run_password_command(command: &str) -> Result<String> {
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .output()
-        .map_err(|e| PlenumError::config_error(format!("Failed to execute password_command: {e}")))?;
+    let output = std::process::Command::new("sh").arg("-c").arg(command).output().map_err(|e| {
+        PlenumError::config_error(format!("Failed to execute password_command: {e}"))
+    })?;
 
     if !output.status.success() {
         let code = output.status.code().map_or_else(|| "signal".to_string(), |c| c.to_string());
@@ -254,14 +252,11 @@ fn lookup_keychain_password(service: &str, account: &str) -> Result<String> {
 #[cfg(test)]
 fn lookup_keychain_password(service: &str, account: &str) -> Result<String> {
     MOCK_KEYCHAIN.with(|k| {
-        k.borrow()
-            .get(&mock_keychain_key(service, account))
-            .cloned()
-            .ok_or_else(|| {
-                PlenumError::config_error(format!(
-                    "No password found in keychain for service '{service}', account '{account}'"
-                ))
-            })
+        k.borrow().get(&mock_keychain_key(service, account)).cloned().ok_or_else(|| {
+            PlenumError::config_error(format!(
+                "No password found in keychain for service '{service}', account '{account}'"
+            ))
+        })
     })
 }
 
@@ -330,8 +325,9 @@ pub fn load_registry(path: &Path) -> Result<ConnectionRegistry> {
 
     if is_local_config {
         // Parse as LocalConfig (ProjectConfig)
-        let local_config = serde_json::from_str::<LocalConfig>(&contents)
-            .map_err(|e| PlenumError::config_error(format!("Invalid local config file format: {e}")))?;
+        let local_config = serde_json::from_str::<LocalConfig>(&contents).map_err(|e| {
+            PlenumError::config_error(format!("Invalid local config file format: {e}"))
+        })?;
 
         // Convert to ConnectionRegistry with the current directory as project path
         let project_path = path
@@ -350,8 +346,9 @@ pub fn load_registry(path: &Path) -> Result<ConnectionRegistry> {
         Ok(registry)
     } else {
         // Parse as ConnectionRegistry (global format)
-        serde_json::from_str::<ConnectionRegistry>(&contents)
-            .map_err(|e| PlenumError::config_error(format!("Invalid global config file format: {e}")))
+        serde_json::from_str::<ConnectionRegistry>(&contents).map_err(|e| {
+            PlenumError::config_error(format!("Invalid global config file format: {e}"))
+        })
     }
 }
 
@@ -617,14 +614,16 @@ pub fn list_connections() -> Result<Vec<(String, String, ConnectionConfig)>> {
     Ok(connections)
 }
 
+/// Raw connection listing for a project: named stored connections plus the
+/// optional default connection name.
+pub type RawConnectionListing = (Vec<(String, StoredConnection)>, Option<String>);
+
 /// List raw stored connections for a project without resolving secrets
 ///
 /// Returns `(Vec<(name, StoredConnection)>, Option<default_name>)`.
 /// Connections are sorted alphabetically by name for deterministic output.
 /// Does NOT call `StoredConnection::resolve` — callers must NOT expose the password field.
-pub fn list_connections_raw(
-    project_path: &str,
-) -> Result<(Vec<(String, StoredConnection)>, Option<String>)> {
+pub fn list_connections_raw(project_path: &str) -> Result<RawConnectionListing> {
     let registry = load_with_precedence()?;
 
     match registry.projects.get(project_path) {
@@ -1418,7 +1417,7 @@ mod tests {
 
         let result = stored.resolve();
         assert!(result.is_err());
-        let msg = result.unwrap_err().message().to_string();
+        let msg = result.unwrap_err().message();
         assert!(msg.contains("non-zero"), "expected 'non-zero' in: {msg}");
     }
 
@@ -1472,10 +1471,7 @@ mod tests {
         assert!(!json.contains("\"password\":"));
 
         let parsed: StoredConnection = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            parsed.password_command.as_deref(),
-            Some("op read op://vault/item/password")
-        );
+        assert_eq!(parsed.password_command.as_deref(), Some("op read op://vault/item/password"));
         assert!(parsed.config.password.is_none());
     }
 
@@ -1536,7 +1532,7 @@ mod tests {
 
         let result = stored.resolve();
         assert!(result.is_err());
-        let msg = result.unwrap_err().message().to_string();
+        let msg = result.unwrap_err().message();
         assert!(msg.contains("keychain"), "expected 'keychain' in: {msg}");
     }
 
@@ -1600,5 +1596,4 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().message().contains("Only one password source"));
     }
-
 }

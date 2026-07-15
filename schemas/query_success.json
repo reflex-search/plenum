@@ -67,7 +67,7 @@
           ]
         },
         "next_offset": {
-          "description": "Offset to pass as --offset for the next page (present only when has_more is true)",
+          "description": "Offset to pass as --offset for the next page (present only when `has_more` is true)",
           "type": [
             "integer",
             "null"
@@ -85,14 +85,14 @@
           "minimum": 0.0
         },
         "rows_truncated": {
-          "description": "Whether the result set was capped by max_rows (query results only)",
+          "description": "Whether the result set was capped by `max_rows` (query results only)",
           "type": [
             "boolean",
             "null"
           ]
         },
         "truncated_by": {
-          "description": "Why the result was truncated: \"bytes\" when max_bytes triggered the cut; absent for row-count truncation or when rows are not truncated",
+          "description": "Why the result was truncated: \"bytes\" when `max_bytes` triggered the cut; absent for row-count truncation or when rows are not truncated",
           "type": [
             "string",
             "null"
@@ -140,11 +140,11 @@
           "minimum": 0.0
         },
         "rows_truncated": {
-          "description": "Whether the result was truncated (by max_rows or max_bytes); present in output when true",
+          "description": "Whether the result was truncated (by `max_rows` or `max_bytes`); present in output when true",
           "type": "boolean"
         },
         "truncated_by": {
-          "description": "Why the result was truncated: \"rows\" (max_rows) or \"bytes\" (max_bytes); absent when not truncated",
+          "description": "Why the result was truncated: \"rows\" (`max_rows`) or \"bytes\" (`max_bytes`); absent when not truncated",
           "type": [
             "string",
             "null"
