@@ -19,7 +19,6 @@
 //! - Row limits enforced in application code
 //! - Schema filtering supported (`PostgreSQL` has explicit schemas)
 
-use std::collections::HashMap; // Used for grouping foreign keys during introspection
 use std::time::{Duration, Instant};
 use tokio_postgres::{error::SqlState, Client, Config, NoTls, Row};
 
@@ -575,9 +574,10 @@ async fn get_view_details_postgres(
 ) -> Result<IntrospectResult> {
     use crate::engine::ViewInfo;
 
-    // Get view definition
+    // Get view definition (the information_schema column is view_definition;
+    // it is NULL when the caller lacks privileges on the view)
     let def_query = "
-        SELECT definition
+        SELECT view_definition
         FROM information_schema.views
         WHERE table_schema = $1 AND table_name = $2";
 
@@ -719,6 +719,11 @@ async fn introspect_foreign_keys(
     schema: &str,
     table_name: &str,
 ) -> Result<Vec<ForeignKeyInfo>> {
+    // The referencing and referenced column lists must be correlated by
+    // ordinal position (kcu.position_in_unique_constraint), otherwise a
+    // composite FK degenerates into the cross-product of its columns.
+    // constraint_column_usage cannot express that correlation, so the
+    // referenced side comes from key_column_usage on the unique constraint.
     let query = "
         SELECT
             tc.constraint_name,
@@ -727,11 +732,15 @@ async fn introspect_foreign_keys(
             ccu.column_name AS foreign_column_name
         FROM information_schema.table_constraints AS tc
         JOIN information_schema.key_column_usage AS kcu
-          ON tc.constraint_name = kcu.constraint_name
-          AND tc.table_schema = kcu.table_schema
-        JOIN information_schema.constraint_column_usage AS ccu
-          ON ccu.constraint_name = tc.constraint_name
-          AND ccu.table_schema = tc.table_schema
+          ON kcu.constraint_name = tc.constraint_name
+          AND kcu.table_schema = tc.table_schema
+        JOIN information_schema.referential_constraints AS rc
+          ON rc.constraint_name = tc.constraint_name
+          AND rc.constraint_schema = tc.table_schema
+        JOIN information_schema.key_column_usage AS ccu
+          ON ccu.constraint_name = rc.unique_constraint_name
+          AND ccu.constraint_schema = rc.unique_constraint_schema
+          AND ccu.ordinal_position = kcu.position_in_unique_constraint
         WHERE tc.constraint_type = 'FOREIGN KEY'
           AND tc.table_schema = $1
           AND tc.table_name = $2
@@ -744,8 +753,11 @@ async fn introspect_foreign_keys(
         )
     })?;
 
-    // Group by constraint name
-    let mut fk_map: HashMap<String, (Vec<String>, String, Vec<String>)> = HashMap::new();
+    // Group by constraint name. BTreeMap keeps the emitted foreign_keys
+    // array sorted by constraint name so identical inputs produce
+    // identical outputs (a HashMap would order multi-FK tables randomly).
+    let mut fk_map: std::collections::BTreeMap<String, (Vec<String>, String, Vec<String>)> =
+        std::collections::BTreeMap::new();
 
     for row in rows {
         let constraint_name: String = row.get(0);
@@ -956,6 +968,26 @@ fn row_to_json(column_names: &[String], row: &Row) -> Result<Vec<serde_json::Val
     Ok(values)
 }
 
+/// Type-agnostic NULL probe: accepts every `PostgreSQL` type and carries no
+/// data, so `row.try_get::<_, Option<NullProbe>>(idx)` yields `Ok(None)` for
+/// SQL NULL in ANY column type. Probing with `Option<String>` instead would
+/// fail with a type error on NULL non-text columns (e.g. boolean) before the
+/// null-ness was ever examined.
+struct NullProbe;
+
+impl<'a> tokio_postgres::types::FromSql<'a> for NullProbe {
+    fn from_sql(
+        _ty: &tokio_postgres::types::Type,
+        _raw: &'a [u8],
+    ) -> std::result::Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(NullProbe)
+    }
+
+    fn accepts(_ty: &tokio_postgres::types::Type) -> bool {
+        true
+    }
+}
+
 /// Convert `PostgreSQL` value to JSON value
 fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
     use tokio_postgres::types::Type;
@@ -964,7 +996,7 @@ fn postgres_value_to_json(row: &Row, idx: usize) -> Result<serde_json::Value> {
     let col_type = column.type_();
 
     // Handle NULL first
-    if matches!(row.try_get::<_, Option<String>>(idx), Ok(None)) {
+    if matches!(row.try_get::<_, Option<NullProbe>>(idx), Ok(None)) {
         return Ok(serde_json::Value::Null);
     }
 
