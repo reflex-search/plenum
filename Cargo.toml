@@ -54,7 +54,11 @@ keyring = "3"       # OS keychain credential storage (macOS Keychain, Windows Cr
 # Will be enabled as required features in Phases 3-5 when implementing engines
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"], optional = true }  # PostgreSQL native driver
 postgres-native-tls = { version = "0.5", optional = true }  # TLS for tokio-postgres
-native-tls = { version = "0.2", optional = true }           # Platform TLS (OpenSSL/Secure Transport/SChannel)
+# `vendored` compiles OpenSSL from source so release builds do not depend on a
+# system OpenSSL install or the OPENSSL_LIB_DIR/OPENSSL_DIR environment variables
+# (which are fragile on Nix and cross-compilation hosts). Produces portable
+# binaries. Only pulled in by the `postgres` feature. See REF-258.
+native-tls = { version = "0.2", optional = true, features = ["vendored"] }   # Platform TLS (OpenSSL/Secure Transport/SChannel)
 mysql_async = { version = "0.34", default-features = false, features = ["default-rustls"], optional = true }     # MySQL native async driver
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }  # SQLite native driver with bundled lib
 
