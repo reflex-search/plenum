@@ -10,7 +10,7 @@
 - [Data Flow](#data-flow)
 - [Engine Isolation](#engine-isolation)
 - [Stateless Design](#stateless-design)
-- [Capability Enforcement](#capability-enforcement)
+- [Read-Only Enforcement](#read-only-enforcement)
 - [Configuration Resolution](#configuration-resolution)
 - [Output Envelopes](#output-envelopes)
 - [MCP Integration](#mcp-integration)
@@ -25,7 +25,7 @@ Plenum is a lightweight, agent-first database control CLI built in Rust. It prov
 **Key architectural decisions:**
 - **Stateless execution**: No persistent connections between invocations
 - **Engine isolation**: Each database engine is completely independent
-- **Capability-based security**: Read-only by default, explicit flags for writes/DDL
+- **Strict read-only enforcement**: All write and DDL operations are unconditionally rejected
 - **JSON-only output**: Machine-parseable, no human-oriented features
 - **Vendor-specific SQL**: No query abstraction layer
 - **Native drivers**: tokio-postgres, mysql_async, rusqlite (NOT sqlx)
@@ -86,11 +86,11 @@ Plenum is structured as a library with thin CLI and MCP wrappers:
 - No compatibility layers or universal SQL
 - Each engine handles its own quirks
 
-### 3. Least Privilege by Default
-- **Read-only mode** is the default
-- Writes require `--allow-write` flag
-- DDL requires `--allow-ddl` flag
-- Capability checks happen **before** execution
+### 3. Strict Read-Only Enforcement
+- **All write and DDL operations are unconditionally rejected** — no flags override this
+- Permitted: SELECT, SHOW, DESCRIBE, PRAGMA (allowlisted), EXPLAIN, transaction control
+- Rejected: INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, TRUNCATE, and all other writes
+- Validation happens **before** execution (fail-fast)
 
 ### 4. Stateless Execution
 - No persistent database connections
@@ -244,8 +244,6 @@ User/Agent Input
       ▼
 ┌─────────────────────┐
 │ Capability Building │  (Capabilities struct)
-│  • allow_write      │
-│  • allow_ddl        │
 │  • max_rows         │
 │  • timeout_ms       │
 └─────────────────────┘
@@ -301,21 +299,16 @@ Query Input
       │
       ▼
 ┌──────────────────────┐
-│ SQL Categorization   │  (engine-specific regex)
-│  • ReadOnly: SELECT  │
-│  • Write: INSERT/... │
-│  • DDL: CREATE/...   │
+│ Read-Only Check      │  BEFORE EXECUTION
+│  SELECT / SHOW /     │
+│  DESCRIBE / PRAGMA / │
+│  EXPLAIN / txn ctrl  │
+│  → permitted         │
+│  anything else       │
+│  → REJECTED          │
 └──────────────────────┘
       │
-      ▼
-┌──────────────────────┐
-│ Capability Check     │  BEFORE EXECUTION
-│  ReadOnly → always OK│
-│  Write → need write  │
-│  DDL → need ddl      │
-└──────────────────────┘
-      │
-      ├──[FAIL]──────────────────┐
+      ├──[REJECTED]──────────────┐
       │                           ▼
       │                    CapabilityViolation
       │                           Error
@@ -437,112 +430,70 @@ pub fn execute_command(config: ConnectionConfig) -> Result<Output> {
 
 ---
 
-## Capability Enforcement
+## Read-Only Enforcement
 
-Capability enforcement is the **core security mechanism**.
+Read-only enforcement is the **core security mechanism**. Plenum rejects all write and DDL operations unconditionally — there are no flags or capabilities to unlock them.
 
-### Capability Hierarchy
+### Permitted Operations
 
-```
-┌─────────────────────────────────────┐
-│         DDL Capability              │  ← Most privileged
-│  • CREATE, DROP, ALTER, TRUNCATE    │
-│  • Implies Write capability         │
-│  • Requires --allow-ddl flag        │
-└─────────────────────────────────────┘
-                │
-                ▼
-┌─────────────────────────────────────┐
-│        Write Capability             │  ← Medium privilege
-│  • INSERT, UPDATE, DELETE           │
-│  • Requires --allow-write flag      │
-│  • Does NOT imply DDL               │
-└─────────────────────────────────────┘
-                │
-                ▼
-┌─────────────────────────────────────┐
-│      Read-Only (Default)            │  ← Least privileged
-│  • SELECT queries only              │
-│  • No flags needed                  │
-│  • Always permitted                 │
-└─────────────────────────────────────┘
-```
+| Category | Examples |
+|---|---|
+| SELECT queries | `SELECT * FROM users`, subqueries, read-only CTEs |
+| MySQL introspection | `SHOW TABLES`, `DESCRIBE users`, `DESC users` |
+| SQLite introspection | `PRAGMA table_info(users)`, `PRAGMA database_list` (allowlisted names only) |
+| EXPLAIN queries | `EXPLAIN SELECT ...`, `EXPLAIN ANALYZE ...`, `EXPLAIN FORMAT=JSON ...` |
+| Transaction control | `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`, `RELEASE` |
 
-### Capability Check Flow
+### Rejected Operations
+
+Any statement not in the permitted list above is rejected with `CAPABILITY_VIOLATION`:
+- `INSERT`, `UPDATE`, `DELETE` — write operations
+- `CREATE`, `DROP`, `ALTER`, `TRUNCATE` — DDL operations
+- `MERGE`, `REPLACE`, `COPY`, `LOCK` — MySQL/PostgreSQL writes
+- `VACUUM`, `REINDEX`, `ATTACH`, `DETACH` — SQLite destructive operations
+- `SELECT ... INTO` (PostgreSQL CTAS shorthand), `SELECT ... INTO OUTFILE`/`DUMPFILE`/`@var` (MySQL)
+- Writable CTEs (`WITH x AS (INSERT ...) SELECT ...`) — all engines
+- Any multi-statement query (rejected before read-only check)
+- Unknown statements — fail-safe default-deny
+
+### Validation Flow
 
 ```rust
-pub fn validate_query(
-    sql: &str,
-    caps: &Capabilities,
-    engine: DatabaseType
-) -> Result<QueryCategory> {
-    // 1. Preprocess SQL (strip comments, normalize)
+pub fn validate_query(sql: &str, _caps: &Capabilities, engine: DatabaseType) -> Result<()> {
+    // 1. Preprocess SQL (trim, strip comments, detect multi-statement, uppercase)
     let processed = preprocess_sql(sql)?;
 
-    // 2. Categorize query (engine-specific)
-    let category = categorize_query(&processed, engine)?;
-
-    // 3. Check capabilities BEFORE execution
-    match category {
-        QueryCategory::ReadOnly => Ok(category), // Always allowed
-        QueryCategory::Write => {
-            if caps.can_write() {
-                Ok(category)
-            } else {
-                Err(CapabilityViolation("Need --allow-write"))
-            }
-        }
-        QueryCategory::DDL => {
-            if caps.can_ddl() {
-                Ok(category)
-            } else {
-                Err(CapabilityViolation("Need --allow-ddl"))
-            }
-        }
+    // 2. Check if query is read-only (engine-specific)
+    if is_read_only(&processed, engine) {
+        Ok(())
+    } else {
+        Err(PlenumError::capability_violation(
+            "Plenum is read-only and cannot execute this query. \
+             Please run this query manually:\n\n{sql}"
+        ))
     }
 }
 ```
 
-### SQL Categorization Strategy
+The `_caps` parameter carries only safety constraints (`max_rows`, `timeout_ms`, `max_bytes`) — it has no `allow_write` or `allow_ddl` fields. There is no way to unlock write operations through the API.
 
-Each engine implements its own categorization logic:
+### Engine-Specific Validation
 
-**PostgreSQL:**
-```rust
-fn categorize_postgres(sql: &str) -> QueryCategory {
-    if sql.starts_with("CREATE ") || sql.starts_with("DROP ") { DDL }
-    else if sql.starts_with("INSERT ") || sql.starts_with("UPDATE ") { Write }
-    else if sql.starts_with("SELECT ") { ReadOnly }
-    else { DDL } // Fail-safe: unknown → most restrictive
-}
-```
+Each engine implements its own read-only check (no shared SQL helpers):
 
-**MySQL:**
-```rust
-fn categorize_mysql(sql: &str) -> QueryCategory {
-    // MySQL-specific: LOCK TABLES causes implicit commit → DDL
-    if sql.starts_with("LOCK TABLES") { DDL }
-    else if sql.starts_with("CREATE ") { DDL }
-    // ... (similar to PostgreSQL)
-}
-```
+**PostgreSQL:** Permits `SELECT` (rejecting `SELECT ... INTO new_table` via DML keyword scan), read-only CTEs, EXPLAIN, and transaction control statements.
 
-**SQLite:**
-```rust
-fn categorize_sqlite(sql: &str) -> QueryCategory {
-    // SQLite-specific: VACUUM, REINDEX are DDL
-    if sql.starts_with("VACUUM") || sql.starts_with("REINDEX") { DDL }
-    // ... (similar to PostgreSQL)
-}
-```
+**MySQL:** Same as PostgreSQL plus `SHOW` and `DESCRIBE`/`DESC`. Rejects `SELECT ... INTO OUTFILE`, `INTO DUMPFILE`, and `INTO @var`.
+
+**SQLite:** Permits `SELECT`, EXPLAIN, transaction control, and an explicit allowlist of safe PRAGMAs. `PRAGMA writable_schema = 1`, `PRAGMA wal_checkpoint`, and similar destructive PRAGMAs are rejected by default-deny.
 
 ### Edge Cases Handled
 
-- **EXPLAIN queries**: Strip EXPLAIN prefix, categorize underlying statement
-- **CTEs (WITH ... SELECT)**: Check final statement type
-- **Multi-statement queries**: Rejected in MVP (safest approach)
-- **Comments**: Stripped before categorization
-- **Unknown statements**: Default to DDL (fail-safe)
+- **EXPLAIN queries**: Strip EXPLAIN prefix (including all option forms), validate underlying statement
+- **CTEs (WITH ... SELECT)**: Scan entire body for DML/DDL keywords — writable CTEs are rejected
+- **Multi-statement queries**: Rejected before read-only check (no shared-separator bypass possible)
+- **Comments**: Stripped before validation
+- **Unknown statements**: Default-deny (fail-safe)
 
 ---
 
@@ -592,6 +543,10 @@ Configuration is resolved in **strict precedence order**.
 
 ### Config File Format
 
+There are two distinct schemas depending on the file location.
+
+**Local config** (`.plenum/config.json`) — `ProjectConfig`, already project-scoped, no `projects` wrapper:
+
 ```json
 {
   "connections": {
@@ -612,9 +567,37 @@ Configuration is resolved in **strict precedence order**.
 }
 ```
 
+**Global config** (`~/.config/plenum/connections.json`) — `ConnectionRegistry`, projects keyed by absolute path:
+
+```json
+{
+  "projects": {
+    "/home/user/project1": {
+      "connections": {
+        "prod": {
+          "engine": "postgres",
+          "host": "db.example.com",
+          "port": 5432,
+          "user": "readonly",
+          "database": "production",
+          "password_env": "PROD_DB_PASSWORD"
+        },
+        "local": {
+          "engine": "sqlite",
+          "file": "./app.db"
+        }
+      },
+      "default": "local"
+    }
+  }
+}
+```
+
 ### Environment Variable Support
 
-Passwords can be stored as environment variable references:
+Passwords can be stored as environment variable references.
+
+Local config (`.plenum/config.json`):
 
 ```json
 {
@@ -625,6 +608,27 @@ Passwords can be stored as environment variable references:
       "user": "admin",
       "password_env": "DB_PASSWORD",  ← References env var
       "database": "app"
+    }
+  }
+}
+```
+
+Global config (`~/.config/plenum/connections.json`):
+
+```json
+{
+  "projects": {
+    "/home/user/myapp": {
+      "connections": {
+        "secure": {
+          "engine": "postgres",
+          "host": "db.example.com",
+          "user": "admin",
+          "password_env": "DB_PASSWORD",  ← References env var
+          "database": "app"
+        }
+      },
+      "default": "secure"
     }
   }
 }
@@ -689,7 +693,7 @@ pub struct Metadata {
   "command": "query",
   "error": {
     "code": "CAPABILITY_VIOLATION",
-    "message": "DDL operations require --allow-ddl flag"
+    "message": "Plenum is read-only and cannot execute this query. Please run this query manually:\n\nDROP TABLE users"
   }
 }
 ```
@@ -713,7 +717,7 @@ pub struct ErrorInfo {
 
 | Code | Description | When It Occurs |
 |------|-------------|----------------|
-| `CAPABILITY_VIOLATION` | Operation blocked by capabilities | Write/DDL without appropriate flags |
+| `CAPABILITY_VIOLATION` | Operation blocked — Plenum is read-only | Any attempted write or DDL operation |
 | `CONNECTION_FAILED` | Database connection failed | Invalid credentials, unreachable host |
 | `QUERY_FAILED` | Query execution failed | SQL syntax errors, missing tables |
 | `INVALID_INPUT` | Malformed input | Missing required flags, invalid engine |
@@ -795,12 +799,11 @@ async fn query(
     // 1. Resolve connection from request
     let config = resolve_config_from_request(&request)?;
 
-    // 2. Build capabilities from request
+    // 2. Build capabilities from request (safety constraints only — no write flags)
     let caps = Capabilities {
-        allow_write: request.allow_write.unwrap_or(false),
-        allow_ddl: request.allow_ddl.unwrap_or(false),
         max_rows: request.max_rows,
         timeout_ms: request.timeout_ms,
+        ..Default::default()
     };
 
     // 3. Call library function (SAME as CLI)
@@ -820,9 +823,9 @@ CLI:                              MCP:
 plenum query \                    {
   --name prod \                     "tool": "query",
   --sql "SELECT ..." \              "arguments": {
-  --allow-write                       "name": "prod",
+  --max-rows 100                      "name": "prod",
                                       "sql": "SELECT ...",
-                                      "allow_write": true
+                                      "max_rows": 100
                                     }
                                   }
       │                                   │
@@ -846,22 +849,18 @@ plenum query \                    {
 
 ## Security Model
 
-Plenum's security model is based on **capability constraints**, not SQL validation.
+Plenum's security model is based on **strict read-only enforcement**, not SQL validation.
 
 ### Security Boundaries
 
 #### What Plenum Enforces:
 
-1. **Capability-based access control**
-   - Read-only by default
-   - Explicit flags for write/DDL operations
-   - Pre-execution capability checks
+1. **Unconditional read-only enforcement**
+   - All write and DDL operations are rejected before execution
+   - No flags, capabilities, or configuration can unlock writes
+   - Engine-specific validation with default-deny for unknown statements
 
-2. **Operation type restrictions**
-   - SELECT vs INSERT/UPDATE/DELETE vs DDL
-   - Engine-specific categorization
-
-3. **Resource limits**
+2. **Resource limits**
    - Row limits (`max_rows`)
    - Query timeouts (`timeout_ms`)
 
@@ -918,16 +917,21 @@ exec(`plenum query --sql "${sql}"`);
 - Passwords never in error messages
 - Passwords not cached between invocations
 
-**Best practices:**
+**Best practices** (global config, `~/.config/plenum/connections.json`):
 ```json
 {
-  "connections": {
-    "prod": {
-      "engine": "postgres",
-      "host": "db.example.com",
-      "user": "app",
-      "password_env": "PROD_DB_PASSWORD",  ← Use env var
-      "database": "production"
+  "projects": {
+    "/home/user/myapp": {
+      "connections": {
+        "prod": {
+          "engine": "postgres",
+          "host": "db.example.com",
+          "user": "app",
+          "password_env": "PROD_DB_PASSWORD",  ← Use env var
+          "database": "production"
+        }
+      },
+      "default": "prod"
     }
   }
 }
@@ -969,23 +973,24 @@ exec(`plenum query --sql "${sql}"`);
 - Clear separation of concerns
 - Each engine owns its quirks
 
-### Why Regex-Based SQL Categorization?
+### Why Pattern-Matching for Read-Only Validation?
 
 **Alternatives considered:**
 1. Full SQL parser (sqlparser-rs)
-2. Database EXPLAIN to categorize queries
+2. Database EXPLAIN to classify queries
 3. Trial execution with rollback
 
 **Rejected because:**
-1. Parser: Too complex, unnecessary for categorization
-2. EXPLAIN: Requires database connection (fails for invalid credentials)
-3. Trial execution: Unsafe, side effects possible
+1. Parser: Too complex and heavyweight for a binary read/reject decision
+2. EXPLAIN: Requires a live connection (fails on invalid credentials)
+3. Trial execution: Unsafe, side effects possible even with rollback
 
-**Regex wins:**
-- Simple and explicit
+**Pattern-matching wins:**
+- Simple, explicit, and auditable
 - Engine-specific (respects SQL dialects)
 - No external dependencies
 - Fast and deterministic
+- Easy to verify: permitted set is an explicit allowlist, everything else is rejected
 
 ### Why JSON-Only Output?
 
@@ -1142,7 +1147,7 @@ If the answer is no, it does not belong in Plenum.
 
 Plenum's architecture prioritizes:
 
-1. **Agent safety** through capability enforcement
+1. **Agent safety** through strict read-only enforcement
 2. **Determinism** through stateless design
 3. **Explicitness** through no implicit behavior
 4. **Simplicity** through minimal abstractions
