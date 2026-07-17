@@ -980,7 +980,7 @@ impl<'a> tokio_postgres::types::FromSql<'a> for NullProbe {
         _ty: &tokio_postgres::types::Type,
         _raw: &'a [u8],
     ) -> std::result::Result<Self, Box<dyn std::error::Error + Sync + Send>> {
-        Ok(NullProbe)
+        Ok(Self)
     }
 
     fn accepts(_ty: &tokio_postgres::types::Type) -> bool {

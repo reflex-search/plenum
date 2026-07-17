@@ -2,8 +2,8 @@
 //!
 //! Every test in this file drives the compiled `plenum` binary end-to-end
 //! against a real `MySQL` server, so the CLI + JSON contract is what's under
-//! test, not internal APIs. The full matrix runs against both MySQL 8.0 and
-//! MySQL 8.4 via the `mysql_matrix!` macro; version-specific expectations are
+//! test, not internal APIs. The full matrix runs against both `MySQL` 8.0 and
+//! `MySQL` 8.4 via the `mysql_matrix!` macro; version-specific expectations are
 //! asserted explicitly, never papered over.
 //!
 //! All tests are `#[ignore]`d: plain `cargo test` needs no Docker and skips
@@ -29,7 +29,7 @@ use std::process::Command;
 const MYSQL80_DSN_VAR: &str = "PLENUM_TEST_MYSQL_DSN";
 const MYSQL84_DSN_VAR: &str = "PLENUM_TEST_MYSQL84_DSN";
 
-/// Generate one `#[test]` per MySQL version for a shared body function.
+/// Generate one `#[test]` per `MySQL` version for a shared body function.
 /// Both versions run the identical assertions; anything version-dependent
 /// (e.g. the reported server version) is derived from the DSN var inside
 /// the body so differences stay explicit.
@@ -63,7 +63,7 @@ fn require_dsn(var: &str) -> String {
     }
 }
 
-/// The MySQL version each DSN var is contractually bound to (see
+/// The `MySQL` version each DSN var is contractually bound to (see
 /// `tests/live/compose.yaml`). Asserted against the server's self-reported
 /// version so a mispointed DSN cannot silently test the wrong matrix row.
 fn expected_version_prefix(dsn_var: &str) -> &'static str {
@@ -201,7 +201,7 @@ fn redact_execution_ms(envelope: &mut Value) {
     }
 }
 
-/// Additionally strip fields that legitimately differ between MySQL 8.0 and
+/// Additionally strip fields that legitimately differ between `MySQL` 8.0 and
 /// 8.4 (server version strings, storage-engine row estimates) so everything
 /// else can be asserted byte-identical across versions.
 fn redact_version_specific(envelope: &mut Value) {
@@ -216,7 +216,7 @@ fn redact_version_specific(envelope: &mut Value) {
     }
 }
 
-fn connect_test_args<'a>(parts: &'a DsnParts) -> Vec<&'a str> {
+fn connect_test_args(parts: &DsnParts) -> Vec<&str> {
     vec![
         "connect",
         "--engine",
@@ -270,13 +270,12 @@ fn find_column<'a>(envelope: &'a Value, name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("column {name:?} missing from table details: {envelope}"))
 }
 
-
 // ============================================================================
 // connect
 // ============================================================================
 
 /// Valid credentials via explicit flags: `connect --test` succeeds and
-/// surfaces server metadata — including the MySQL server version, asserted
+/// surfaces server metadata — including the `MySQL` server version, asserted
 /// against the version this DSN var is bound to.
 fn connect_test_reports_server_version(dsn_var: &str, tag: &str) {
     let dsn = require_dsn(dsn_var);
@@ -308,10 +307,8 @@ fn connect_test_reports_server_version(dsn_var: &str, tag: &str) {
         "unexpected connected_database: {envelope}"
     );
     // MySQL reports the authenticated account as `user@host` (CURRENT_USER()).
-    let user = envelope
-        .pointer("/data/user")
-        .and_then(Value::as_str)
-        .expect("connect data carries user");
+    let user =
+        envelope.pointer("/data/user").and_then(Value::as_str).expect("connect data carries user");
     assert!(
         user.starts_with(&format!("{}@", parts.user)),
         "unexpected user (expected {}@<host>): {envelope}",
@@ -356,10 +353,7 @@ fn connect_wrong_password_normalized_error(dsn_var: &str, tag: &str) {
     assert_ne!(code, 0, "connect with a wrong password must exit non-zero, stdout={stdout}");
     let envelope = assert_envelope(&stdout, false, "connect");
     assert_eq!(error_code(&envelope), "CONNECTION_FAILED", "envelope: {envelope}");
-    assert!(
-        !stdout.contains(bad_password),
-        "credential must never appear in output: {stdout}"
-    );
+    assert!(!stdout.contains(bad_password), "credential must never appear in output: {stdout}");
 
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -480,7 +474,11 @@ fn introspect_list_tables(dsn_var: &str, tag: &str) {
 
     let _ = std::fs::remove_dir_all(&home);
 }
-mysql_matrix!(mysql80_introspect_list_tables, mysql84_introspect_list_tables, introspect_list_tables);
+mysql_matrix!(
+    mysql80_introspect_list_tables,
+    mysql84_introspect_list_tables,
+    introspect_list_tables
+);
 
 /// `--table type_matrix` surfaces exotic column types by name: ENUM, SET,
 /// JSON, and the STORED generated column.
@@ -547,9 +545,13 @@ fn introspect_orders_keys(dsn_var: &str, tag: &str) {
 
     let _ = std::fs::remove_dir_all(&home);
 }
-mysql_matrix!(mysql80_introspect_orders_keys, mysql84_introspect_orders_keys, introspect_orders_keys);
+mysql_matrix!(
+    mysql80_introspect_orders_keys,
+    mysql84_introspect_orders_keys,
+    introspect_orders_keys
+);
 
-/// `--table order_items`: COMPOSITE foreign key (customer_id, order_no) →
+/// `--table order_items`: COMPOSITE foreign key (`customer_id`, `order_no`) →
 /// orders, plus the secondary index on sku.
 fn introspect_composite_fk_and_indexes(dsn_var: &str, tag: &str) {
     let dsn = require_dsn(dsn_var);
@@ -681,7 +683,7 @@ fn introspect_views(dsn_var: &str, tag: &str) {
 }
 mysql_matrix!(mysql80_introspect_views, mysql84_introspect_views, introspect_views);
 
-/// `--list-databases` (wildcard `--database "*"` connection — MySQL always
+/// `--list-databases` (wildcard `--database "*"` connection — `MySQL` always
 /// requires an explicit database argument) includes the seeded database.
 fn introspect_list_databases(dsn_var: &str, tag: &str) {
     let dsn = require_dsn(dsn_var);
@@ -740,8 +742,7 @@ fn query_select_returns_exact_rows(dsn_var: &str, tag: &str) {
     let dsn = require_dsn(dsn_var);
     let home = scratch_home(tag);
 
-    let envelope =
-        query_ok(&home, &dsn, "SELECT id, name, email FROM customers ORDER BY id");
+    let envelope = query_ok(&home, &dsn, "SELECT id, name, email FROM customers ORDER BY id");
     assert_eq!(
         envelope.pointer("/data/columns"),
         Some(&serde_json::json!(["id", "name", "email"])),
@@ -997,7 +998,7 @@ mysql_matrix!(
     safety_max_rows_truncation
 );
 
-/// `--timeout-ms` exceeded via SLEEP(): structured `QUERY_TIMEOUT` error that
+/// `--timeout-ms` exceeded via `SLEEP()`: structured `QUERY_TIMEOUT` error that
 /// names the configured budget (locks in the REF-258 timeout-as-error fix).
 /// No wall-clock assertions — only the structured outcome is checked.
 fn safety_timeout_structured_error(dsn_var: &str, tag: &str) {
@@ -1013,10 +1014,7 @@ fn safety_timeout_structured_error(dsn_var: &str, tag: &str) {
     assert_eq!(error_code(&envelope), "QUERY_TIMEOUT", "envelope: {envelope}");
     let message =
         envelope.pointer("/error/message").and_then(Value::as_str).expect("error message");
-    assert!(
-        message.contains("500"),
-        "timeout error must name the configured budget: {message:?}"
-    );
+    assert!(message.contains("500"), "timeout error must name the configured budget: {message:?}");
 
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -1068,7 +1066,7 @@ mysql_matrix!(mysql80_envelope_determinism, mysql84_envelope_determinism, envelo
 // cross-version matrix
 // ============================================================================
 
-/// MySQL 8.0 and 8.4 must behave identically for a canonical slice of the
+/// `MySQL` 8.0 and 8.4 must behave identically for a canonical slice of the
 /// surface (introspection details, query rows, capability rejection, and
 /// truncation) once version strings, row estimates, and timing are redacted.
 /// Requires BOTH DSN vars — a real cross-version assertion, not two copies.

@@ -10,7 +10,7 @@
 //! - introspect: tables, columns + type names (arrays / JSONB / enums),
 //!   composite PK/FK, indexes, views, multiple schemas
 //! - query allowed: SELECT, EXPLAIN, EXPLAIN ANALYZE, transaction control
-//! - query denied: writes/DDL → CAPABILITY_VIOLATION with DB state proven
+//! - query denied: writes/DDL → `CAPABILITY_VIOLATION` with DB state proven
 //!   unchanged afterwards
 //! - safety: `max_rows` truncation on the >1,000-row table, `timeout_ms`
 //!   via `pg_sleep()`
@@ -294,9 +294,10 @@ fn introspect_table(home: &Path, dsn: &str, extra: &[&str], table: &str) -> Valu
     assert_eq!(code, 0, "introspect --table {table} failed, stdout={stdout}");
     let envelope = assert_envelope(&stdout, true, "introspect");
     assert_matches_schema(&envelope, "introspect_success.json");
-    envelope.pointer("/data/table").cloned().unwrap_or_else(|| {
-        panic!("introspect --table {table} returned no data.table: {envelope}")
-    })
+    envelope
+        .pointer("/data/table")
+        .cloned()
+        .unwrap_or_else(|| panic!("introspect --table {table} returned no data.table: {envelope}"))
 }
 
 /// Find a column by name in a `data.table.columns` array.
@@ -367,10 +368,7 @@ fn postgres16_connect_test_reports_server_metadata() {
         .pointer("/data/database_version")
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("missing database_version: {envelope}"));
-    assert!(
-        version.contains("16"),
-        "expected a PostgreSQL 16 version string, got {version:?}"
-    );
+    assert!(version.contains("16"), "expected a PostgreSQL 16 version string, got {version:?}");
 
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -477,10 +475,7 @@ fn postgres16_connect_password_env_source() {
     );
 
     // Without the env var the query must fail fast with a structured error.
-    let (code, stdout) = run_plenum(
-        &home,
-        &["query", "--name", "envconn", "--sql", "SELECT 1"],
-    );
+    let (code, stdout) = run_plenum(&home, &["query", "--name", "envconn", "--sql", "SELECT 1"]);
     assert_ne!(code, 0, "query without the password env var must fail, stdout={stdout}");
     let envelope: Value =
         serde_json::from_str(stdout.trim()).expect("error output is a JSON envelope");
@@ -535,10 +530,8 @@ fn postgres16_connect_password_command_source() {
         "saved config must not contain the plaintext password: {config}"
     );
 
-    let (code, stdout) = run_plenum(
-        &home,
-        &["query", "--name", "cmdconn", "--sql", "SELECT count(*) FROM orders"],
-    );
+    let (code, stdout) =
+        run_plenum(&home, &["query", "--name", "cmdconn", "--sql", "SELECT count(*) FROM orders"]);
     assert_eq!(code, 0, "query via password_command connection failed, stdout={stdout}");
     let envelope = assert_envelope(&stdout, true, "query");
     assert_eq!(
@@ -761,17 +754,14 @@ fn postgres16_introspect_multiple_schemas() {
         assert!(schemas.contains(&expected.to_string()), "schemas listed: {schemas:?}");
     }
 
-    let (code, stdout) = run_plenum(
-        &home,
-        &["introspect", "--dsn", &dsn, "--schema", "analytics", "--list-tables"],
-    );
+    let (code, stdout) =
+        run_plenum(&home, &["introspect", "--dsn", &dsn, "--schema", "analytics", "--list-tables"]);
     assert_eq!(code, 0, "introspect --schema analytics --list-tables failed, stdout={stdout}");
     let envelope = assert_envelope(&stdout, true, "introspect");
     let tables = string_vec(&envelope["data"]["tables"]);
     assert_eq!(tables, vec!["page_views".to_string()], "analytics tables: {tables:?}");
 
-    let page_views =
-        introspect_table(&home, &dsn, &["--schema", "analytics"], "page_views");
+    let page_views = introspect_table(&home, &dsn, &["--schema", "analytics"], "page_views");
     assert_eq!(page_views["schema"].as_str(), Some("analytics"), "table: {page_views}");
     let meta_col = column(&page_views, "meta");
     assert_eq!(meta_col["data_type"].as_str(), Some("jsonb"), "meta column: {meta_col}");
@@ -872,7 +862,7 @@ fn postgres16_query_transaction_control_allowed() {
 
 // ===== query: denied operations =====
 
-/// Every write/DDL statement class is rejected with CAPABILITY_VIOLATION
+/// Every write/DDL statement class is rejected with `CAPABILITY_VIOLATION`
 /// before execution, and the database state is proven unchanged afterwards.
 #[test]
 #[ignore = "requires live DB (scripts/test-live.sh)"]
@@ -1011,7 +1001,7 @@ fn postgres16_query_max_rows_truncation() {
 }
 
 /// `timeout_ms` exceeded via `pg_sleep()` surfaces a structured
-/// QUERY_TIMEOUT error, not a hang or a driver panic.
+/// `QUERY_TIMEOUT` error, not a hang or a driver panic.
 #[test]
 #[ignore = "requires live DB (scripts/test-live.sh)"]
 fn postgres16_query_timeout_via_pg_sleep() {
@@ -1041,13 +1031,8 @@ fn postgres16_envelope_determinism_and_json_only_stdout() {
     let dsn = require_dsn(POSTGRES_DSN_VAR);
     let home = scratch_home("determinism");
 
-    let query_args = [
-        "query",
-        "--dsn",
-        &dsn,
-        "--sql",
-        "SELECT id, name, email FROM customers ORDER BY id",
-    ];
+    let query_args =
+        ["query", "--dsn", &dsn, "--sql", "SELECT id, name, email FROM customers ORDER BY id"];
     let introspect_args = ["introspect", "--dsn", &dsn, "--table", "orders"];
 
     for args in [&query_args[..], &introspect_args[..]] {
@@ -1058,10 +1043,8 @@ fn postgres16_envelope_determinism_and_json_only_stdout() {
 
         // Stdout is a single JSON document: parsing the entire stream as one
         // value succeeds only when nothing else is interleaved.
-        let envelope_a: Value =
-            serde_json::from_str(stdout_a.trim()).expect("stdout is JSON only");
-        let envelope_b: Value =
-            serde_json::from_str(stdout_b.trim()).expect("stdout is JSON only");
+        let envelope_a: Value = serde_json::from_str(stdout_a.trim()).expect("stdout is JSON only");
+        let envelope_b: Value = serde_json::from_str(stdout_b.trim()).expect("stdout is JSON only");
 
         assert_eq!(
             redact_execution_ms(envelope_a),

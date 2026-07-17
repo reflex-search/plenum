@@ -1,9 +1,9 @@
-//! SQLite offline parity suite — REF-278.
+//! `SQLite` offline parity suite — REF-278.
 //!
-//! Brings the SQLite test coverage to parity with the live-DB coverage matrix
-//! (MySQL / PostgreSQL). The fixture dataset mirrors the logical dataset from the
+//! Brings the `SQLite` test coverage to parity with the live-DB coverage matrix
+//! (`MySQL` / `PostgreSQL`). The fixture dataset mirrors the logical dataset from the
 //! live seed scripts (REF-274 / REF-275):
-//!   type_matrix, customers, orders, order_items, bulk_rows, v_order_totals.
+//!   `type_matrix`, customers, orders, `order_items`, `bulk_rows`, `v_order_totals`.
 //!
 //! All tests run offline — no Docker required.  Plain `cargo test` includes them
 //! all.  Uses the `SqliteEngine` API directly; no CLI binary is spawned.
@@ -15,12 +15,12 @@
 //!   query allowed — SELECT, EXPLAIN, EXPLAIN QUERY PLAN, PRAGMA, transaction
 //!                  control (BEGIN, ROLLBACK, SAVEPOINT / RELEASE)
 //!   query denied  — INSERT / UPDATE / DELETE / CREATE / DROP / ALTER →
-//!                  CAPABILITY_VIOLATION before execution, then re-query to
+//!                  `CAPABILITY_VIOLATION` before execution, then re-query to
 //!                  prove DB state unchanged
-//!   safety       — max_rows truncation + rows_truncated flag; timeout_ms
-//!                  (busy_timeout + interrupt) documented and tested
-//!   envelope     — QueryResult / IntrospectResult serialize to valid JSON;
-//!                  deterministic with execution_ms excluded
+//!   safety       — `max_rows` truncation + `rows_truncated` flag; `timeout_ms`
+//!                  (`busy_timeout` + interrupt) documented and tested
+//!   envelope     — `QueryResult` / `IntrospectResult` serialize to valid JSON;
+//!                  deterministic with `execution_ms` excluded
 
 #![cfg(feature = "sqlite")]
 
@@ -44,14 +44,14 @@ fn fixture_path(tag: &str) -> PathBuf {
 
 /// Build the full parity fixture dataset into a fresh temp file.
 ///
-/// Mirrors the logical dataset from the MySQL / PostgreSQL seed scripts
+/// Mirrors the logical dataset from the `MySQL` / `PostgreSQL` seed scripts
 /// (REF-274 / REF-275):
-///   - `type_matrix`   — one column per SQLite storage class / affinity
+///   - `type_matrix`   — one column per `SQLite` storage class / affinity
 ///   - `customers`     — simple PK + UNIQUE index on email, emoji in data
 ///   - `orders`        — composite PK, FK → customers
 ///   - `order_items`   — composite 3-col PK, composite FK → orders, index on sku
-///   - `bulk_rows`     — 1 500 deterministic rows for max_rows tests
-///   - `v_order_totals` — view over orders + order_items
+///   - `bulk_rows`     — 1 500 deterministic rows for `max_rows` tests
+///   - `v_order_totals` — view over orders + `order_items`
 fn build_parity_fixture() -> PathBuf {
     use rusqlite::{Connection, OpenFlags};
 
@@ -92,8 +92,8 @@ fn build_parity_fixture() -> PathBuf {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         rusqlite::params![
             i64::MAX,
-            2.718_281_828_459_045_f64,
-            12_345_678.9999_f64,
+            2.123_456_789_012_345_f64,
+            12_345_678.999_9_f64,
             "café résumé 🚀",
             b"\xDE\xAD\xBE\xEF".as_ref(),
             Option::<String>::None, // NULL
@@ -266,11 +266,7 @@ fn cleanup(path: &PathBuf) {
 
 /// Return the value of column `name` from `row`, panicking with a useful
 /// message if the column is absent.
-fn get_col<'a>(
-    cols: &[String],
-    row: &'a [serde_json::Value],
-    name: &str,
-) -> &'a serde_json::Value {
+fn get_col<'a>(cols: &[String], row: &'a [serde_json::Value], name: &str) -> &'a serde_json::Value {
     let idx = cols
         .iter()
         .position(|c| c == name)
@@ -368,7 +364,7 @@ async fn parity_introspect_type_matrix_columns_and_affinity() {
 
     // PK must be reported
     assert_eq!(
-        table.primary_key.as_ref().map(|v| v.as_slice()),
+        table.primary_key.as_deref(),
         Some(["id".to_string()].as_slice()),
         "type_matrix PK must be [id]"
     );
@@ -399,7 +395,7 @@ async fn parity_introspect_customers_pk_and_unique_index() {
     let IntrospectResult::TableDetails { table } = result else { panic!("Expected TableDetails") };
 
     assert_eq!(
-        table.primary_key.as_ref().map(|v| v.as_slice()),
+        table.primary_key.as_deref(),
         Some(["id".to_string()].as_slice()),
         "customers PK must be [id]"
     );
@@ -605,10 +601,7 @@ async fn parity_query_select_type_matrix_numeric_null_blob() {
     let text = get_col(&qr.columns, r1, "c_text").as_str().expect("c_text must be string");
     assert!(text.contains('🚀'), "emoji must survive round-trip; got: {text:?}");
     // BLOB must be base64-encoded
-    assert!(
-        get_col(&qr.columns, r1, "c_blob").is_string(),
-        "BLOB must be base64-encoded string"
-    );
+    assert!(get_col(&qr.columns, r1, "c_blob").is_string(), "BLOB must be base64-encoded string");
     assert!(get_col(&qr.columns, r1, "c_null_col").is_null(), "c_null_col must be JSON null");
 
     // Row 3: all-NULL
@@ -626,14 +619,10 @@ async fn parity_query_select_customers_emoji_survives() {
     let path = build_parity_fixture();
     let config = ConnectionConfig::sqlite(path.clone());
     let caps = Capabilities::default();
-    let qr = SqliteEngine::execute(
-        &config,
-        "SELECT id, name FROM customers ORDER BY id",
-        &[],
-        &caps,
-    )
-    .await
-    .expect("SELECT customers failed");
+    let qr =
+        SqliteEngine::execute(&config, "SELECT id, name FROM customers ORDER BY id", &[], &caps)
+            .await
+            .expect("SELECT customers failed");
     assert_eq!(qr.rows.len(), 3);
     let name2 = get_col(&qr.columns, &qr.rows[1], "name").as_str().unwrap();
     assert!(name2.contains('🌟'), "emoji in customer name must survive; got: {name2:?}");
@@ -691,8 +680,7 @@ async fn parity_query_pragma_table_info_allowed() {
     let path = build_parity_fixture();
     let config = ConnectionConfig::sqlite(path.clone());
     let caps = Capabilities::default();
-    let result =
-        SqliteEngine::execute(&config, "PRAGMA table_info(customers)", &[], &caps).await;
+    let result = SqliteEngine::execute(&config, "PRAGMA table_info(customers)", &[], &caps).await;
     assert!(result.is_ok(), "PRAGMA table_info must be allowed: {:?}", result.err());
     let qr = result.unwrap();
     assert!(!qr.rows.is_empty(), "PRAGMA table_info must return column rows");
@@ -704,8 +692,7 @@ async fn parity_query_pragma_index_list_allowed() {
     let path = build_parity_fixture();
     let config = ConnectionConfig::sqlite(path.clone());
     let caps = Capabilities::default();
-    let result =
-        SqliteEngine::execute(&config, "PRAGMA index_list(order_items)", &[], &caps).await;
+    let result = SqliteEngine::execute(&config, "PRAGMA index_list(order_items)", &[], &caps).await;
     assert!(result.is_ok(), "PRAGMA index_list must be allowed: {:?}", result.err());
     cleanup(&path);
 }
@@ -713,7 +700,7 @@ async fn parity_query_pragma_index_list_allowed() {
 /// Verify that a transaction control statement is NOT rejected as a
 /// `CAPABILITY_VIOLATION` by the Plenum capability checker.  SQLite-level
 /// errors (e.g. "no active transaction" on ROLLBACK without BEGIN) are
-/// acceptable here; only CAPABILITY_VIOLATION is forbidden.
+/// acceptable here; only `CAPABILITY_VIOLATION` is forbidden.
 async fn assert_not_capability_violation(config: &ConnectionConfig, sql: &str) {
     let result = SqliteEngine::execute(config, sql, &[], &Capabilities::default()).await;
     if let Err(ref err) = result {
@@ -731,8 +718,7 @@ async fn parity_query_transaction_begin_not_capability_violation() {
     let path = build_parity_fixture();
     let config = ConnectionConfig::sqlite(path.clone());
     // BEGIN on a read-only connection starts a deferred read transaction.
-    let result =
-        SqliteEngine::execute(&config, "BEGIN", &[], &Capabilities::default()).await;
+    let result = SqliteEngine::execute(&config, "BEGIN", &[], &Capabilities::default()).await;
     assert!(
         result.is_ok(),
         "BEGIN must succeed on a read-only SQLite connection: {:?}",
@@ -901,9 +887,10 @@ async fn parity_safety_max_rows_truncates_bulk_table() {
     let path = build_parity_fixture();
     let config = ConnectionConfig::sqlite(path.clone());
     let caps = Capabilities { max_rows: Some(100), ..Capabilities::default() };
-    let qr = SqliteEngine::execute(&config, "SELECT n, label FROM bulk_rows ORDER BY n", &[], &caps)
-        .await
-        .expect("SELECT bulk_rows failed");
+    let qr =
+        SqliteEngine::execute(&config, "SELECT n, label FROM bulk_rows ORDER BY n", &[], &caps)
+            .await
+            .expect("SELECT bulk_rows failed");
     assert_eq!(qr.rows.len(), 100, "max_rows=100 must limit result to 100 rows");
     assert!(qr.rows_truncated, "rows_truncated must be true when max_rows fires");
     // Verify ordering: first row is n=1
@@ -946,8 +933,7 @@ async fn parity_safety_timeout_ms_completes_fast_query() {
     let path = build_parity_fixture();
     let config = ConnectionConfig::sqlite(path.clone());
     let caps = Capabilities { timeout_ms: Some(5000), ..Capabilities::default() };
-    let result =
-        SqliteEngine::execute(&config, "SELECT count(*) FROM customers", &[], &caps).await;
+    let result = SqliteEngine::execute(&config, "SELECT count(*) FROM customers", &[], &caps).await;
     assert!(result.is_ok(), "fast query must complete within 5 s timeout: {:?}", result.err());
     cleanup(&path);
 }
@@ -991,8 +977,11 @@ async fn parity_envelope_query_result_json_shape() {
     .expect("SELECT customers failed");
 
     let json = serde_json::to_value(&qr).expect("QueryResult must serialize to JSON");
-    assert!(json.get("columns").map_or(false, |v| v.is_array()), "must have 'columns' array");
-    assert!(json.get("rows").map_or(false, |v| v.is_array()), "must have 'rows' array");
+    assert!(
+        json.get("columns").is_some_and(serde_json::Value::is_array),
+        "must have 'columns' array"
+    );
+    assert!(json.get("rows").is_some_and(serde_json::Value::is_array), "must have 'rows' array");
     assert!(json.get("execution_ms").is_some(), "must have 'execution_ms'");
     assert!(json.get("rows_affected").is_none(), "SELECT must not have 'rows_affected'");
     cleanup(&path);
@@ -1002,15 +991,14 @@ async fn parity_envelope_query_result_json_shape() {
 async fn parity_envelope_introspect_result_json_shape() {
     let path = build_parity_fixture();
     let config = ConnectionConfig::sqlite(path.clone());
-    let result =
-        SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None)
-            .await
-            .expect("ListTables failed");
+    let result = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None)
+        .await
+        .expect("ListTables failed");
 
     let json = serde_json::to_value(&result).expect("IntrospectResult must serialize to JSON");
     assert!(json.get("type").is_some(), "IntrospectResult must have 'type' tag");
     assert!(
-        json.get("tables").map_or(false, |v| v.is_array()),
+        json.get("tables").is_some_and(serde_json::Value::is_array),
         "TableList must have 'tables' array"
     );
     cleanup(&path);
