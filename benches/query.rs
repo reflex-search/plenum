@@ -46,6 +46,7 @@ fn bench_sqlite_simple_select(c: &mut Criterion) {
             let result = runtime.block_on(SqliteEngine::execute(
                 black_box(&config),
                 black_box("SELECT * FROM users"),
+                black_box::<&[serde_json::Value]>(&[]),
                 black_box(&caps),
             ));
             assert!(result.is_ok());
@@ -88,6 +89,7 @@ fn bench_sqlite_filtered_select(c: &mut Criterion) {
             let result = runtime.block_on(SqliteEngine::execute(
                 black_box(&config),
                 black_box("SELECT * FROM users WHERE age > 50"),
+                black_box::<&[serde_json::Value]>(&[]),
                 black_box(&caps),
             ));
             assert!(result.is_ok());
@@ -130,6 +132,7 @@ fn bench_sqlite_insert(c: &mut Criterion) {
             let result = runtime.block_on(SqliteEngine::execute(
                 black_box(&config),
                 black_box(&sql),
+                black_box::<&[serde_json::Value]>(&[]),
                 black_box(&caps),
             ));
             assert!(result.is_ok());
@@ -169,6 +172,7 @@ fn bench_sqlite_large_result_set(c: &mut Criterion) {
             let result = runtime.block_on(SqliteEngine::execute(
                 black_box(&config),
                 black_box("SELECT * FROM large_table"),
+                black_box::<&[serde_json::Value]>(&[]),
                 black_box(&caps),
             ));
             assert!(result.is_ok());

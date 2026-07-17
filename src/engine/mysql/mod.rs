@@ -19,7 +19,7 @@
 //! - Row limits enforced in application code
 //! - Schema filtering supported (`MySQL` has explicit schemas/databases)
 
-use mysql_async::{prelude::*, Conn, OptsBuilder, Row, Value};
+use mysql_async::{prelude::*, Conn, OptsBuilder, Params, Row, SslOpts, Value};
 use std::collections::HashMap; // Used for grouping foreign keys during introspection
 use std::time::{Duration, Instant};
 
@@ -27,9 +27,22 @@ use crate::capability::validate_query;
 use crate::engine::{
     Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine, DatabaseType,
     ForeignKeyInfo, IndexInfo, IndexSummary, IntrospectOperation, IntrospectResult, QueryResult,
-    TableFields, TableInfo, ViewInfo,
+    SslMode, TableFields, TableInfo, TlsConfig, ViewInfo,
 };
 use crate::error::{PlenumError, Result};
+
+/// Extra grace added to the server-side `MAX_EXECUTION_TIME` on top of the
+/// client-side deadline.
+///
+/// The client-side `tokio::time::timeout` (set to exactly `timeout_ms`) is the
+/// authoritative timeout and surfaces `QUERY_TIMEOUT`. The server-side
+/// `MAX_EXECUTION_TIME` is deliberately set *longer* so it acts only as a
+/// server-side cleanup backstop for a query the client has already abandoned —
+/// it must NOT fire first. Firing first would let statements that swallow the
+/// interrupt (notably `SELECT SLEEP(n)`, which returns `1` when interrupted
+/// rather than erroring) complete "successfully" and report partial data as a
+/// success, defeating the timeout (REF-258 Bug 4).
+const SERVER_TIMEOUT_BACKSTOP_GRACE: Duration = Duration::from_secs(5);
 
 /// `MySQL` database engine implementation
 pub struct MySqlEngine;
@@ -77,10 +90,13 @@ impl DatabaseEngine for MySqlEngine {
             })?
             .ok_or_else(|| PlenumError::connection_failed("No database returned".to_string()))?;
 
-        // Handle NULL result when using wildcard database ("*")
-        let connected_database: String = match db_row.get(0) {
-            Some(db) => db,
-            None => "(no database selected)".to_string(), // Wildcard mode
+        // Handle NULL result when using wildcard database ("*").
+        // `DATABASE()` returns SQL NULL in wildcard mode; `get::<String>` would panic
+        // converting NULL, so read as `Option<String>` (outer Option = index presence,
+        // inner Option = NULL vs value).
+        let connected_database: String = match db_row.get::<Option<String>, _>(0) {
+            Some(Some(db)) => db,
+            _ => "(no database selected)".to_string(), // Wildcard mode (NULL)
         };
 
         // Get current user
@@ -134,9 +150,7 @@ impl DatabaseEngine for MySqlEngine {
 
         // Route to appropriate handler based on operation
         let result = match operation {
-            IntrospectOperation::ListDatabases => {
-                list_databases_mysql(&mut conn).await?
-            }
+            IntrospectOperation::ListDatabases => list_databases_mysql(&mut conn).await?,
 
             IntrospectOperation::ListSchemas => {
                 // MySQL doesn't have separate schemas - database = schema
@@ -182,6 +196,7 @@ impl DatabaseEngine for MySqlEngine {
     async fn execute(
         config: &ConnectionConfig,
         query: &str,
+        params: &[serde_json::Value],
         caps: &Capabilities,
     ) -> Result<QueryResult> {
         // Validate config is for MySQL
@@ -203,17 +218,52 @@ impl DatabaseEngine for MySqlEngine {
             PlenumError::connection_failed(format!("Failed to connect to MySQL: {e}"))
         })?;
 
-        // Execute with optional timeout
+        // Defense in depth: enforce session-level read-only at the database layer.
+        // This rejects DML writes even if the SQL parser is somehow bypassed (REF-261).
+        // Note: MySQL DDL (CREATE/DROP/ALTER) causes implicit commits and is not covered
+        // by transaction read-only mode — that class is already blocked by the parser.
+        conn.exec_drop("SET SESSION TRANSACTION READ ONLY", ()).await.map_err(|e| {
+            PlenumError::engine_error(
+                "mysql",
+                format!("Failed to enforce session read-only mode: {e}"),
+            )
+        })?;
+
+        // Set server-side MAX_EXECUTION_TIME as a cleanup backstop so MySQL eventually
+        // cancels a query the client has abandoned. It is set LONGER than the client-side
+        // deadline (see SERVER_TIMEOUT_BACKSTOP_GRACE): the client-side timeout is the
+        // authoritative one, because MAX_EXECUTION_TIME does not reliably error for
+        // statements that swallow the interrupt (e.g. SELECT SLEEP()). Only applies to
+        // SELECT statements in MySQL.
+        if let Some(timeout_ms) = caps.timeout_ms {
+            let server_limit = Duration::from_millis(timeout_ms) + SERVER_TIMEOUT_BACKSTOP_GRACE;
+            conn.exec_drop(
+                format!("SET SESSION MAX_EXECUTION_TIME = {}", server_limit.as_millis()),
+                (),
+            )
+            .await
+            .map_err(|e| {
+                PlenumError::engine_error("mysql", format!("Failed to set MAX_EXECUTION_TIME: {e}"))
+            })?;
+        }
+
+        // The client-side tokio timeout is the authoritative deadline: it fires at exactly
+        // timeout_ms and surfaces QUERY_TIMEOUT. This guarantees a bounded query that runs
+        // to the limit is reported as a timeout error rather than as a success with partial
+        // or interrupted data (REF-258 Bug 4) — even for statements like SELECT SLEEP() that
+        // the server-side MAX_EXECUTION_TIME would let return "successfully".
         let start = Instant::now();
         let mut query_result = if let Some(timeout_ms) = caps.timeout_ms {
-            let timeout_duration = Duration::from_millis(timeout_ms);
-            tokio::time::timeout(timeout_duration, execute_query(&mut conn, query, caps))
+            let deadline = Duration::from_millis(timeout_ms);
+            tokio::time::timeout(deadline, execute_query(&mut conn, query, params, caps))
                 .await
                 .map_err(|_| {
-                PlenumError::query_failed(format!("Query exceeded timeout of {timeout_ms}ms"))
+                PlenumError::query_timeout(format!(
+                    "Query exceeded the client-side timeout of {timeout_ms}ms"
+                ))
             })??
         } else {
-            execute_query(&mut conn, query, caps).await?
+            execute_query(&mut conn, query, params, caps).await?
         };
 
         let elapsed = start.elapsed();
@@ -262,14 +312,70 @@ fn build_mysql_opts(config: &ConnectionConfig) -> Result<OptsBuilder> {
         }
     };
 
-    let opts = OptsBuilder::default()
+    let mut opts = OptsBuilder::default()
         .ip_or_hostname(host)
         .tcp_port(port)
         .user(Some(user))
         .pass(Some(password))
         .db_name(db_name);
 
+    // Apply TLS options when sslmode is not Disable.
+    if let Some(tls_config) = &config.tls {
+        if tls_config.sslmode != SslMode::Disable {
+            let ssl_opts = build_mysql_ssl_opts(tls_config)?;
+            opts = opts.ssl_opts(ssl_opts);
+        }
+    }
+
     Ok(opts)
+}
+
+/// Build `mysql_async::SslOpts` from a `TlsConfig`.
+///
+/// Error messages deliberately omit cert/key paths to prevent credential leakage.
+fn build_mysql_ssl_opts(tls: &TlsConfig) -> Result<SslOpts> {
+    let mut ssl_opts = SslOpts::default();
+
+    match &tls.sslmode {
+        SslMode::Require => {
+            // Require TLS; skip both cert validation and hostname check.
+            ssl_opts = ssl_opts
+                .with_danger_accept_invalid_certs(true)
+                .with_danger_skip_domain_validation(true);
+        }
+        SslMode::VerifyCa => {
+            // Verify cert against CA; skip hostname check.
+            let ca_path = tls.ca_cert.as_ref().ok_or_else(|| {
+                PlenumError::connection_failed(
+                    "sslmode=verify-ca requires a CA certificate (--ssl-ca)",
+                )
+            })?;
+            ssl_opts = ssl_opts
+                .with_root_certs(vec![ca_path.clone().into()])
+                .with_danger_skip_domain_validation(true);
+        }
+        SslMode::VerifyFull => {
+            // Full verification: CA cert + hostname.
+            let ca_path = tls.ca_cert.as_ref().ok_or_else(|| {
+                PlenumError::connection_failed(
+                    "sslmode=verify-full requires a CA certificate (--ssl-ca)",
+                )
+            })?;
+            ssl_opts = ssl_opts.with_root_certs(vec![ca_path.clone().into()]);
+        }
+        SslMode::Disable => {
+            unreachable!("Disable mode is filtered before calling this function")
+        }
+    }
+
+    // mTLS: load client cert + key if provided.
+    if let (Some(cert_path), Some(key_path)) = (&tls.client_cert, &tls.client_key) {
+        let identity =
+            mysql_async::ClientIdentity::new(cert_path.clone().into(), key_path.clone().into());
+        ssl_opts = ssl_opts.with_client_identity(Some(identity));
+    }
+
+    Ok(ssl_opts)
 }
 
 /// Parse `MySQL` version string to detect `MySQL` vs `MariaDB`
@@ -311,8 +417,9 @@ async fn determine_target_schema(conn: &mut Conn, schema_filter: Option<&str>) -
         })?
         .ok_or_else(|| PlenumError::engine_error("mysql", "No database selected".to_string()))?;
 
-    // Check if database is NULL (wildcard mode)
-    let db_name: Option<String> = db_row.get(0);
+    // Check if database is NULL (wildcard mode). `DATABASE()` returns SQL NULL when no
+    // database is selected; read as `Option<String>` so NULL does not panic the converter.
+    let db_name: Option<String> = db_row.get::<Option<String>, _>(0).flatten();
     db_name.ok_or_else(|| {
         PlenumError::engine_error(
             "mysql",
@@ -323,15 +430,11 @@ async fn determine_target_schema(conn: &mut Conn, schema_filter: Option<&str>) -
 
 /// List all databases
 async fn list_databases_mysql(conn: &mut Conn) -> Result<IntrospectResult> {
-    let rows: Vec<Row> = conn
-        .query("SHOW DATABASES")
-        .await
-        .map_err(|e| PlenumError::engine_error("mysql", format!("Failed to list databases: {e}")))?;
+    let rows: Vec<Row> = conn.query("SHOW DATABASES").await.map_err(|e| {
+        PlenumError::engine_error("mysql", format!("Failed to list databases: {e}"))
+    })?;
 
-    let databases: Vec<String> = rows
-        .into_iter()
-        .filter_map(|row| row.get(0))
-        .collect();
+    let databases: Vec<String> = rows.into_iter().filter_map(|row| row.get(0)).collect();
 
     Ok(IntrospectResult::DatabaseList { databases })
 }
@@ -349,10 +452,7 @@ async fn list_tables_mysql(conn: &mut Conn, schema: &str) -> Result<IntrospectRe
         .await
         .map_err(|e| PlenumError::engine_error("mysql", format!("Failed to list tables: {e}")))?;
 
-    let tables: Vec<String> = rows
-        .into_iter()
-        .filter_map(|row| row.get(0))
-        .collect();
+    let tables: Vec<String> = rows.into_iter().filter_map(|row| row.get(0)).collect();
 
     Ok(IntrospectResult::TableList { tables })
 }
@@ -369,10 +469,7 @@ async fn list_views_mysql(conn: &mut Conn, schema: &str) -> Result<IntrospectRes
         .await
         .map_err(|e| PlenumError::engine_error("mysql", format!("Failed to list views: {e}")))?;
 
-    let views: Vec<String> = rows
-        .into_iter()
-        .filter_map(|row| row.get(0))
-        .collect();
+    let views: Vec<String> = rows.into_iter().filter_map(|row| row.get(0)).collect();
 
     Ok(IntrospectResult::ViewList { views })
 }
@@ -431,12 +528,7 @@ async fn list_indexes_mysql(
 
         let columns: Vec<String> = columns_str.split(',').map(ToString::to_string).collect();
 
-        indexes.push(IndexSummary {
-            name,
-            table,
-            unique: non_unique == 0,
-            columns,
-        });
+        indexes.push(IndexSummary { name, table, unique: non_unique == 0, columns });
     }
 
     Ok(IntrospectResult::IndexList { indexes })
@@ -474,6 +566,8 @@ async fn get_table_details_mysql(
         Vec::new()
     };
 
+    let (comment, row_estimate) = introspect_table_meta(conn, schema, table_name).await?;
+
     let table = TableInfo {
         name: table_name.to_string(),
         schema: Some(schema.to_string()),
@@ -481,6 +575,8 @@ async fn get_table_details_mysql(
         primary_key,
         foreign_keys,
         indexes,
+        comment,
+        row_estimate,
     };
 
     Ok(IntrospectResult::TableDetails { table })
@@ -497,10 +593,8 @@ async fn get_view_details_mysql(
                      FROM information_schema.views
                      WHERE table_schema = ? AND table_name = ?";
 
-    let def_row: Option<Row> = conn
-        .exec_first(def_query, (schema, view_name))
-        .await
-        .map_err(|e| {
+    let def_row: Option<Row> =
+        conn.exec_first(def_query, (schema, view_name)).await.map_err(|e| {
             PlenumError::engine_error("mysql", format!("Failed to query view definition: {e}"))
         })?;
 
@@ -572,6 +666,8 @@ async fn introspect_table(conn: &mut Conn, schema: &str, table_name: &str) -> Re
         primary_key,
         foreign_keys,
         indexes,
+        comment: None,
+        row_estimate: None,
     })
 }
 
@@ -584,13 +680,13 @@ fn get_optional_string(row: &Row, idx: usize) -> Option<String> {
     }
 }
 
-/// Introspect table columns
+/// Introspect table columns (includes column comments from `information_schema`)
 async fn introspect_columns(
     conn: &mut Conn,
     schema: &str,
     table_name: &str,
 ) -> Result<Vec<ColumnInfo>> {
-    let query = "SELECT column_name, data_type, is_nullable, column_default
+    let query = "SELECT column_name, data_type, is_nullable, column_default, column_comment
                  FROM information_schema.columns
                  WHERE table_schema = ? AND table_name = ?
                  ORDER BY ordinal_position";
@@ -614,16 +710,46 @@ async fn introspect_columns(
             PlenumError::engine_error("mysql", "Failed to extract nullable status".to_string())
         })?;
         let default: Option<String> = get_optional_string(&row, 3);
+        // MySQL stores empty string when no comment is set; normalise to None
+        let comment: Option<String> = get_optional_string(&row, 4).filter(|s| !s.is_empty());
 
         columns.push(ColumnInfo {
             name: column_name,
             data_type,
             nullable: is_nullable == "YES",
             default,
+            comment,
         });
     }
 
     Ok(columns)
+}
+
+/// Fetch table-level comment and row estimate from `information_schema.tables`
+async fn introspect_table_meta(
+    conn: &mut Conn,
+    schema: &str,
+    table_name: &str,
+) -> Result<(Option<String>, Option<i64>)> {
+    let query = "SELECT table_comment, table_rows
+                 FROM information_schema.tables
+                 WHERE table_schema = ? AND table_name = ?";
+
+    let row: Option<Row> = conn.exec_first(query, (schema, table_name)).await.map_err(|e| {
+        PlenumError::engine_error(
+            "mysql",
+            format!("Failed to query table metadata for {schema}.{table_name}: {e}"),
+        )
+    })?;
+
+    match row {
+        None => Ok((None, None)),
+        Some(r) => {
+            let comment = get_optional_string(&r, 0).filter(|s| !s.is_empty());
+            let row_estimate: Option<i64> = r.get(1);
+            Ok((comment, row_estimate))
+        }
+    }
 }
 
 /// Introspect primary key
@@ -783,66 +909,141 @@ async fn get_index_columns(
     Ok(columns)
 }
 
-/// Execute query and return `QueryResult`
-async fn execute_query(conn: &mut Conn, query: &str, caps: &Capabilities) -> Result<QueryResult> {
-    // Execute query and determine if it returns rows
-    // MySQL async doesn't have a prepare-then-check pattern like tokio-postgres
-    // We'll use a heuristic: if query starts with SELECT (after preprocessing), expect rows
+/// Convert a JSON value to a `mysql_async` native `Value` for parameter binding.
+/// Uses `?` `MySQL` placeholders.
+fn json_to_mysql_value(val: &serde_json::Value) -> Value {
+    match val {
+        serde_json::Value::Null => Value::NULL,
+        serde_json::Value::Bool(b) => Value::Int(i64::from(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else {
+                Value::Double(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => Value::Bytes(s.as_bytes().to_vec()),
+        v => Value::Bytes(v.to_string().into_bytes()),
+    }
+}
 
-    let query_upper = query.trim().to_uppercase();
-    let is_select = query_upper.starts_with("SELECT")
+/// Returns true when a `mysql_async` error is a server-side `MAX_EXECUTION_TIME` timeout (error 3024).
+fn is_mysql_statement_timeout(e: &mysql_async::Error) -> bool {
+    match e {
+        mysql_async::Error::Server(ref server_err) => server_err.code == 3024,
+        _ => false,
+    }
+}
+
+/// Map a `mysql_async` execution error to a `PlenumError`, surfacing server-side
+/// `MAX_EXECUTION_TIME` cancellation as `QUERY_TIMEOUT` and everything else as a
+/// generic query failure.
+fn map_mysql_exec_error(e: &mysql_async::Error) -> PlenumError {
+    if is_mysql_statement_timeout(e) {
+        PlenumError::query_timeout(format!(
+            "Query cancelled by MySQL server-side MAX_EXECUTION_TIME: {e}"
+        ))
+    } else {
+        PlenumError::query_failed(format!("Failed to execute query: {e}"))
+    }
+}
+
+/// Execute query and return `QueryResult`
+async fn execute_query(
+    conn: &mut Conn,
+    query: &str,
+    params: &[serde_json::Value],
+    caps: &Capabilities,
+) -> Result<QueryResult> {
+    // Classify the statement. MySQL async doesn't have a prepare-then-check
+    // pattern like tokio-postgres, so use a keyword heuristic. `EXPLAIN` (in all
+    // its FORMAT/ANALYZE/EXTENDED forms) returns a result set and must be treated
+    // as row-returning, otherwise its plan rows are silently dropped (REF-258 Bug 2).
+    let query_upper = query.trim_start().to_uppercase();
+    let returns_rows = query_upper.starts_with("SELECT")
         || query_upper.starts_with("SHOW")
         || query_upper.starts_with("DESCRIBE")
         || query_upper.starts_with("DESC")
+        || query_upper.starts_with("EXPLAIN")
         || (query_upper.starts_with("WITH") && query_upper.contains("SELECT"));
 
-    if is_select {
-        // Query returns rows
-        let rows: Vec<Row> = conn
-            .query(query)
-            .await
-            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {e}")))?;
+    // Protocol selection: the binary prepared-statement protocol (exec/exec_iter)
+    // rejects several permitted statement classes — notably transaction-control
+    // statements (BEGIN, START TRANSACTION) fail with error 1295 "not supported in
+    // the prepared statement protocol yet" (REF-258 Bug 1). Route through the text
+    // protocol (query/query_iter) whenever there are no parameters to bind, and only
+    // fall back to the prepared protocol when bound params require it.
+    let use_text_protocol = params.is_empty();
+
+    // Convert JSON params → mysql_async positional params (only used when binding).
+    let mysql_params: Params = if params.is_empty() {
+        Params::Empty
+    } else {
+        Params::Positional(params.iter().map(json_to_mysql_value).collect())
+    };
+
+    if returns_rows {
+        // Query returns rows. Use the text protocol for unparameterized queries
+        // (so EXPLAIN/transaction-adjacent statements execute) and the prepared
+        // protocol only when bound params are present.
+        let rows: Vec<Row> = if use_text_protocol {
+            conn.query(query).await
+        } else {
+            conn.exec(query, mysql_params).await
+        }
+        .map_err(|e| map_mysql_exec_error(&e))?;
 
         // Get column names from first row (if any)
         let column_names: Vec<String> = if let Some(first_row) = rows.first() {
             first_row.columns_ref().iter().map(|col| col.name_str().to_string()).collect()
         } else {
-            // No rows, try to get column names from a LIMIT 0 query
-            // For empty result sets, we may not have column info
             Vec::new()
         };
 
-        // Convert rows to JSON
-        let mut rows_data = Vec::new();
-        for row in rows {
-            rows_data.push(row_to_json(&row)?);
+        // Apply offset and max_rows with truncation detection
+        let offset = caps.offset.unwrap_or(0);
+        let effective = if offset <= rows.len() { &rows[offset..] } else { &[][..] };
+        let max = caps.max_rows.unwrap_or(usize::MAX);
+        let rows_truncated = effective.len() > max;
+        let take = effective.len().min(max);
 
-            // Enforce max_rows limit
-            if let Some(max_rows) = caps.max_rows {
-                if rows_data.len() >= max_rows {
-                    break;
-                }
-            }
+        let mut rows_data = Vec::new();
+        for row in &effective[..take] {
+            rows_data.push(row_to_json(row)?);
         }
 
-        Ok(QueryResult { columns: column_names, rows: rows_data, rows_affected: None, execution_ms: 0 })
+        Ok(QueryResult {
+            columns: column_names,
+            rows: rows_data,
+            rows_affected: None,
+            execution_ms: 0,
+            rows_truncated,
+            truncated_by: None,
+        })
     } else {
-        // Query does not return rows (INSERT, UPDATE, DELETE, DDL)
-        let result = conn
-            .query_iter(query)
-            .await
-            .map_err(|e| PlenumError::query_failed(format!("Failed to execute query: {e}")))?;
-
-        let rows_affected = result.affected_rows();
-
-        // Drop the result to close it
-        drop(result);
+        // Non-row statement (e.g. transaction control: BEGIN/START TRANSACTION).
+        // These have no result set; capture affected rows. Prefer the text protocol
+        // for unparameterized statements so transaction control succeeds (Bug 1).
+        let rows_affected = if use_text_protocol {
+            let result = conn.query_iter(query).await.map_err(|e| map_mysql_exec_error(&e))?;
+            let affected = result.affected_rows();
+            drop(result);
+            affected
+        } else {
+            let result =
+                conn.exec_iter(query, mysql_params).await.map_err(|e| map_mysql_exec_error(&e))?;
+            let affected = result.affected_rows();
+            drop(result);
+            affected
+        };
 
         Ok(QueryResult {
             columns: Vec::new(),
             rows: Vec::new(),
             rows_affected: Some(rows_affected),
             execution_ms: 0,
+            rows_truncated: false,
+            truncated_by: None,
         })
     }
 }
@@ -960,6 +1161,7 @@ mod tests {
             password: Some("password".to_string()),
             database: None,
             file: None,
+            tls: None,
         };
 
         let result = build_mysql_opts(&config);
@@ -1022,7 +1224,7 @@ mod tests {
         );
 
         let caps = Capabilities::default();
-        let result = MySqlEngine::execute(&config, "SHOW DATABASES", &caps).await;
+        let result = MySqlEngine::execute(&config, "SHOW DATABASES", &[], &caps).await;
         assert!(result.is_ok(), "SHOW DATABASES failed: {:?}", result.err());
 
         let query_result = result.unwrap();
@@ -1042,13 +1244,8 @@ mod tests {
             "*".to_string(),
         );
 
-        let result = MySqlEngine::introspect(
-            &config,
-            &IntrospectOperation::ListTables,
-            None,
-            None,
-        )
-        .await;
+        let result =
+            MySqlEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await;
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert!(error.message().contains("wildcard database"));
@@ -1081,6 +1278,7 @@ mod tests {
             password: Some("password".to_string()),
             database: Some("test".to_string()),
             file: None,
+            tls: None,
         };
 
         let result = MySqlEngine::validate_connection(&config).await;
@@ -1088,6 +1286,382 @@ mod tests {
         assert!(result.unwrap_err().message().contains("MySQL requires 'host' parameter"));
     }
 
+    // -------------------------------------------------------------------------
+    // REF-270: TLS/SSL configuration tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_mysql_verify_ca_requires_ca_cert() {
+        let mut config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+        config.tls = Some(TlsConfig {
+            sslmode: SslMode::VerifyCa,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+        });
+        let result = build_mysql_opts(&config);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().message();
+        assert!(msg.contains("CA certificate"), "expected mention of CA cert: {msg}");
+        assert!(!msg.contains('/'), "must not contain file path: {msg}");
+    }
+
+    #[test]
+    fn test_mysql_verify_full_requires_ca_cert() {
+        let mut config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+        config.tls = Some(TlsConfig {
+            sslmode: SslMode::VerifyFull,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+        });
+        let result = build_mysql_opts(&config);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().message();
+        assert!(msg.contains("CA certificate"), "expected mention of CA cert: {msg}");
+        assert!(!msg.contains('/'), "must not contain file path: {msg}");
+    }
+
+    #[test]
+    fn test_mysql_require_mode_builds_without_ca() {
+        let mut config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+        config.tls = Some(TlsConfig {
+            sslmode: SslMode::Require,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+        });
+        // sslmode=require should not fail at opts-build time (no CA needed)
+        assert!(build_mysql_opts(&config).is_ok());
+    }
+
+    #[test]
+    fn test_mysql_disable_mode_no_ssl_opts() {
+        let mut config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+        config.tls = Some(TlsConfig {
+            sslmode: SslMode::Disable,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+        });
+        // sslmode=disable → plaintext; no SSL opts needed and should not error
+        assert!(build_mysql_opts(&config).is_ok());
+    }
+
+    /// Verify an encrypted (`sslmode=require`) connection succeeds against a `MySQL` server.
+    ///
+    /// The stock `mysql:8.0` image serves auto-generated self-signed certificates whose CA
+    /// is not in any system trust store and whose CN does not match `localhost`, so
+    /// `verify-ca`/`verify-full` cannot succeed against it without provisioning custom certs.
+    /// `require` establishes TLS while accepting the self-signed cert, which is the property
+    /// this integration test exercises: that TLS negotiation works end-to-end.
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance with TLS enabled"]
+    async fn test_mysql_tls_require_connects() {
+        let mut config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+        config.tls = Some(TlsConfig {
+            sslmode: SslMode::Require,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+        });
+        let result = MySqlEngine::validate_connection(&config).await;
+        assert!(result.is_ok(), "TLS require connection failed: {:?}", result.err());
+    }
+
     // Additional integration tests would follow the pattern from postgres/mod.rs
     // Testing introspection, query execution, capability enforcement, etc.
+
+    /// Prove that DML writes fail at the `MySQL` session layer independently of the parser.
+    ///
+    /// Applies `SET SESSION TRANSACTION READ ONLY` (same as `execute()` does), then
+    /// attempts a direct DML write without going through Plenum's `validate_query`.
+    /// The write must be rejected by `MySQL` itself (REF-261).
+    ///
+    /// Note: `MySQL` DDL statements (CREATE/DROP/ALTER) issue implicit commits and are
+    /// not subject to transaction read-only enforcement — they are handled exclusively
+    /// by the parser. This test covers the DML threat class only.
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_mysql_session_read_only_enforcement() {
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+
+        let opts = build_mysql_opts(&config).unwrap();
+        let mut conn = Conn::new(opts).await.unwrap();
+
+        // Set up a test table using a separate write (outside of read-only session)
+        conn.exec_drop("CREATE TABLE IF NOT EXISTS _plenum_ro_test_mysql (id INT)", ())
+            .await
+            .unwrap();
+
+        // Apply session-level read-only (same as execute() does)
+        conn.exec_drop("SET SESSION TRANSACTION READ ONLY", ()).await.unwrap();
+
+        // Verify the setting is active
+        let row: Option<Row> =
+            conn.query_first("SELECT @@session.transaction_read_only").await.unwrap();
+        let value: i64 = row.unwrap().get(0).unwrap();
+        assert_eq!(value, 1, "session transaction_read_only must be 1");
+
+        // Attempt a direct INSERT bypassing Plenum's parser — must fail at the DB layer.
+        let result = conn.exec_drop("INSERT INTO _plenum_ro_test_mysql VALUES (1)", ()).await;
+        assert!(result.is_err(), "INSERT must be rejected by MySQL session read-only mode");
+
+        // Clean up (requires a new connection since this one is read-only)
+        conn.disconnect().await.ok();
+
+        let opts2 = build_mysql_opts(&config).unwrap();
+        let mut conn2 = Conn::new(opts2).await.unwrap();
+        conn2.exec_drop("DROP TABLE IF EXISTS _plenum_ro_test_mysql", ()).await.ok();
+        conn2.disconnect().await.ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_timeout_fires_on_heavy_query() {
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+
+        // 50ms timeout against a heavy cartesian join over information_schema. The
+        // authoritative client-side timeout must cancel it and surface QUERY_TIMEOUT.
+        let caps = Capabilities { timeout_ms: Some(50), ..Capabilities::default() };
+        let result = MySqlEngine::execute(
+            &config,
+            "SELECT COUNT(*) FROM information_schema.columns a, \
+             information_schema.columns b, information_schema.columns c",
+            &[],
+            &caps,
+        )
+        .await;
+
+        assert!(result.is_err(), "Expected timeout error, got Ok");
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.error_code(),
+            "QUERY_TIMEOUT",
+            "Expected QUERY_TIMEOUT error code, got: {err:?}"
+        );
+        assert!(
+            err.message().to_lowercase().contains("timeout"),
+            "Expected message to mention timeout, got: {}",
+            err.message()
+        );
+    }
+
+    /// REF-258 Bug 4: `SELECT SLEEP(n)` swallows the server-side `MAX_EXECUTION_TIME`
+    /// interrupt (returns `1` instead of erroring), so relying on the server alone
+    /// reports partial/interrupted data as a success. The authoritative client-side
+    /// timeout must turn this into a distinct `QUERY_TIMEOUT` error instead.
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_timeout_sleep_reports_error_not_partial_success() {
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+
+        let caps = Capabilities { timeout_ms: Some(500), ..Capabilities::default() };
+        let result = MySqlEngine::execute(&config, "SELECT SLEEP(3)", &[], &caps).await;
+
+        assert!(result.is_err(), "SLEEP past the timeout must be an error, not a success");
+        assert_eq!(
+            result.unwrap_err().error_code(),
+            "QUERY_TIMEOUT",
+            "Expected QUERY_TIMEOUT for an interrupted SLEEP"
+        );
+    }
+
+    /// REF-258 Bug 1: transaction-control statements fail under the binary
+    /// prepared-statement protocol (error 1295). They must execute via the text
+    /// protocol instead.
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_transaction_control_executes() {
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+
+        let caps = Capabilities::default();
+        for stmt in ["BEGIN", "START TRANSACTION", "COMMIT", "ROLLBACK"] {
+            let result = MySqlEngine::execute(&config, stmt, &[], &caps).await;
+            assert!(result.is_ok(), "{stmt} should execute via text protocol: {:?}", result.err());
+        }
+    }
+
+    /// REF-258 Bug 2: `EXPLAIN` returns a result set whose rows were previously
+    /// dropped (classified as a non-row statement). The plan rows must be captured.
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_explain_captures_plan_rows() {
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+
+        // Seed a table via a separate writable connection (Plenum's engine is read-only).
+        let opts = build_mysql_opts(&config).expect("opts");
+        let mut setup = Conn::new(opts).await.expect("connect");
+        setup.exec_drop("DROP TABLE IF EXISTS ref258_explain", ()).await.expect("drop");
+        setup
+            .exec_drop("CREATE TABLE ref258_explain (id INT PRIMARY KEY)", ())
+            .await
+            .expect("create");
+        setup.disconnect().await.ok();
+
+        let caps = Capabilities::default();
+
+        // Plain EXPLAIN must return the plan rows (non-empty result set).
+        let result =
+            MySqlEngine::execute(&config, "EXPLAIN SELECT id FROM ref258_explain", &[], &caps)
+                .await
+                .expect("EXPLAIN should succeed");
+        assert!(!result.columns.is_empty(), "EXPLAIN must return columns");
+        assert!(!result.rows.is_empty(), "EXPLAIN must return plan rows");
+        assert!(result.rows_affected.is_none(), "EXPLAIN is a row-returning statement");
+
+        // EXPLAIN FORMAT=JSON must also return its single plan row.
+        let json_result = MySqlEngine::execute(
+            &config,
+            "EXPLAIN FORMAT=JSON SELECT id FROM ref258_explain",
+            &[],
+            &caps,
+        )
+        .await
+        .expect("EXPLAIN FORMAT=JSON should succeed");
+        assert!(!json_result.rows.is_empty(), "EXPLAIN FORMAT=JSON must return a plan row");
+
+        // Cleanup.
+        let opts2 = build_mysql_opts(&config).expect("opts2");
+        let mut conn2 = Conn::new(opts2).await.expect("connect2");
+        conn2.exec_drop("DROP TABLE IF EXISTS ref258_explain", ()).await.ok();
+        conn2.disconnect().await.ok();
+    }
+
+    // -------------------------------------------------------------------------
+    // REF-263: column comments + row estimates
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    #[ignore = "Requires running MySQL instance"]
+    async fn test_introspect_column_comment_and_row_estimate_mysql() {
+        let config = ConnectionConfig::mysql(
+            "localhost".to_string(),
+            3306,
+            "root".to_string(),
+            "password".to_string(),
+            "test".to_string(),
+        );
+
+        let opts = build_mysql_opts(&config).expect("opts");
+        let mut conn = Conn::new(opts).await.expect("connect");
+
+        conn.exec_drop("DROP TABLE IF EXISTS ref263_mysql", ()).await.expect("drop");
+        conn.exec_drop(
+            "CREATE TABLE ref263_mysql (
+                id INT PRIMARY KEY AUTO_INCREMENT COMMENT 'PK column',
+                label VARCHAR(100) COMMENT 'Human readable name'
+            ) COMMENT='REF-263 test table'",
+            (),
+        )
+        .await
+        .expect("create");
+
+        conn.exec_drop("INSERT INTO ref263_mysql (label) VALUES ('a'), ('b'), ('c')", ())
+            .await
+            .expect("insert");
+
+        conn.disconnect().await.ok();
+
+        let result = MySqlEngine::introspect(
+            &config,
+            &IntrospectOperation::TableDetails {
+                name: "ref263_mysql".to_string(),
+                fields: crate::engine::TableFields::all(),
+            },
+            None,
+            Some("test"),
+        )
+        .await
+        .expect("introspect");
+
+        let IntrospectResult::TableDetails { table } = result else {
+            panic!("Expected TableDetails")
+        };
+
+        // Table comment
+        assert_eq!(table.comment.as_deref(), Some("REF-263 test table"), "table comment mismatch");
+
+        // row_estimate: MySQL's table_rows is an estimate and may be null for empty tables,
+        // but for 3 rows it should be Some.
+        assert!(table.row_estimate.is_some(), "row_estimate should be populated");
+
+        // Column comments
+        let id_col = table.columns.iter().find(|c| c.name == "id").expect("id col");
+        assert_eq!(id_col.comment.as_deref(), Some("PK column"));
+
+        let label_col = table.columns.iter().find(|c| c.name == "label").expect("label col");
+        assert_eq!(label_col.comment.as_deref(), Some("Human readable name"));
+
+        // Verify JSON has explicit nulls for columns without comments, and non-null for those with
+        let json = serde_json::to_value(&table).expect("serialize");
+        assert!(json.get("comment").is_some(), "table comment key must be present in JSON");
+        assert!(json.get("row_estimate").is_some(), "row_estimate key must be present in JSON");
+
+        // Cleanup
+        let opts2 = build_mysql_opts(&config).expect("opts2");
+        let mut conn2 = Conn::new(opts2).await.expect("connect2");
+        conn2.exec_drop("DROP TABLE IF EXISTS ref263_mysql", ()).await.ok();
+        conn2.disconnect().await.ok();
+    }
 }

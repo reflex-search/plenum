@@ -48,6 +48,7 @@ fn test_success_envelope_structure() {
 
     // Verify metadata structure
     assert_eq!(json_value["meta"]["execution_ms"], 42, "execution_ms should be 42");
+    assert_eq!(json_value["meta"]["contract_version"], "1", "contract_version should be 1");
 
     // Verify no extra fields (should match schema exactly)
     let top_level_keys: Vec<&str> =
@@ -89,11 +90,15 @@ fn test_error_envelope_structure() {
     // Verify no extra fields
     let top_level_keys: Vec<&str> =
         json_value.as_object().unwrap().keys().map(std::string::String::as_str).collect();
-    assert_eq!(top_level_keys.len(), 4, "Should have exactly 4 top-level fields");
+    assert_eq!(top_level_keys.len(), 5, "Should have exactly 5 top-level fields");
     assert!(top_level_keys.contains(&"ok"));
     assert!(top_level_keys.contains(&"engine"));
     assert!(top_level_keys.contains(&"command"));
     assert!(top_level_keys.contains(&"error"));
+    assert!(top_level_keys.contains(&"meta"));
+
+    // Verify meta.contract_version
+    assert_eq!(json_value["meta"]["contract_version"], "1", "contract_version should be 1");
 
     let error_keys: Vec<&str> =
         json_value["error"].as_object().unwrap().keys().map(std::string::String::as_str).collect();
@@ -119,6 +124,8 @@ fn test_query_result_serializes_to_pure_json() {
         rows: vec![row],
         rows_affected: None,
         execution_ms: 0,
+        rows_truncated: false,
+        truncated_by: None,
     };
 
     let json_str = serde_json::to_string(&result).expect("Should serialize");
@@ -244,6 +251,63 @@ fn test_error_envelope_snapshot() {
     insta::assert_snapshot!(json_str);
 }
 
+// ----------------------------------------------------------------------------
+// Per-variant error envelope snapshots
+//
+// Locks down the JSON contract emitted for each `PlenumError` variant. If a
+// variant's `error_code()` or `Display` representation changes, the snapshot
+// breaks and forces an explicit `cargo insta review` decision rather than
+// silently shifting the agent-facing wire format.
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_error_envelope_snapshot_capability_violation() {
+    let err = plenum::PlenumError::capability_violation("DDL operations are not permitted");
+    let envelope = ErrorEnvelope::from_error("postgres", "query", &err);
+    let json_str = serde_json::to_string_pretty(&envelope).expect("Should serialize");
+    insta::assert_snapshot!(json_str);
+}
+
+#[test]
+fn test_error_envelope_snapshot_connection_failed() {
+    let err = plenum::PlenumError::connection_failed("could not connect to server");
+    let envelope = ErrorEnvelope::from_error("postgres", "connect", &err);
+    let json_str = serde_json::to_string_pretty(&envelope).expect("Should serialize");
+    insta::assert_snapshot!(json_str);
+}
+
+#[test]
+fn test_error_envelope_snapshot_query_failed() {
+    let err = plenum::PlenumError::query_failed("relation \"users\" does not exist");
+    let envelope = ErrorEnvelope::from_error("postgres", "query", &err);
+    let json_str = serde_json::to_string_pretty(&envelope).expect("Should serialize");
+    insta::assert_snapshot!(json_str);
+}
+
+#[test]
+fn test_error_envelope_snapshot_invalid_input() {
+    let err = plenum::PlenumError::invalid_input("Query cannot be empty");
+    let envelope = ErrorEnvelope::from_error("", "query", &err);
+    let json_str = serde_json::to_string_pretty(&envelope).expect("Should serialize");
+    insta::assert_snapshot!(json_str);
+}
+
+#[test]
+fn test_error_envelope_snapshot_engine_error() {
+    let err = plenum::PlenumError::engine_error("mysql", "lost connection to server");
+    let envelope = ErrorEnvelope::from_error("mysql", "query", &err);
+    let json_str = serde_json::to_string_pretty(&envelope).expect("Should serialize");
+    insta::assert_snapshot!(json_str);
+}
+
+#[test]
+fn test_error_envelope_snapshot_config_error() {
+    let err = plenum::PlenumError::config_error("connection 'prod' not found");
+    let envelope = ErrorEnvelope::from_error("", "connect", &err);
+    let json_str = serde_json::to_string_pretty(&envelope).expect("Should serialize");
+    insta::assert_snapshot!(json_str);
+}
+
 // Note: Removed query_result_snapshot test due to non-deterministic HashMap ordering
 // QueryResult structure is validated by:
 // - test_json_serialization_of_query_result
@@ -291,7 +355,8 @@ async fn test_real_query_output_is_valid_json() {
     let config = ConnectionConfig::sqlite(temp_file.clone());
     let caps = Capabilities::default();
 
-    let result = SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &caps).await;
+    let result =
+        SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &[], &caps).await;
     assert!(result.is_ok());
 
     // Wrap in success envelope (like the CLI does)
@@ -317,7 +382,8 @@ async fn test_real_introspect_output_is_valid_json() {
     let temp_file = create_test_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let result = SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await;
+    let result =
+        SqliteEngine::introspect(&config, &IntrospectOperation::ListTables, None, None).await;
     assert!(result.is_ok());
 
     // Wrap in success envelope
@@ -333,6 +399,229 @@ async fn test_real_introspect_output_is_valid_json() {
     assert_eq!(json_value["engine"], "sqlite");
     assert_eq!(json_value["command"], "introspect");
     assert!(json_value["data"]["tables"].is_array());
+
+    let _ = std::fs::remove_file(&temp_file);
+}
+
+// ============================================================================
+// Truncation Signalling + Pagination Tests (REF-262)
+// ============================================================================
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn test_truncated_result_signals_rows_truncated_true() {
+    // DB has 2 products; max_rows=1 means result is truncated
+    let temp_file = create_test_db();
+    let config = ConnectionConfig::sqlite(temp_file.clone());
+    let caps = Capabilities { max_rows: Some(1), max_bytes: None, timeout_ms: None, offset: None };
+
+    let result =
+        SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &[], &caps).await;
+    assert!(result.is_ok(), "Query should succeed");
+
+    let query_result = result.unwrap();
+    assert!(query_result.rows_truncated, "rows_truncated must be true when max_rows caps result");
+    assert_eq!(query_result.rows.len(), 1, "Should return exactly max_rows rows");
+
+    let meta =
+        Metadata::with_query(0, query_result.rows.len(), query_result.rows_truncated, 0, None);
+    let json = serde_json::to_string(&meta).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["rows_truncated"], true);
+    assert_eq!(v["has_more"], true);
+    assert_eq!(v["next_offset"], 1);
+
+    let _ = std::fs::remove_file(&temp_file);
+}
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn test_uncapped_result_signals_rows_truncated_false() {
+    let temp_file = create_test_db();
+    let config = ConnectionConfig::sqlite(temp_file.clone());
+    let caps = Capabilities::default();
+
+    let result =
+        SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &[], &caps).await;
+    assert!(result.is_ok(), "Query should succeed");
+
+    let query_result = result.unwrap();
+    assert!(!query_result.rows_truncated, "rows_truncated must be false when result is not capped");
+
+    let meta =
+        Metadata::with_query(0, query_result.rows.len(), query_result.rows_truncated, 0, None);
+    let json = serde_json::to_string(&meta).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["rows_truncated"], false);
+    assert_eq!(v["has_more"], false);
+    assert!(v.get("next_offset").is_none() || v["next_offset"].is_null());
+
+    let _ = std::fs::remove_file(&temp_file);
+}
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn test_pagination_with_offset_returns_disjoint_pages() {
+    // DB has 2 products; page size 1 → page 1 has row 1, page 2 has row 2
+    let temp_file = create_test_db();
+    let config = ConnectionConfig::sqlite(temp_file.clone());
+
+    let caps_p1 =
+        Capabilities { max_rows: Some(1), max_bytes: None, timeout_ms: None, offset: None };
+    let r1 = SqliteEngine::execute(&config, "SELECT id FROM products ORDER BY id", &[], &caps_p1)
+        .await
+        .unwrap();
+    assert!(r1.rows_truncated, "page 1 should be truncated (2 rows total, only 1 returned)");
+    assert_eq!(r1.rows.len(), 1);
+
+    let caps_p2 =
+        Capabilities { max_rows: Some(1), max_bytes: None, timeout_ms: None, offset: Some(1) };
+    let r2 = SqliteEngine::execute(&config, "SELECT id FROM products ORDER BY id", &[], &caps_p2)
+        .await
+        .unwrap();
+    assert!(!r2.rows_truncated, "page 2 should not be truncated (last page)");
+    assert_eq!(r2.rows.len(), 1);
+    assert_ne!(r1.rows[0][0], r2.rows[0][0], "pages must return different rows");
+
+    let _ = std::fs::remove_file(&temp_file);
+}
+
+#[test]
+fn test_metadata_with_query_truncated_next_offset() {
+    let meta = Metadata::with_query(42, 5, true, 10, None);
+    let json = serde_json::to_string(&meta).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["rows_truncated"], true);
+    assert_eq!(v["has_more"], true);
+    assert_eq!(v["next_offset"], 15);
+    assert_eq!(v["rows_returned"], 5);
+    assert_eq!(v["execution_ms"], 42);
+}
+
+#[test]
+fn test_metadata_with_query_not_truncated_omits_next_offset() {
+    let meta = Metadata::with_query(10, 3, false, 0, None);
+    let json = serde_json::to_string(&meta).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["rows_truncated"], false);
+    assert_eq!(v["has_more"], false);
+    assert!(v.get("next_offset").is_none() || v["next_offset"].is_null());
+    assert_eq!(v["rows_returned"], 3);
+}
+
+#[test]
+fn test_non_query_metadata_omits_truncation_fields() {
+    let meta = Metadata::new(50);
+    let json = serde_json::to_string(&meta).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(v.get("rows_truncated").is_none() || v["rows_truncated"].is_null());
+    assert!(v.get("has_more").is_none() || v["has_more"].is_null());
+    assert!(v.get("next_offset").is_none() || v["next_offset"].is_null());
+    assert!(v.get("rows_returned").is_none() || v["rows_returned"].is_null());
+}
+
+// ============================================================================
+// Byte-Budget Guard Tests (REF-269)
+// ============================================================================
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn test_max_bytes_truncates_at_row_boundary() {
+    use plenum::{apply_byte_budget, engine::QueryResult};
+
+    // Build a result with 3 rows of known size
+    let row = vec![serde_json::json!("aaaaaaaaaa")]; // ~14 bytes per row when serialized
+    let mut result = QueryResult {
+        columns: vec!["v".to_string()],
+        rows: vec![row.clone(), row.clone(), row],
+        rows_affected: None,
+        execution_ms: 0,
+        rows_truncated: false,
+        truncated_by: None,
+    };
+
+    // Budget tight enough for 2 rows but not 3
+    apply_byte_budget(&mut result, 30);
+
+    assert_eq!(result.rows.len(), 2, "Should return 2 rows, not 3");
+    assert!(result.rows_truncated, "rows_truncated must be true");
+    assert_eq!(result.truncated_by.as_deref(), Some("bytes"), "truncated_by must be 'bytes'");
+}
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn test_max_bytes_unflagged_when_under_budget() {
+    use plenum::{apply_byte_budget, engine::QueryResult};
+
+    let mut result = QueryResult {
+        columns: vec!["v".to_string()],
+        rows: vec![vec![serde_json::json!(1)], vec![serde_json::json!(2)]],
+        rows_affected: None,
+        execution_ms: 0,
+        rows_truncated: false,
+        truncated_by: None,
+    };
+
+    apply_byte_budget(&mut result, 1_000_000);
+
+    assert_eq!(result.rows.len(), 2, "Should not truncate when under budget");
+    assert!(!result.rows_truncated, "rows_truncated must be false when not truncated");
+    assert!(result.truncated_by.is_none(), "truncated_by must be absent when not truncated");
+}
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn test_max_bytes_signals_in_metadata() {
+    use plenum::{apply_byte_budget, engine::QueryResult};
+
+    let row = vec![serde_json::json!("aaaaaaaaaa")];
+    let mut result = QueryResult {
+        columns: vec!["v".to_string()],
+        rows: vec![row.clone(), row.clone(), row],
+        rows_affected: None,
+        execution_ms: 0,
+        rows_truncated: false,
+        truncated_by: None,
+    };
+    apply_byte_budget(&mut result, 30);
+
+    let meta = Metadata::with_query(
+        0,
+        result.rows.len(),
+        result.rows_truncated,
+        0,
+        result.truncated_by.clone(),
+    );
+    let json = serde_json::to_string(&meta).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(v["rows_truncated"], true);
+    assert_eq!(v["has_more"], true);
+    assert_eq!(v["truncated_by"], "bytes");
+}
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn test_max_bytes_via_sqlite_engine() {
+    use plenum::engine::sqlite::SqliteEngine;
+
+    let temp_file = create_test_db();
+    let config = ConnectionConfig::sqlite(temp_file.clone());
+    let caps = Capabilities::default();
+
+    let mut result =
+        SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &[], &caps)
+            .await
+            .expect("Query should succeed");
+
+    // Measure first row's serialized size to set a tight budget
+    let first_row_size = serde_json::to_string(&result.rows[0]).unwrap().len();
+    // Budget: exactly enough for 1 row (first row fits, second does not)
+    plenum::apply_byte_budget(&mut result, first_row_size);
+
+    assert_eq!(result.rows.len(), 1, "Should return only 1 row");
+    assert!(result.rows_truncated, "rows_truncated must be true");
+    assert_eq!(result.truncated_by.as_deref(), Some("bytes"));
 
     let _ = std::fs::remove_file(&temp_file);
 }

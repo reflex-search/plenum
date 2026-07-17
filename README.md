@@ -153,6 +153,27 @@ All commands output structured JSON to stdout:
 }
 ```
 
+### JSON Schemas
+
+Machine-consumable JSON Schema (Draft 7) files for every output envelope are checked into [`schemas/`](schemas/):
+
+| File | Validates |
+|------|-----------|
+| [`schemas/error_envelope.json`](schemas/error_envelope.json) | All error responses |
+| [`schemas/connect_success.json`](schemas/connect_success.json) | `plenum connect` success response |
+| [`schemas/introspect_success.json`](schemas/introspect_success.json) | `plenum introspect` success response |
+| [`schemas/query_success.json`](schemas/query_success.json) | `plenum query` success response |
+
+All schemas include `meta.contract_version` — agents should check this field to guard against silent breaking changes.
+
+Schemas are generated directly from the Rust types via `schemars`. To regenerate after a type change:
+
+```bash
+cargo run --bin generate-schemas
+```
+
+A drift test (`tests/schema_drift.rs`) fails CI if checked-in schemas diverge from the live types.
+
 ### Error Codes
 
 Plenum returns stable, machine-parseable error codes. Agents should check the `error.code` field for programmatic error handling:
@@ -298,11 +319,21 @@ plenum/
 ├── src/
 │   ├── lib.rs           # Library API for CLI and MCP
 │   ├── main.rs          # CLI entry point
-│   ├── engine/          # Database engine implementations (Phase 3-5)
-│   ├── capability/      # Capability validation (Phase 1.4)
-│   ├── config/          # Configuration management (Phase 1.5)
-│   ├── output/          # JSON output envelopes (Phase 1.2)
-│   └── error/           # Error handling (Phase 1.3)
+│   ├── bin/
+│   │   └── generate_schemas.rs  # Schema generation binary
+│   ├── engine/          # Database engine implementations
+│   ├── capability/      # Capability validation
+│   ├── config/          # Configuration management
+│   ├── output/          # JSON output envelopes
+│   └── error/           # Error handling
+├── schemas/             # JSON Schema files (generated, checked in)
+│   ├── error_envelope.json
+│   ├── connect_success.json
+│   ├── introspect_success.json
+│   └── query_success.json
+├── tests/
+│   ├── schema_drift.rs  # Fails if schemas diverge from types
+│   └── ...
 ├── CLAUDE.md            # Core principles and architecture
 ├── PROJECT_PLAN.md      # Implementation roadmap
 ├── RESEARCH.md          # Design decisions and rationale

@@ -1,34 +1,34 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "ErrorEnvelope",
-  "description": "Error envelope for operation failures",
+  "title": "SuccessEnvelope_for_ConnectionInfo",
+  "description": "Success envelope for operation results\n\nGeneric over the data type to support different operation return values.",
   "type": "object",
   "required": [
     "command",
+    "data",
     "engine",
-    "error",
     "meta",
     "ok"
   ],
   "properties": {
     "command": {
-      "description": "Command that was attempted (connect, introspect, query)",
+      "description": "Command that was executed (connect, introspect, query)",
       "type": "string"
     },
-    "engine": {
-      "description": "Database engine (if applicable, empty string if not engine-specific)",
-      "type": "string"
-    },
-    "error": {
-      "description": "Error information",
+    "data": {
+      "description": "Operation-specific data",
       "allOf": [
         {
-          "$ref": "#/definitions/ErrorInfo"
+          "$ref": "#/definitions/ConnectionInfo"
         }
       ]
     },
+    "engine": {
+      "description": "Database engine used for this operation (postgres, mysql, sqlite)",
+      "type": "string"
+    },
     "meta": {
-      "description": "Envelope metadata (includes `contract_version` for agent compatibility checks)",
+      "description": "Execution metadata",
       "allOf": [
         {
           "$ref": "#/definitions/Metadata"
@@ -36,25 +36,35 @@
       ]
     },
     "ok": {
-      "description": "Always false for error envelopes",
+      "description": "Always true for success envelopes",
       "type": "boolean"
     }
   },
   "definitions": {
-    "ErrorInfo": {
-      "description": "Error information structure",
+    "ConnectionInfo": {
+      "description": "Connection information returned after successful connection validation",
       "type": "object",
       "required": [
-        "code",
-        "message"
+        "connected_database",
+        "database_version",
+        "server_info",
+        "user"
       ],
       "properties": {
-        "code": {
-          "description": "Stable error code (e.g., \"`CAPABILITY_VIOLATION`\", \"`CONNECTION_FAILED`\")",
+        "connected_database": {
+          "description": "Name of the connected database",
           "type": "string"
         },
-        "message": {
-          "description": "Human-readable error message (agent-appropriate, no sensitive data)",
+        "database_version": {
+          "description": "Database server version string",
+          "type": "string"
+        },
+        "server_info": {
+          "description": "Server information (implementation-specific)",
+          "type": "string"
+        },
+        "user": {
+          "description": "Connected user name",
           "type": "string"
         }
       }

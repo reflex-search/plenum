@@ -1,0 +1,79 @@
+# Live-DB test harness for Plenum (REF-274 / REF-275).
+#
+# Brings up the databases the live integration suites run against:
+#   mysql80    -> host port ${PLENUM_TEST_MYSQL80_PORT:-43306}
+#   mysql84    -> host port ${PLENUM_TEST_MYSQL84_PORT:-43307}
+#   postgres16 -> host port ${PLENUM_TEST_POSTGRES16_PORT:-45432}
+#
+# Each service seeds itself from vendor-specific SQL in tests/live/seed/
+# via /docker-entrypoint-initdb.d/, so a fresh `up` yields a fully seeded,
+# deterministic database with no separate seed step.
+#
+# Usage (normally driven by scripts/test-live.sh):
+#   docker compose -f tests/live/compose.yaml up --wait
+#   docker compose -f tests/live/compose.yaml down --volumes
+#
+# High default host ports avoid collisions with dev databases; override the
+# PLENUM_TEST_*_PORT env vars if they clash (CI does this when needed).
+
+services:
+  mysql80:
+    image: mysql:8.0
+    # mysql:8.0 does not publish linux/arm64 images. On ARM hosts (e.g. Apple
+    # Silicon), uncomment the next line to run the amd64 image under emulation:
+    # platform: linux/amd64
+    environment:
+      MYSQL_ROOT_PASSWORD: plenum_root
+      MYSQL_DATABASE: plenum_test
+      MYSQL_USER: plenum
+      MYSQL_PASSWORD: plenum_pw
+    ports:
+      - "${PLENUM_TEST_MYSQL80_PORT:-43306}:3306"
+    volumes:
+      - ./seed/mysql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # TCP (-h 127.0.0.1) is deliberate: the entrypoint's temporary init
+      # server runs with --skip-networking, so this only passes once the
+      # real, fully seeded server is accepting connections.
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uplenum", "-pplenum_pw", "--silent"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+
+  mysql84:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: plenum_root
+      MYSQL_DATABASE: plenum_test
+      MYSQL_USER: plenum
+      MYSQL_PASSWORD: plenum_pw
+    ports:
+      - "${PLENUM_TEST_MYSQL84_PORT:-43307}:3306"
+    volumes:
+      - ./seed/mysql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uplenum", "-pplenum_pw", "--silent"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+
+  postgres16:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: plenum
+      POSTGRES_PASSWORD: plenum_pw
+      POSTGRES_DB: plenum_test
+    ports:
+      - "${PLENUM_TEST_POSTGRES16_PORT:-45432}:5432"
+    volumes:
+      - ./seed/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # TCP (-h 127.0.0.1) is deliberate: initdb's temporary server listens
+      # only on the unix socket, so this cannot report ready mid-seed.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U plenum -d plenum_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+      start_period: 10s

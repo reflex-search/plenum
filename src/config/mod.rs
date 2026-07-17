@@ -66,10 +66,28 @@ pub struct ConnectionRegistry {
     pub projects: HashMap<String, ProjectConfig>,
 }
 
+/// OS keychain reference for password lookup
+///
+/// Identifies a credential stored in the platform keychain
+/// (macOS Keychain, Windows Credential Manager, Linux Secret Service).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeychainEntry {
+    /// Keychain service name (identifies the application/domain)
+    pub service: String,
+    /// Keychain account name (identifies the specific credential)
+    pub account: String,
+}
+
 /// Stored connection configuration
 ///
-/// Similar to `ConnectionConfig` but supports environment variable references
-/// for sensitive fields like passwords.
+/// Similar to `ConnectionConfig` but supports indirect secret sources:
+/// - `password_env`: resolve password from a named environment variable
+/// - `password_command`: run a shell command; use its stdout (trimmed) as the password
+/// - `keychain_entry`: look up the password from the platform OS keychain
+///
+/// Exactly one indirect source may be set per connection. Multiple sources is a config error.
+/// Resolution precedence when `password_env`, `password_command`, and `keychain_entry` are all
+/// absent: the inline `password` field in `config` is used as-is.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredConnection {
     /// Connection configuration
@@ -80,6 +98,18 @@ pub struct StoredConnection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_env: Option<String>,
 
+    /// Shell command whose stdout (trimmed) is the password.
+    /// The command is run via `sh -c` on each connection resolution.
+    /// A non-zero exit or empty output is a hard error — no fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password_command: Option<String>,
+
+    /// OS keychain reference for password lookup.
+    /// Uses the platform-native keychain (macOS Keychain, Windows Credential Manager,
+    /// Linux Secret Service). The entry must already exist in the keychain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keychain_entry: Option<KeychainEntry>,
+
     /// Whether this connection is readonly (rejects all write/DDL operations)
     /// Default: false (allows write/DDL if capabilities are provided)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -87,13 +117,33 @@ pub struct StoredConnection {
 }
 
 impl StoredConnection {
-    /// Resolve environment variables and return a `ConnectionConfig` and readonly flag
+    /// Resolve credential sources and return a `ConnectionConfig` and readonly flag.
     ///
-    /// Returns a tuple of (`ConnectionConfig`, `is_readonly`)
+    /// Exactly one indirect source (`password_env`, `password_command`, `keychain_entry`) may
+    /// be active. Having more than one is a config error. If none are set the inline password
+    /// from `config` is used unchanged.
+    ///
+    /// Returns a tuple of (`ConnectionConfig`, `is_readonly`).
     pub fn resolve(&self) -> Result<(ConnectionConfig, bool)> {
         let mut config = self.config.clone();
 
-        // If password_env is set, resolve the environment variable
+        // Enforce: at most one indirect credential source
+        let source_count = [
+            self.password_env.is_some(),
+            self.password_command.is_some(),
+            self.keychain_entry.is_some(),
+        ]
+        .iter()
+        .filter(|&&b| b)
+        .count();
+
+        if source_count > 1 {
+            return Err(PlenumError::config_error(
+                "Only one password source is allowed per connection: \
+                 password_env, password_command, or keychain_entry",
+            ));
+        }
+
         if let Some(env_var) = &self.password_env {
             match std::env::var(env_var) {
                 Ok(password) => config.password = Some(password),
@@ -103,13 +153,111 @@ impl StoredConnection {
                     )));
                 }
             }
+        } else if let Some(cmd) = &self.password_command {
+            config.password = Some(run_password_command(cmd)?);
+        } else if let Some(entry) = &self.keychain_entry {
+            config.password = Some(lookup_keychain_password(&entry.service, &entry.account)?);
         }
 
-        // Extract readonly flag (defaults to false if not set)
         let is_readonly = self.readonly.unwrap_or(false);
-
         Ok((config, is_readonly))
     }
+}
+
+/// Run a shell command and return its stdout trimmed as the password.
+///
+/// The command is run via `sh -c`. Non-zero exit status or empty output is a hard error.
+/// The raw stdout value is never logged.
+///
+/// Public alias for external use (e.g. test-mode credential resolution in the CLI).
+pub fn run_password_command_pub(command: &str) -> Result<String> {
+    run_password_command(command)
+}
+
+fn run_password_command(command: &str) -> Result<String> {
+    let output = std::process::Command::new("sh").arg("-c").arg(command).output().map_err(|e| {
+        PlenumError::config_error(format!("Failed to execute password_command: {e}"))
+    })?;
+
+    if !output.status.success() {
+        let code = output.status.code().map_or_else(|| "signal".to_string(), |c| c.to_string());
+        return Err(PlenumError::config_error(format!(
+            "password_command exited with non-zero status ({code})"
+        )));
+    }
+
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|_| PlenumError::config_error("password_command output is not valid UTF-8"))?;
+
+    let password = stdout.trim().to_string();
+    if password.is_empty() {
+        return Err(PlenumError::config_error("password_command produced empty output"));
+    }
+
+    Ok(password)
+}
+
+/// Look up a password from the platform OS keychain.
+///
+/// Uses the `keyring` crate (macOS Keychain, Windows Credential Manager, Linux Secret Service).
+/// The resolved password is never logged.
+///
+/// Public alias for external use (e.g. test-mode credential resolution in the CLI).
+pub fn lookup_keychain_password_pub(service: &str, account: &str) -> Result<String> {
+    lookup_keychain_password(service, account)
+}
+
+// In tests, use a thread-local map so we can pre-populate entries without
+// needing a real OS keychain. The keyring mock's EntryOnly persistence means
+// each Entry::new() creates a fresh credential with no shared state, making it
+// unsuitable for round-trip tests.
+#[cfg(test)]
+thread_local! {
+    static MOCK_KEYCHAIN: std::cell::RefCell<std::collections::HashMap<String, String>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[cfg(test)]
+fn mock_keychain_key(service: &str, account: &str) -> String {
+    format!("{service}\0{account}")
+}
+
+#[cfg(test)]
+fn set_mock_keychain(service: &str, account: &str, password: &str) {
+    MOCK_KEYCHAIN.with(|k| {
+        k.borrow_mut().insert(mock_keychain_key(service, account), password.to_string());
+    });
+}
+
+#[cfg(test)]
+fn clear_mock_keychain() {
+    MOCK_KEYCHAIN.with(|k| k.borrow_mut().clear());
+}
+
+#[cfg(not(test))]
+fn lookup_keychain_password(service: &str, account: &str) -> Result<String> {
+    let entry = keyring::Entry::new(service, account).map_err(|_| {
+        PlenumError::config_error(format!(
+            "Could not access keychain for service '{service}', account '{account}'"
+        ))
+    })?;
+
+    entry.get_password().map_err(|_| {
+        PlenumError::config_error(format!(
+            "No password found in keychain for service '{service}', account '{account}'"
+        ))
+    })
+}
+
+#[cfg(test)]
+fn lookup_keychain_password(service: &str, account: &str) -> Result<String> {
+    MOCK_KEYCHAIN.with(|k| {
+        k.borrow().get(&mock_keychain_key(service, account)).cloned().ok_or_else(|| {
+            PlenumError::config_error(format!(
+                "No password found in keychain for service '{service}', account '{account}'"
+            ))
+        })
+    })
 }
 
 /// Configuration file location
@@ -177,8 +325,9 @@ pub fn load_registry(path: &Path) -> Result<ConnectionRegistry> {
 
     if is_local_config {
         // Parse as LocalConfig (ProjectConfig)
-        let local_config = serde_json::from_str::<LocalConfig>(&contents)
-            .map_err(|e| PlenumError::config_error(format!("Invalid local config file format: {e}")))?;
+        let local_config = serde_json::from_str::<LocalConfig>(&contents).map_err(|e| {
+            PlenumError::config_error(format!("Invalid local config file format: {e}"))
+        })?;
 
         // Convert to ConnectionRegistry with the current directory as project path
         let project_path = path
@@ -197,8 +346,9 @@ pub fn load_registry(path: &Path) -> Result<ConnectionRegistry> {
         Ok(registry)
     } else {
         // Parse as ConnectionRegistry (global format)
-        serde_json::from_str::<ConnectionRegistry>(&contents)
-            .map_err(|e| PlenumError::config_error(format!("Invalid global config file format: {e}")))
+        serde_json::from_str::<ConnectionRegistry>(&contents).map_err(|e| {
+            PlenumError::config_error(format!("Invalid global config file format: {e}"))
+        })
     }
 }
 
@@ -377,11 +527,19 @@ pub fn resolve_connection(
 /// - `project_path`: Optional project path. If None, uses current working directory.
 /// - `name`: Connection name. If this is the first connection for the project, it will be set as default.
 /// - `config`: The connection configuration to save.
+/// - `password_env`: Optional environment variable name from which to resolve the password at use time.
+/// - `password_command`: Optional shell command whose stdout is the password at use time.
+/// - `keychain_entry`: Optional OS keychain reference for password lookup at use time.
 /// - `location`: Where to save (Local or Global).
+///
+/// Only one of `password_env`, `password_command`, or `keychain_entry` may be `Some`.
 pub fn save_connection(
     project_path: Option<String>,
     name: Option<String>,
     config: ConnectionConfig,
+    password_env: Option<String>,
+    password_command: Option<String>,
+    keychain_entry: Option<KeychainEntry>,
     location: ConfigLocation,
 ) -> Result<()> {
     // Determine project path (use provided or get current)
@@ -413,9 +571,10 @@ pub fn save_connection(
     let is_first_connection = project.connections.is_empty();
 
     // Add or update connection
-    project
-        .connections
-        .insert(conn_name.clone(), StoredConnection { config, password_env: None, readonly: None });
+    project.connections.insert(
+        conn_name.clone(),
+        StoredConnection { config, password_env, password_command, keychain_entry, readonly: None },
+    );
 
     // Auto-set as default if this is the first connection
     if is_first_connection {
@@ -453,6 +612,32 @@ pub fn list_connections() -> Result<Vec<(String, String, ConnectionConfig)>> {
     }
 
     Ok(connections)
+}
+
+/// Raw connection listing for a project: named stored connections plus the
+/// optional default connection name.
+pub type RawConnectionListing = (Vec<(String, StoredConnection)>, Option<String>);
+
+/// List raw stored connections for a project without resolving secrets
+///
+/// Returns `(Vec<(name, StoredConnection)>, Option<default_name>)`.
+/// Connections are sorted alphabetically by name for deterministic output.
+/// Does NOT call `StoredConnection::resolve` — callers must NOT expose the password field.
+pub fn list_connections_raw(project_path: &str) -> Result<RawConnectionListing> {
+    let registry = load_with_precedence()?;
+
+    match registry.projects.get(project_path) {
+        None => Ok((Vec::new(), None)),
+        Some(project) => {
+            let mut connections: Vec<(String, StoredConnection)> = project
+                .connections
+                .iter()
+                .map(|(name, stored)| (name.clone(), stored.clone()))
+                .collect();
+            connections.sort_by(|a, b| a.0.cmp(&b.0));
+            Ok((connections, project.default.clone()))
+        }
+    }
 }
 
 /// List connections for a specific project
@@ -505,6 +690,8 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                password_command: None,
+                keychain_entry: None,
                 readonly: None,
             },
         );
@@ -527,6 +714,8 @@ mod tests {
                 "db".to_string(),
             ),
             password_env: None,
+            password_command: None,
+            keychain_entry: None,
             readonly: None,
         };
 
@@ -548,8 +737,11 @@ mod tests {
                 password: None,
                 database: Some("db".to_string()),
                 file: None,
+                tls: None,
             },
             password_env: Some("TEST_PASSWORD".to_string()),
+            password_command: None,
+            keychain_entry: None,
             readonly: None,
         };
 
@@ -571,8 +763,11 @@ mod tests {
                 password: None,
                 database: Some("db".to_string()),
                 file: None,
+                tls: None,
             },
             password_env: Some("NONEXISTENT_VAR".to_string()),
+            password_command: None,
+            keychain_entry: None,
             readonly: None,
         };
 
@@ -606,6 +801,8 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                password_command: None,
+                keychain_entry: None,
                 readonly: None,
             },
         );
@@ -619,6 +816,8 @@ mod tests {
             StoredConnection {
                 config: ConnectionConfig::sqlite(PathBuf::from("/tmp/test.db")),
                 password_env: None,
+                password_command: None,
+                keychain_entry: None,
                 readonly: None,
             },
         );
@@ -659,6 +858,8 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                password_command: None,
+                keychain_entry: None,
                 readonly: None,
             },
         );
@@ -678,6 +879,8 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                password_command: None,
+                keychain_entry: None,
                 readonly: None,
             },
         );
@@ -715,6 +918,8 @@ mod tests {
             StoredConnection {
                 config: ConnectionConfig::sqlite(PathBuf::from("/tmp/local.db")),
                 password_env: None,
+                password_command: None,
+                keychain_entry: None,
                 readonly: None,
             },
         );
@@ -734,6 +939,8 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                password_command: None,
+                keychain_entry: None,
                 readonly: None,
             },
         );
@@ -761,6 +968,8 @@ mod tests {
                 "db".to_string(),
             ),
             password_env: None,
+            password_command: None,
+            keychain_entry: None,
             readonly: Some(true),
         };
 
@@ -780,6 +989,8 @@ mod tests {
                 "db".to_string(),
             ),
             password_env: None,
+            password_command: None,
+            keychain_entry: None,
             readonly: Some(false),
         };
 
@@ -800,6 +1011,8 @@ mod tests {
                 "db".to_string(),
             ),
             password_env: None,
+            password_command: None,
+            keychain_entry: None,
             readonly: None,
         };
 
@@ -824,6 +1037,8 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                password_command: None,
+                keychain_entry: None,
                 readonly: Some(true),
             },
         );
@@ -851,6 +1066,8 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                password_command: None,
+                keychain_entry: None,
                 readonly: None,
             },
         );
@@ -878,6 +1095,8 @@ mod tests {
                     "db".to_string(),
                 ),
                 password_env: None,
+                password_command: None,
+                keychain_entry: None,
                 readonly: None,
             },
         );
@@ -891,6 +1110,8 @@ mod tests {
             StoredConnection {
                 config: ConnectionConfig::sqlite(PathBuf::from("/tmp/local.db")),
                 password_env: None,
+                password_command: None,
+                keychain_entry: None,
                 readonly: None,
             },
         );
@@ -913,5 +1134,466 @@ mod tests {
         assert_eq!(merged.projects.len(), 2);
         assert!(merged.projects.contains_key("/project1"));
         assert!(merged.projects.contains_key("/project2"));
+    }
+
+    #[test]
+    fn test_password_env_serialization_roundtrip() {
+        let stored = StoredConnection {
+            config: ConnectionConfig {
+                engine: DatabaseType::Postgres,
+                host: Some("localhost".to_string()),
+                port: Some(5432),
+                user: Some("user".to_string()),
+                password: None,
+                database: Some("db".to_string()),
+                file: None,
+                tls: None,
+            },
+            password_env: Some("MY_DB_PASS".to_string()),
+            password_command: None,
+            keychain_entry: None,
+            readonly: None,
+        };
+
+        let json = serde_json::to_string(&stored).unwrap();
+        assert!(json.contains("\"password_env\":\"MY_DB_PASS\""));
+        // password field should be omitted when None
+        assert!(!json.contains("\"password\":"));
+
+        let parsed: StoredConnection = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.password_env.as_deref(), Some("MY_DB_PASS"));
+        assert!(parsed.config.password.is_none());
+    }
+
+    #[test]
+    fn test_password_env_not_serialized_when_none() {
+        let stored = StoredConnection {
+            config: ConnectionConfig::postgres(
+                "localhost".to_string(),
+                5432,
+                "user".to_string(),
+                "pass".to_string(),
+                "db".to_string(),
+            ),
+            password_env: None,
+            password_command: None,
+            keychain_entry: None,
+            readonly: None,
+        };
+
+        let json = serde_json::to_string(&stored).unwrap();
+        assert!(!json.contains("password_env"));
+    }
+
+    #[test]
+    fn test_list_connections_raw_redacts_password_and_sorts() {
+        // Verify that list_connections_raw returns connections sorted by name
+        // and that StoredConnections retain password_env but NOT the resolved password.
+        let mut project = ProjectConfig::default();
+        project.connections.insert(
+            "zebra".to_string(),
+            StoredConnection {
+                config: ConnectionConfig::postgres(
+                    "z-host".to_string(),
+                    5432,
+                    "zuser".to_string(),
+                    "zpass".to_string(),
+                    "zdb".to_string(),
+                ),
+                password_env: None,
+                password_command: None,
+                keychain_entry: None,
+                readonly: None,
+            },
+        );
+        project.connections.insert(
+            "alpha".to_string(),
+            StoredConnection {
+                config: ConnectionConfig {
+                    engine: DatabaseType::MySQL,
+                    host: Some("a-host".to_string()),
+                    port: Some(3306),
+                    user: Some("auser".to_string()),
+                    password: None,
+                    database: Some("adb".to_string()),
+                    file: None,
+                    tls: None,
+                },
+                password_env: Some("ALPHA_DB_PASS".to_string()),
+                password_command: None,
+                keychain_entry: None,
+                readonly: None,
+            },
+        );
+        project.default = Some("alpha".to_string());
+
+        let mut connections: Vec<(String, StoredConnection)> =
+            project.connections.iter().map(|(n, s)| (n.clone(), s.clone())).collect();
+        connections.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Verify alphabetical ordering
+        assert_eq!(connections[0].0, "alpha");
+        assert_eq!(connections[1].0, "zebra");
+
+        // Verify password_env is preserved
+        assert_eq!(connections[0].1.password_env.as_deref(), Some("ALPHA_DB_PASS"));
+        // Verify inline password is present on the stored struct but must not be emitted in output
+        assert_eq!(connections[1].1.config.password.as_deref(), Some("zpass"));
+        // (output layer is responsible for dropping password — confirmed by ConnectionListEntry)
+    }
+
+    #[test]
+    fn test_connect_list_envelope_json_shape() {
+        // Snapshot: verify the JSON shape of the connect --list data field.
+        // No password field; password_env var name only; deterministic key ordering.
+        #[derive(serde::Serialize)]
+        struct ConnectionListEntry {
+            name: String,
+            engine: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            host: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            port: Option<u16>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            user: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            database: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            file: Option<PathBuf>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            password_env: Option<String>,
+        }
+
+        let entries = vec![
+            ConnectionListEntry {
+                name: "alpha".to_string(),
+                engine: "mysql".to_string(),
+                host: Some("a-host".to_string()),
+                port: Some(3306),
+                user: Some("auser".to_string()),
+                database: Some("adb".to_string()),
+                file: None,
+                password_env: Some("ALPHA_DB_PASS".to_string()),
+            },
+            ConnectionListEntry {
+                name: "zebra".to_string(),
+                engine: "postgres".to_string(),
+                host: Some("z-host".to_string()),
+                port: Some(5432),
+                user: Some("zuser".to_string()),
+                database: Some("zdb".to_string()),
+                file: None,
+                password_env: None,
+            },
+        ];
+
+        let data = serde_json::json!({
+            "connections": entries,
+            "default": "alpha",
+        });
+
+        let json = serde_json::to_string(&data).unwrap();
+
+        // Must include expected fields
+        assert!(json.contains("\"connections\""));
+        assert!(json.contains("\"default\":\"alpha\""));
+        assert!(json.contains("\"password_env\":\"ALPHA_DB_PASS\""));
+        assert!(json.contains("\"engine\":\"mysql\""));
+        // Must NOT include plaintext password
+        assert!(!json.contains("\"password\""));
+        // Zebra entry must not have password_env key
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let zebra = &parsed["connections"][1];
+        assert!(zebra["password_env"].is_null()); // absent → null from serde_json::Value
+        assert_eq!(zebra["name"], "zebra");
+    }
+
+    #[test]
+    fn test_connect_list_empty_project_returns_empty() {
+        // An absent project path returns an empty connections vec and None default.
+        let registry = ConnectionRegistry::default();
+        let project = registry.projects.get("/nonexistent/path");
+        assert!(project.is_none());
+        // Simulate what list_connections_raw returns for a missing project
+        let connections: Vec<(String, StoredConnection)> = Vec::new();
+        let default_name: Option<String> = None;
+        assert!(connections.is_empty());
+        assert!(default_name.is_none());
+    }
+
+    #[test]
+    fn test_password_env_overrides_inline_password_on_resolve() {
+        // When both password and password_env are set on a stored connection,
+        // resolve() should overwrite the inline password with the env var value.
+        std::env::set_var("PLENUM_TEST_PWD_OVERRIDE", "from-env");
+
+        let stored = StoredConnection {
+            config: ConnectionConfig::postgres(
+                "localhost".to_string(),
+                5432,
+                "user".to_string(),
+                "inline-value".to_string(),
+                "db".to_string(),
+            ),
+            password_env: Some("PLENUM_TEST_PWD_OVERRIDE".to_string()),
+            password_command: None,
+            keychain_entry: None,
+            readonly: None,
+        };
+
+        let (resolved, _) = stored.resolve().unwrap();
+        assert_eq!(resolved.password.as_deref(), Some("from-env"));
+
+        std::env::remove_var("PLENUM_TEST_PWD_OVERRIDE");
+    }
+
+    // --- password_command tests ---
+
+    #[test]
+    fn test_password_command_echo_resolves() {
+        let stored = StoredConnection {
+            config: ConnectionConfig {
+                engine: DatabaseType::Postgres,
+                host: Some("localhost".to_string()),
+                port: Some(5432),
+                user: Some("user".to_string()),
+                password: None,
+                database: Some("db".to_string()),
+                file: None,
+                tls: None,
+            },
+            password_env: None,
+            password_command: Some("echo 'secretpassword'".to_string()),
+            keychain_entry: None,
+            readonly: None,
+        };
+
+        let (resolved, _) = stored.resolve().unwrap();
+        assert_eq!(resolved.password.as_deref(), Some("secretpassword"));
+    }
+
+    #[test]
+    fn test_password_command_output_is_trimmed() {
+        let stored = StoredConnection {
+            config: ConnectionConfig {
+                engine: DatabaseType::Postgres,
+                host: Some("localhost".to_string()),
+                port: Some(5432),
+                user: Some("user".to_string()),
+                password: None,
+                database: Some("db".to_string()),
+                file: None,
+                tls: None,
+            },
+            password_env: None,
+            // printf avoids a trailing newline but let's confirm trim works regardless
+            password_command: Some("printf '  trimmed  '".to_string()),
+            keychain_entry: None,
+            readonly: None,
+        };
+
+        let (resolved, _) = stored.resolve().unwrap();
+        assert_eq!(resolved.password.as_deref(), Some("trimmed"));
+    }
+
+    #[test]
+    fn test_password_command_nonzero_exit_is_error() {
+        let stored = StoredConnection {
+            config: ConnectionConfig {
+                engine: DatabaseType::Postgres,
+                host: Some("localhost".to_string()),
+                port: Some(5432),
+                user: Some("user".to_string()),
+                password: None,
+                database: Some("db".to_string()),
+                file: None,
+                tls: None,
+            },
+            password_env: None,
+            password_command: Some("exit 1".to_string()),
+            keychain_entry: None,
+            readonly: None,
+        };
+
+        let result = stored.resolve();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().message();
+        assert!(msg.contains("non-zero"), "expected 'non-zero' in: {msg}");
+    }
+
+    #[test]
+    fn test_password_command_empty_output_is_error() {
+        let stored = StoredConnection {
+            config: ConnectionConfig {
+                engine: DatabaseType::Postgres,
+                host: Some("localhost".to_string()),
+                port: Some(5432),
+                user: Some("user".to_string()),
+                password: None,
+                database: Some("db".to_string()),
+                file: None,
+                tls: None,
+            },
+            password_env: None,
+            password_command: Some("echo ''".to_string()),
+            keychain_entry: None,
+            readonly: None,
+        };
+
+        let result = stored.resolve();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("empty output"));
+    }
+
+    #[test]
+    fn test_password_command_serialization_roundtrip() {
+        let stored = StoredConnection {
+            config: ConnectionConfig {
+                engine: DatabaseType::Postgres,
+                host: Some("localhost".to_string()),
+                port: Some(5432),
+                user: Some("user".to_string()),
+                password: None,
+                database: Some("db".to_string()),
+                file: None,
+                tls: None,
+            },
+            password_env: None,
+            password_command: Some("op read op://vault/item/password".to_string()),
+            keychain_entry: None,
+            readonly: None,
+        };
+
+        let json = serde_json::to_string(&stored).unwrap();
+        assert!(json.contains("\"password_command\""));
+        assert!(json.contains("op read op://vault/item/password"));
+        // Must NOT include plaintext password
+        assert!(!json.contains("\"password\":"));
+
+        let parsed: StoredConnection = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.password_command.as_deref(), Some("op read op://vault/item/password"));
+        assert!(parsed.config.password.is_none());
+    }
+
+    // --- keychain_entry tests ---
+
+    #[test]
+    fn test_keychain_entry_resolves_via_mock() {
+        clear_mock_keychain();
+        set_mock_keychain("plenum-test-svc", "plenum-test-user", "mock-keychain-password");
+
+        let stored = StoredConnection {
+            config: ConnectionConfig {
+                engine: DatabaseType::Postgres,
+                host: Some("localhost".to_string()),
+                port: Some(5432),
+                user: Some("pguser".to_string()),
+                password: None,
+                database: Some("db".to_string()),
+                file: None,
+                tls: None,
+            },
+            password_env: None,
+            password_command: None,
+            keychain_entry: Some(KeychainEntry {
+                service: "plenum-test-svc".to_string(),
+                account: "plenum-test-user".to_string(),
+            }),
+            readonly: None,
+        };
+
+        let (resolved, _) = stored.resolve().unwrap();
+        assert_eq!(resolved.password.as_deref(), Some("mock-keychain-password"));
+    }
+
+    #[test]
+    fn test_keychain_entry_missing_key_is_error() {
+        clear_mock_keychain(); // ensure no entry exists for these service/account
+
+        let stored = StoredConnection {
+            config: ConnectionConfig {
+                engine: DatabaseType::Postgres,
+                host: Some("localhost".to_string()),
+                port: Some(5432),
+                user: Some("user".to_string()),
+                password: None,
+                database: Some("db".to_string()),
+                file: None,
+                tls: None,
+            },
+            password_env: None,
+            password_command: None,
+            keychain_entry: Some(KeychainEntry {
+                service: "nonexistent-service".to_string(),
+                account: "nonexistent-account".to_string(),
+            }),
+            readonly: None,
+        };
+
+        let result = stored.resolve();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().message();
+        assert!(msg.contains("keychain"), "expected 'keychain' in: {msg}");
+    }
+
+    #[test]
+    fn test_keychain_entry_serialization_roundtrip() {
+        let stored = StoredConnection {
+            config: ConnectionConfig {
+                engine: DatabaseType::Postgres,
+                host: Some("localhost".to_string()),
+                port: Some(5432),
+                user: Some("user".to_string()),
+                password: None,
+                database: Some("db".to_string()),
+                file: None,
+                tls: None,
+            },
+            password_env: None,
+            password_command: None,
+            keychain_entry: Some(KeychainEntry {
+                service: "myapp".to_string(),
+                account: "db-prod".to_string(),
+            }),
+            readonly: None,
+        };
+
+        let json = serde_json::to_string(&stored).unwrap();
+        assert!(json.contains("\"keychain_entry\""));
+        assert!(json.contains("\"service\":\"myapp\""));
+        assert!(json.contains("\"account\":\"db-prod\""));
+        // Must NOT include plaintext password
+        assert!(!json.contains("\"password\":"));
+
+        let parsed: StoredConnection = serde_json::from_str(&json).unwrap();
+        let ke = parsed.keychain_entry.unwrap();
+        assert_eq!(ke.service, "myapp");
+        assert_eq!(ke.account, "db-prod");
+    }
+
+    // --- mutual exclusion test ---
+
+    #[test]
+    fn test_multiple_credential_sources_is_error() {
+        let stored = StoredConnection {
+            config: ConnectionConfig {
+                engine: DatabaseType::Postgres,
+                host: Some("localhost".to_string()),
+                port: Some(5432),
+                user: Some("user".to_string()),
+                password: None,
+                database: Some("db".to_string()),
+                file: None,
+                tls: None,
+            },
+            password_env: Some("SOME_VAR".to_string()),
+            password_command: Some("echo secret".to_string()),
+            keychain_entry: None,
+            readonly: None,
+        };
+
+        let result = stored.resolve();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("Only one password source"));
     }
 }

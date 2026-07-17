@@ -326,6 +326,31 @@ The calling agent MUST:
 
 Tests MUST be deterministic.
 
+### Live Database Tests
+
+Seeded MySQL 8.0 / MySQL 8.4 / PostgreSQL 16 containers are available on demand via Docker Compose (`tests/live/compose.yaml`). The live suites (`tests/live_mysql.rs`, `tests/live_postgres.rs`) drive the compiled `plenum` binary end-to-end.
+
+**Offline default:** plain `cargo test` requires no Docker — all live tests are `#[ignore]`d — and remains the default verification for changes that do not touch engine or live behavior.
+
+**Spin up as-needed:** when a change touches MySQL or PostgreSQL engine code, connection handling, or the JSON output contract, you MUST run the live suites before considering the work verified:
+
+```
+scripts/test-live.sh
+```
+
+This brings up all services with healthchecks (`docker compose up --wait`), runs the live suites with `--include-ignored`, and tears everything down.
+
+**Iteration mode:** for repeated runs, `scripts/test-live.sh --keep` (or `docker compose -f tests/live/compose.yaml up --wait` directly) leaves containers running. Tear down with `docker compose -f tests/live/compose.yaml down --volumes` when finished. Containers are ephemeral — NEVER assume they are already running.
+
+**Env DSN contract (explicit over implicit — no auto-discovery of running containers):**
+- `PLENUM_TEST_MYSQL_DSN` — MySQL 8.0
+- `PLENUM_TEST_MYSQL84_DSN` — MySQL 8.4
+- `PLENUM_TEST_POSTGRES_DSN` — PostgreSQL 16
+
+Export these to point the live suites at existing servers explicitly (`cargo test --test live_mysql --test live_postgres -- --include-ignored`). If a DSN var is missing during an `--include-ignored` run, the tests fail fast with a clear message — they never silently skip.
+
+**Seeding:** vendor-specific SQL in `tests/live/seed/{mysql,postgres}/` runs via `/docker-entrypoint-initdb.d/` on a fresh `up`. No SQL is shared between engines. To change the dataset, edit the seed files and recreate the containers (`down --volumes` then `up --wait`).
+
 ---
 
 ## Contribution Rules for AI Agents

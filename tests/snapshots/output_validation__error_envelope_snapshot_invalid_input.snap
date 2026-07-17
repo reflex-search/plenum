@@ -1,15 +1,14 @@
 ---
 source: tests/output_validation.rs
-assertion_line: 251
 expression: json_str
 ---
 {
   "ok": false,
-  "engine": "postgres",
+  "engine": "",
   "command": "query",
   "error": {
-    "code": "QUERY_FAILED",
-    "message": "Column 'invalid' does not exist"
+    "code": "INVALID_INPUT",
+    "message": "Invalid input: Query cannot be empty"
   },
   "meta": {
     "contract_version": "1",

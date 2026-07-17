@@ -1,6 +1,5 @@
 ---
 source: tests/output_validation.rs
-assertion_line: 251
 expression: json_str
 ---
 {
@@ -9,7 +8,7 @@ expression: json_str
   "command": "query",
   "error": {
     "code": "QUERY_FAILED",
-    "message": "Column 'invalid' does not exist"
+    "message": "Query execution failed: relation \"users\" does not exist"
   },
   "meta": {
     "contract_version": "1",

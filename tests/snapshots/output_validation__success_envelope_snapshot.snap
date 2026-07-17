@@ -1,5 +1,6 @@
 ---
 source: tests/output_validation.rs
+assertion_line: 237
 expression: json_str
 ---
 {
@@ -11,6 +12,7 @@ expression: json_str
     "value": 42
   },
   "meta": {
+    "contract_version": "1",
     "execution_ms": 100,
     "rows_returned": 5
   }

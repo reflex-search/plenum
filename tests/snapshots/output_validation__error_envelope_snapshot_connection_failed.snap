@@ -1,15 +1,14 @@
 ---
 source: tests/output_validation.rs
-assertion_line: 251
 expression: json_str
 ---
 {
   "ok": false,
   "engine": "postgres",
-  "command": "query",
+  "command": "connect",
   "error": {
-    "code": "QUERY_FAILED",
-    "message": "Column 'invalid' does not exist"
+    "code": "CONNECTION_FAILED",
+    "message": "Connection failed: could not connect to server"
   },
   "meta": {
     "contract_version": "1",

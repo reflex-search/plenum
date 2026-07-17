@@ -1,34 +1,34 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "ErrorEnvelope",
-  "description": "Error envelope for operation failures",
+  "title": "SuccessEnvelope_for_QueryResult",
+  "description": "Success envelope for operation results\n\nGeneric over the data type to support different operation return values.",
   "type": "object",
   "required": [
     "command",
+    "data",
     "engine",
-    "error",
     "meta",
     "ok"
   ],
   "properties": {
     "command": {
-      "description": "Command that was attempted (connect, introspect, query)",
+      "description": "Command that was executed (connect, introspect, query)",
       "type": "string"
     },
-    "engine": {
-      "description": "Database engine (if applicable, empty string if not engine-specific)",
-      "type": "string"
-    },
-    "error": {
-      "description": "Error information",
+    "data": {
+      "description": "Operation-specific data",
       "allOf": [
         {
-          "$ref": "#/definitions/ErrorInfo"
+          "$ref": "#/definitions/QueryResult"
         }
       ]
     },
+    "engine": {
+      "description": "Database engine used for this operation (postgres, mysql, sqlite)",
+      "type": "string"
+    },
     "meta": {
-      "description": "Envelope metadata (includes `contract_version` for agent compatibility checks)",
+      "description": "Execution metadata",
       "allOf": [
         {
           "$ref": "#/definitions/Metadata"
@@ -36,29 +36,11 @@
       ]
     },
     "ok": {
-      "description": "Always false for error envelopes",
+      "description": "Always true for success envelopes",
       "type": "boolean"
     }
   },
   "definitions": {
-    "ErrorInfo": {
-      "description": "Error information structure",
-      "type": "object",
-      "required": [
-        "code",
-        "message"
-      ],
-      "properties": {
-        "code": {
-          "description": "Stable error code (e.g., \"`CAPABILITY_VIOLATION`\", \"`CONNECTION_FAILED`\")",
-          "type": "string"
-        },
-        "message": {
-          "description": "Human-readable error message (agent-appropriate, no sensitive data)",
-          "type": "string"
-        }
-      }
-    },
     "Metadata": {
       "description": "Execution metadata included in all responses",
       "type": "object",
@@ -111,6 +93,58 @@
         },
         "truncated_by": {
           "description": "Why the result was truncated: \"bytes\" when `max_bytes` triggered the cut; absent for row-count truncation or when rows are not truncated",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "QueryResult": {
+      "description": "Query execution result",
+      "type": "object",
+      "required": [
+        "columns",
+        "execution_ms",
+        "rows"
+      ],
+      "properties": {
+        "columns": {
+          "description": "Column names in result set",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "execution_ms": {
+          "description": "Query execution time in milliseconds",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "rows": {
+          "description": "Result rows (each row is an array of values in column order)",
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": true
+          }
+        },
+        "rows_affected": {
+          "description": "Number of rows affected (for INSERT/UPDATE/DELETE)",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "rows_truncated": {
+          "description": "Whether the result was truncated (by `max_rows` or `max_bytes`); present in output when true",
+          "type": "boolean"
+        },
+        "truncated_by": {
+          "description": "Why the result was truncated: \"rows\" (`max_rows`) or \"bytes\" (`max_bytes`); absent when not truncated",
           "type": [
             "string",
             "null"

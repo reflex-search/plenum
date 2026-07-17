@@ -31,6 +31,7 @@
 // Core modules (Phase 1)
 pub mod capability; // Capability validation and enforcement (Phase 1.4)
 pub mod config; // Configuration management (Phase 1.5)
+pub mod dsn; // DSN/URL connection string parsing
 pub mod engine; // Database engine trait and implementations (Phase 1.1, 3-5)
 pub mod error; // Error handling infrastructure (Phase 1.3)
 pub mod mcp;
@@ -39,15 +40,17 @@ pub mod output; // JSON output envelopes (Phase 1.2) // MCP server (Phase 7) - M
 // Re-export commonly used types for convenience
 pub use capability::validate_query;
 pub use config::{
-    list_connections, list_connections_for_project, resolve_connection, save_connection,
-    ConfigLocation, ConnectionRegistry, StoredConnection,
+    list_connections, list_connections_for_project, list_connections_raw, resolve_connection,
+    save_connection, ConfigLocation, ConnectionRegistry, KeychainEntry, StoredConnection,
 };
+pub use dsn::{parse_dsn, redact_dsn};
 pub use engine::{
-    Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine, DatabaseType,
-    ForeignKeyInfo, IndexInfo, QueryResult, SchemaInfo, TableInfo, TimeOnlyResult,
+    apply_byte_budget, Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine,
+    DatabaseType, ForeignKeyInfo, IndexInfo, IndexSummary, IntrospectResult, QueryResult,
+    SchemaInfo, TableInfo, TimeOnlyResult, ViewInfo,
 };
 pub use error::{PlenumError, Result};
-pub use output::{ErrorEnvelope, ErrorInfo, Metadata, SuccessEnvelope};
+pub use output::{ErrorEnvelope, ErrorInfo, Metadata, SuccessEnvelope, CONTRACT_VERSION};
 
 #[cfg(test)]
 mod tests {
