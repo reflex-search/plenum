@@ -74,40 +74,7 @@ Plenum is structured as a library with thin CLI and MCP wrappers:
 
 ## Core Principles
 
-### 1. Agent-First Design
-- **JSON-only output** to stdout (no human-friendly formatting)
-- **Deterministic behavior** (same input → same output)
-- **No interactive UX** for execution (interactive config setup allowed)
-- **Explicit over implicit** (no inferred values)
-
-### 2. No Query Abstraction
-- SQL remains **vendor-specific**
-- PostgreSQL SQL ≠ MySQL SQL ≠ SQLite SQL
-- No compatibility layers or universal SQL
-- Each engine handles its own quirks
-
-### 3. Strict Read-Only Enforcement
-- **All write and DDL operations are unconditionally rejected** — no flags override this
-- Permitted: SELECT, SHOW, DESCRIBE, PRAGMA (allowlisted), EXPLAIN, transaction control
-- Rejected: INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, TRUNCATE, and all other writes
-- Validation happens **before** execution (fail-fast)
-
-### 4. Stateless Execution
-- No persistent database connections
-- Each command invocation:
-  1. Reads config from disk
-  2. Opens connection
-  3. Executes operation
-  4. Closes connection
-  5. Returns result
-- No connection pooling across invocations
-- No caching
-
-### 5. Engine Isolation
-- Each engine module is completely independent
-- No shared SQL helpers across engines
-- Native drivers (NOT sqlx) for maximum isolation
-- Engine-specific behavior stays inside engine modules
+The five core invariants governing Plenum's design are defined in [CLAUDE.md](CLAUDE.md). Their architectural implementations are described in [Read-Only Enforcement](#read-only-enforcement), [Stateless Design](#stateless-design), and [Engine Isolation](#engine-isolation).
 
 ---
 
@@ -715,14 +682,7 @@ pub struct ErrorInfo {
 
 ### Error Codes
 
-| Code | Description | When It Occurs |
-|------|-------------|----------------|
-| `CAPABILITY_VIOLATION` | Operation blocked — Plenum is read-only | Any attempted write or DDL operation |
-| `CONNECTION_FAILED` | Database connection failed | Invalid credentials, unreachable host |
-| `QUERY_FAILED` | Query execution failed | SQL syntax errors, missing tables |
-| `INVALID_INPUT` | Malformed input | Missing required flags, invalid engine |
-| `ENGINE_ERROR` | Engine-specific error | Database driver errors |
-| `CONFIG_ERROR` | Configuration error | Missing config file, connection not found |
+For the complete error code reference with usage guidance, see [Error Codes in README.md](README.md#error-codes).
 
 ### Output Contract
 
@@ -853,35 +813,7 @@ Plenum's security model is based on **strict read-only enforcement**, not SQL va
 
 ### Security Boundaries
 
-#### What Plenum Enforces:
-
-1. **Unconditional read-only enforcement**
-   - All write and DDL operations are rejected before execution
-   - No flags, capabilities, or configuration can unlock writes
-   - Engine-specific validation with default-deny for unknown statements
-
-2. **Resource limits**
-   - Row limits (`max_rows`)
-   - Query timeouts (`timeout_ms`)
-
-4. **Credential security**
-   - No passwords in logs or error messages
-   - Support for environment variable references
-   - Credentials never cached in memory
-
-#### What Plenum Does NOT Enforce:
-
-1. **SQL injection prevention**
-   - Agent's responsibility to sanitize inputs
-   - Plenum passes SQL verbatim to database
-
-2. **Query semantic correctness**
-   - No validation of table/column names
-   - No type checking
-
-3. **Business logic constraints**
-   - No row-level security
-   - No data access policies
+For the definitive list of what Plenum enforces and what it does not, see [CLAUDE.md](CLAUDE.md). The architectural implementation of read-only enforcement is described in [Read-Only Enforcement](#read-only-enforcement).
 
 ### Agent Responsibility
 

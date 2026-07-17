@@ -382,29 +382,11 @@ Plenum is built around strict architectural principles:
 
 ### Core Principles
 
-1. **No query language abstraction** - SQL remains vendor-specific
-2. **Agent-first, machine-only** - No interactive UX, JSON-only output
-3. **Explicit over implicit** - No inferred values, fail-fast on missing inputs
-4. **Strict read-only enforcement** - All write and DDL operations unconditionally rejected
-5. **Determinism** - Identical inputs → identical outputs
+The five core invariants governing all design decisions are defined in [CLAUDE.md](CLAUDE.md).
 
 ### Security Model
 
-Plenum's security boundary is **strict read-only enforcement**, not SQL validation.
-
-**Plenum enforces:**
-- ✅ **Strict read-only operation** - all write/DDL operations are rejected
-- ✅ Row limits (`max_rows`) and query timeouts (`timeout_ms`)
-- ✅ Pre-execution validation (queries validated before execution)
-- ✅ Credential security (best-effort, no intentional logging)
-
-**Plenum does NOT enforce:**
-- ❌ SQL injection prevention (agent's responsibility)
-- ❌ Query semantic correctness
-- ❌ Business logic constraints
-- ❌ Data access policies (row-level security, column masking)
-
-**Critical**: Agents must sanitize all user inputs before constructing SQL. Plenum assumes read-only SQL passed to it is safe and passes it verbatim to database drivers.
+Plenum's security boundary is **strict read-only enforcement**, not SQL validation. For the full security model — what Plenum enforces, agent responsibilities, and what falls outside Plenum's scope — see [CLAUDE.md](CLAUDE.md).
 
 #### Credential Security
 
@@ -479,7 +461,7 @@ plenum/
 ├── tests/
 │   ├── schema_drift.rs  # Fails if schemas diverge from types
 │   └── ...
-├── CLAUDE.md            # Core principles and architecture
+├── CLAUDE.md            # Canonical agent rules, invariants, and non-negotiable requirements
 ├── PROJECT_PLAN.md      # Implementation roadmap
 ├── RESEARCH.md          # Design decisions and rationale
 └── PROBLEMS.md          # Resolved architectural issues
@@ -487,12 +469,13 @@ plenum/
 
 ## Documentation
 
-- [CLAUDE.md](CLAUDE.md) - Core principles and non-negotiable requirements
-- [PROJECT_PLAN.md](PROJECT_PLAN.md) - Complete implementation roadmap
+- [CLAUDE.md](CLAUDE.md) - **Canonical** agent rules, core invariants, and non-negotiable requirements
+- [ARCHITECTURE.md](ARCHITECTURE.md) - Internal design, module structure, data flow, and design rationale
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Development guidelines
 - [SECURITY.md](SECURITY.md) - Security model, threat analysis, and vulnerability reporting
+- [PROJECT_PLAN.md](PROJECT_PLAN.md) - Complete implementation roadmap
 - [RESEARCH.md](RESEARCH.md) - Design decisions, rationale, and research
 - [PROBLEMS.md](PROBLEMS.md) - Architectural issues and resolutions
-- [CONTRIBUTING.md](CONTRIBUTING.md) - Development guidelines
 
 ## Roadmap
 
