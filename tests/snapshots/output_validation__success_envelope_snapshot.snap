@@ -1,6 +1,5 @@
 ---
 source: tests/output_validation.rs
-assertion_line: 237
 expression: json_str
 ---
 {

@@ -249,7 +249,7 @@ fn handle_list_tools() -> Result<Value> {
         "tools": [
             {
                 "name": "introspect",
-                "description": "Introspect database schema with granular operations. NEVER dumps entire schema - requires explicit operation. IMPORTANT CONNECTION WORKFLOW: (1) RECOMMENDED: Auto-resolve (omit all connection params) - uses project's default saved connection, (2) COMMON: Named connection (use 'connection' param only) - references saved connection by name, (3) DISCOURAGED: Explicit credentials (engine + host/user/password) - ONLY for one-off scenarios, NOT for regular use. DO NOT pass credentials repeatedly - use saved connections instead. Before using explicit credentials, check if a saved connection exists. Operations (EXACTLY ONE required, mutually exclusive): list_databases (list all DBs), list_schemas (Postgres only), list_tables (table names in schema/DB), list_views (view names), list_indexes (all or filtered by table), table (full details for specific table with optional field filtering), view (view definition + columns). Optional modifiers: 'target_database' (switch to different DB before introspecting - Postgres/MySQL only), 'schema' (filter to specific schema - Postgres/MySQL only). Returns typed JSON specific to operation (DatabaseList, SchemaList, TableList, ViewList, IndexList, TableDetails, or ViewDetails). Stateless - connection opened, operation executed, connection closed.",
+                "description": "Introspect database schema with granular operations. NEVER dumps entire schema - requires explicit operation. IMPORTANT CONNECTION WORKFLOW: (1) RECOMMENDED: Auto-resolve (omit all connection params) - uses project's default saved connection, (2) COMMON: Named connection (use 'connection' param only) - references saved connection by name, (3) DISCOURAGED: Explicit credentials (engine + host/user/password) - ONLY for one-off scenarios, NOT for regular use. DO NOT pass credentials repeatedly - use saved connections instead. Before using explicit credentials, check if a saved connection exists. Operations (EXACTLY ONE required, mutually exclusive): list_databases (list all DBs), list_schemas (Postgres only), list_tables (table names in schema/DB), list_views (view names), list_indexes (all or filtered by table), table (full details for specific table with optional field filtering), view (view definition + columns), diff_against (structural schema diff between two named connections - returns {data:{diff:{tables_added,tables_removed,tables_changed,views_added,views_removed,views_changed}}}). Optional modifiers: 'target_database' (switch to different DB before introspecting - Postgres/MySQL only), 'schema' (filter to specific schema - Postgres/MySQL only). Returns typed JSON specific to operation (DatabaseList, SchemaList, TableList, ViewList, IndexList, TableDetails, or ViewDetails). Stateless - connection opened, operation executed, connection closed.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -341,6 +341,14 @@ fn handle_list_tools() -> Result<Value> {
                         "indexes": {
                             "type": "boolean",
                             "description": "Table field selector: Include indexes in table details. Only applies to 'table' operation. Default: true. Note: This filters table detail fields, while 'list_indexes' is a separate operation."
+                        },
+                        "diff_against": {
+                            "type": "string",
+                            "description": "Operation: Structural schema diff. Pass the name of a saved connection to compare against the current (base) connection. Returns {\"diff\": {\"tables_added\": [...], \"tables_removed\": [...], \"tables_changed\": [...], \"views_added\": [...], \"views_removed\": [...], \"views_changed\": [...]}}. All arrays sorted alphabetically; identical schemas return all-empty arrays. Mutually exclusive with all other operations."
+                        },
+                        "diff_against_project_path": {
+                            "type": "string",
+                            "description": "Optional modifier for diff_against: project path to look up the diff-against connection in. Defaults to the current project path. Use for cross-project schema comparison."
                         }
                     }
                 }
@@ -411,6 +419,11 @@ fn handle_list_tools() -> Result<Value> {
                         "time_only": {
                             "type": "boolean",
                             "description": "Optional: Return only execution timing information (excludes result data). Useful for benchmarking queries without consuming MCP response tokens. The query still executes fully to measure realistic performance. Returns execution_ms and rows_matched count instead of full result set. Default: false."
+                        },
+                        "explain_format": {
+                            "type": "string",
+                            "enum": ["native", "structured"],
+                            "description": "Optional: EXPLAIN output format. 'native' (default) returns raw engine rows unchanged. 'structured' requires the SQL to be an EXPLAIN statement and returns data.plan — a normalized, engine-stable JSON tree with node_type, relation, estimated_rows, estimated_cost, and children. Engine-absent fields are explicit null. Non-EXPLAIN queries with 'structured' are rejected with INVALID_INPUT."
                         }
                     },
                     "required": ["sql"]
@@ -524,16 +537,32 @@ async fn tool_connect(args: &Value) -> Result<Value> {
 /// MCP Tool: introspect
 ///
 /// Introspects database schema and returns table/column information.
+/// When `diff_against` is provided, computes a structural schema diff instead.
 async fn tool_introspect(args: &Value) -> Result<Value> {
-    // Resolve connection config
+    // Resolve base connection config
     let (config, _is_readonly) = resolve_connection_from_args(args)?;
 
-    // Parse introspect operation from args
-    let operation = parse_introspect_operation(args)?;
-
-    // Get optional database and schema modifiers
+    // Get optional database and schema modifiers (shared by both paths)
     let database = args.get("target_database").and_then(|v| v.as_str());
     let schema = args.get("schema").and_then(|v| v.as_str());
+
+    // ── diff-against path ──────────────────────────────────────────────────────
+    if let Some(target_name) = args.get("diff_against").and_then(|v| v.as_str()) {
+        let target_proj = args.get("diff_against_project_path").and_then(|v| v.as_str());
+        let (target_config, _) =
+            crate::resolve_connection(target_proj, Some(target_name)).map_err(|e| {
+                anyhow!("Failed to resolve diff-against connection '{target_name}': {e}")
+            })?;
+
+        let diff = crate::diff::compute_schema_diff(&config, &target_config, database, schema)
+            .await
+            .map_err(|e| anyhow!("Schema diff failed: {e}"))?;
+
+        return CallToolResult::success(serde_json::json!({ "diff": diff }));
+    }
+
+    // ── standard introspect path ───────────────────────────────────────────────
+    let operation = parse_introspect_operation(args)?;
 
     // Call engine's introspect method (opens and closes connection)
     let result = match config.engine {
@@ -568,7 +597,8 @@ async fn tool_introspect(args: &Value) -> Result<Value> {
     CallToolResult::success(result)
 }
 
-/// Parse introspect operation from MCP arguments
+/// Parse introspect operation from MCP arguments.
+/// Called only on the standard path; `diff_against` is handled before this in `tool_introspect`.
 fn parse_introspect_operation(args: &Value) -> Result<crate::engine::IntrospectOperation> {
     use crate::engine::{IntrospectOperation, TableFields};
 
@@ -598,7 +628,8 @@ fn parse_introspect_operation(args: &Value) -> Result<crate::engine::IntrospectO
     if op_count == 0 {
         return Err(anyhow!(
             "No introspect operation specified. Must provide one of: \
-             list_databases, list_schemas, list_tables, list_views, list_indexes, table, or view"
+             list_databases, list_schemas, list_tables, list_views, list_indexes, table, view, \
+             or diff_against"
         ));
     }
 
@@ -670,9 +701,19 @@ async fn tool_query(args: &Value) -> Result<Value> {
     let timeout_ms = args.get("timeout_ms").and_then(serde_json::Value::as_u64);
     let time_only = args.get("time_only").and_then(serde_json::Value::as_bool).unwrap_or(false);
     let check_only = args.get("check_only").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let explain_format = match args.get("explain_format").and_then(serde_json::Value::as_str) {
+        None | Some("native") => None,
+        Some("structured") => Some(crate::engine::ExplainFormat::Structured),
+        Some(other) => {
+            return Err(anyhow!(
+                "Invalid explain_format '{}'. Valid values: native, structured",
+                other
+            ));
+        }
+    };
 
     // Build capabilities (read-only only; max_bytes is post-processed below)
-    let capabilities = Capabilities { max_rows, max_bytes: None, timeout_ms, offset: None };
+    let capabilities = Capabilities { max_rows, max_bytes: None, timeout_ms, offset: None, explain_format };
 
     // Validate query is read-only (pre-execution check)
     crate::validate_query(sql, &capabilities, config.engine).map_err(|e| anyhow!("{e}"))?;

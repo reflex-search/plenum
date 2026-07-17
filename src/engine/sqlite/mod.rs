@@ -20,10 +20,11 @@ use rusqlite::{Connection, OpenFlags, Row};
 use std::collections::HashMap; // Used for grouping foreign keys during introspection
 use std::time::{Duration, Instant};
 
-use crate::capability::validate_query;
+use crate::capability::{strip_explain_prefix, validate_query};
 use crate::engine::{
-    Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine, DatabaseType,
-    ForeignKeyInfo, IndexInfo, IntrospectOperation, IntrospectResult, QueryResult, TableInfo,
+    is_explain_query, Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine,
+    DatabaseType, ExplainFormat, ExplainPlanNode, ForeignKeyInfo, IndexInfo, IntrospectOperation,
+    IntrospectResult, QueryResult, TableInfo,
 };
 use crate::error::{PlenumError, Result};
 
@@ -195,6 +196,29 @@ impl DatabaseEngine for SqliteEngine {
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(timeout_ms));
                 handle.interrupt();
+            });
+        }
+
+        // Structured explain path: rewrite to EXPLAIN QUERY PLAN, normalize the plan tree.
+        if caps.explain_format == Some(ExplainFormat::Structured) {
+            if !is_explain_query(query) {
+                return Err(PlenumError::invalid_input(
+                    "--explain-format structured requires an EXPLAIN statement; \
+                     non-EXPLAIN queries must omit this flag",
+                ));
+            }
+            let inner = strip_explain_prefix(query);
+            let start = Instant::now();
+            let plan = execute_structured_explain_sqlite(&conn, &inner)?;
+            let elapsed = start.elapsed();
+            return Ok(QueryResult {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                rows_affected: None,
+                execution_ms: elapsed.as_millis() as u64,
+                rows_truncated: false,
+                truncated_by: None,
+                plan: Some(plan),
             });
         }
 
@@ -666,6 +690,74 @@ fn json_to_sqlite_value(val: &serde_json::Value) -> rusqlite::types::Value {
 
 /// Returns true when a rusqlite error is `SQLITE_INTERRUPT` (code 9), meaning
 /// the interrupt handle fired and `SQLite` cancelled the running statement.
+/// Run `EXPLAIN QUERY PLAN` on `inner_sql` and normalize the result into an `ExplainPlanNode` tree.
+///
+/// SQLite's EXPLAIN QUERY PLAN returns rows of `(id, parent, notused, detail)`.
+/// We build a parent-pointer tree and return the virtual root containing all top-level nodes.
+fn execute_structured_explain_sqlite(conn: &Connection, inner_sql: &str) -> Result<ExplainPlanNode> {
+    let sql = format!("EXPLAIN QUERY PLAN {inner_sql}");
+
+    #[derive(Debug)]
+    struct PlanRow {
+        id: i64,
+        parent: i64,
+        detail: String,
+    }
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| {
+        PlenumError::query_failed(format!("Failed to prepare EXPLAIN QUERY PLAN: {e}"))
+    })?;
+
+    let rows: Vec<PlanRow> = stmt
+        .query_map([], |row| {
+            Ok(PlanRow {
+                id: row.get::<_, i64>(0).unwrap_or(0),
+                parent: row.get::<_, i64>(1).unwrap_or(0),
+                detail: row.get::<_, String>(3).unwrap_or_default(),
+            })
+        })
+        .map_err(|e| PlenumError::query_failed(format!("Failed to execute EXPLAIN QUERY PLAN: {e}")))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // Build children map: parent_id → Vec<child>
+    let mut children_map: std::collections::HashMap<i64, Vec<&PlanRow>> =
+        std::collections::HashMap::new();
+    for row in &rows {
+        children_map.entry(row.parent).or_default().push(row);
+    }
+
+    fn build_node(
+        row: &PlanRow,
+        children_map: &std::collections::HashMap<i64, Vec<&PlanRow>>,
+    ) -> ExplainPlanNode {
+        let children = children_map
+            .get(&row.id)
+            .map(|kids| kids.iter().map(|k| build_node(k, children_map)).collect())
+            .unwrap_or_default();
+        ExplainPlanNode {
+            node_type: row.detail.clone(),
+            relation: None,
+            estimated_rows: None,
+            estimated_cost: None,
+            children,
+        }
+    }
+
+    // Top-level nodes are those with parent = 0 (SQLite uses 0 as the root sentinel)
+    let top_level = children_map.get(&0).cloned().unwrap_or_default();
+    let top_children: Vec<ExplainPlanNode> =
+        top_level.iter().map(|r| build_node(r, &children_map)).collect();
+
+    Ok(ExplainPlanNode {
+        node_type: "QUERY PLAN".to_string(),
+        relation: None,
+        estimated_rows: None,
+        estimated_cost: None,
+        children: top_children,
+    })
+}
+
 fn is_sqlite_interrupt(e: &rusqlite::Error) -> bool {
     matches!(
         e,
@@ -770,6 +862,7 @@ fn execute_query(
         execution_ms: 0,
         rows_truncated,
         truncated_by: None,
+        plan: None,
     })
 }
 

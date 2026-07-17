@@ -158,7 +158,7 @@ fn strip_leading_keyword<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
 /// Only the format/modifier decorations are stripped; the trailing statement is
 /// returned verbatim so a hidden write (e.g. `EXPLAIN FORMAT=JSON DELETE ...`)
 /// is still rejected by the caller.
-fn strip_explain_prefix(sql: &str) -> String {
+pub(crate) fn strip_explain_prefix(sql: &str) -> String {
     let sql = sql.trim();
 
     let Some(after_explain) = strip_leading_keyword(sql, "EXPLAIN") else {

@@ -31,6 +31,7 @@
 // Core modules (Phase 1)
 pub mod capability; // Capability validation and enforcement (Phase 1.4)
 pub mod config; // Configuration management (Phase 1.5)
+pub mod diff; // Schema diff computation (REF-281)
 pub mod dsn; // DSN/URL connection string parsing
 pub mod engine; // Database engine trait and implementations (Phase 1.1, 3-5)
 pub mod error; // Error handling infrastructure (Phase 1.3)
@@ -45,9 +46,10 @@ pub use config::{
 };
 pub use dsn::{parse_dsn, redact_dsn};
 pub use engine::{
-    apply_byte_budget, Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine,
-    DatabaseType, ForeignKeyInfo, IndexInfo, IndexSummary, IntrospectResult, QueryResult,
-    SchemaInfo, TableInfo, TimeOnlyResult, ViewInfo,
+    apply_byte_budget, Capabilities, ColumnChange, ColumnInfo, ConnectionConfig, ConnectionInfo,
+    DatabaseEngine, DatabaseType, DefinitionChange, ExplainFormat, ExplainPlanNode, ForeignKeyInfo,
+    IndexInfo, IndexSummary, IntrospectResult, PrimaryKeyChange, QueryResult, SchemaInfo, SchemaDiff,
+    TableDiff, TableInfo, TimeOnlyResult, ViewDiff, ViewInfo,
 };
 pub use error::{PlenumError, Result};
 pub use output::{ErrorEnvelope, ErrorInfo, Metadata, SuccessEnvelope, CONTRACT_VERSION};
