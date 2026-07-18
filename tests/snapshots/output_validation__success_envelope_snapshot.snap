@@ -1,0 +1,18 @@
+---
+source: tests/output_validation.rs
+expression: json_str
+---
+{
+  "ok": true,
+  "engine": "sqlite",
+  "command": "test",
+  "data": {
+    "result": "success",
+    "value": 42
+  },
+  "meta": {
+    "contract_version": "1",
+    "execution_ms": 100,
+    "rows_returned": 5
+  }
+}

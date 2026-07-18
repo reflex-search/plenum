@@ -48,8 +48,8 @@ pub use dsn::{parse_dsn, redact_dsn};
 pub use engine::{
     apply_byte_budget, Capabilities, ColumnChange, ColumnInfo, ConnectionConfig, ConnectionInfo,
     DatabaseEngine, DatabaseType, DefinitionChange, ExplainFormat, ExplainPlanNode, ForeignKeyInfo,
-    IndexInfo, IndexSummary, IntrospectResult, PrimaryKeyChange, QueryResult, SchemaInfo, SchemaDiff,
-    TableDiff, TableInfo, TimeOnlyResult, ViewDiff, ViewInfo,
+    IndexInfo, IndexSummary, IntrospectResult, PrimaryKeyChange, QueryResult, SchemaDiff,
+    SchemaInfo, TableDiff, TableInfo, TimeOnlyResult, ViewDiff, ViewInfo,
 };
 pub use error::{PlenumError, Result};
 pub use output::{ErrorEnvelope, ErrorInfo, Metadata, SuccessEnvelope, CONTRACT_VERSION};

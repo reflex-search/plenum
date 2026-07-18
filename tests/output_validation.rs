@@ -414,7 +414,13 @@ async fn test_truncated_result_signals_rows_truncated_true() {
     // DB has 2 products; max_rows=1 means result is truncated
     let temp_file = create_test_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps = Capabilities { max_rows: Some(1), max_bytes: None, timeout_ms: None, offset: None, explain_format: None };
+    let caps = Capabilities {
+        max_rows: Some(1),
+        max_bytes: None,
+        timeout_ms: None,
+        offset: None,
+        explain_format: None,
+    };
 
     let result =
         SqliteEngine::execute(&config, "SELECT * FROM products ORDER BY id", &[], &caps).await;
@@ -467,16 +473,26 @@ async fn test_pagination_with_offset_returns_disjoint_pages() {
     let temp_file = create_test_db();
     let config = ConnectionConfig::sqlite(temp_file.clone());
 
-    let caps_p1 =
-        Capabilities { max_rows: Some(1), max_bytes: None, timeout_ms: None, offset: None, explain_format: None };
+    let caps_p1 = Capabilities {
+        max_rows: Some(1),
+        max_bytes: None,
+        timeout_ms: None,
+        offset: None,
+        explain_format: None,
+    };
     let r1 = SqliteEngine::execute(&config, "SELECT id FROM products ORDER BY id", &[], &caps_p1)
         .await
         .unwrap();
     assert!(r1.rows_truncated, "page 1 should be truncated (2 rows total, only 1 returned)");
     assert_eq!(r1.rows.len(), 1);
 
-    let caps_p2 =
-        Capabilities { max_rows: Some(1), max_bytes: None, timeout_ms: None, offset: Some(1), explain_format: None };
+    let caps_p2 = Capabilities {
+        max_rows: Some(1),
+        max_bytes: None,
+        timeout_ms: None,
+        offset: Some(1),
+        explain_format: None,
+    };
     let r2 = SqliteEngine::execute(&config, "SELECT id FROM products ORDER BY id", &[], &caps_p2)
         .await
         .unwrap();

@@ -1261,7 +1261,6 @@ fn prompt_save_location() -> Result<ConfigLocation> {
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-#[allow(clippy::too_many_arguments)]
 async fn handle_introspect(
     dsn: Option<String>,
     name: Option<String>,
@@ -1370,8 +1369,7 @@ async fn handle_introspect(
                 Ok(())
             }
             Err(e) => {
-                let envelope =
-                    ErrorEnvelope::from_error(config.engine.as_str(), "introspect", &e);
+                let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "introspect", &e);
                 output_error(&envelope);
                 Err(1)
             }
@@ -1505,8 +1503,7 @@ async fn handle_introspect(
                 Ok(())
             }
             Err(e) => {
-                let envelope =
-                    ErrorEnvelope::from_error(config.engine.as_str(), "introspect", &e);
+                let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "introspect", &e);
                 output_error(&envelope);
                 Err(1)
             }
@@ -1618,9 +1615,9 @@ async fn handle_query(
     };
 
     // Build capabilities (read-only only)
-    let explain_format_parsed = explain_format.as_deref().and_then(|s| match s {
-        "structured" | "Structured" => Some(ExplainFormat::Structured),
-        _ => Some(ExplainFormat::Native),
+    let explain_format_parsed = explain_format.as_deref().map(|s| match s {
+        "structured" | "Structured" => ExplainFormat::Structured,
+        _ => ExplainFormat::Native,
     });
     let capabilities = Capabilities {
         max_rows,

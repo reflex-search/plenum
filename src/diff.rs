@@ -45,9 +45,7 @@ async fn engine_introspect(
         )),
 
         #[cfg(feature = "mysql")]
-        DatabaseType::MySQL => {
-            MySqlEngine::introspect(config, operation, database, schema).await
-        }
+        DatabaseType::MySQL => MySqlEngine::introspect(config, operation, database, schema).await,
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => Err(PlenumError::invalid_input(
             "MySQL engine not enabled. Build with --features mysql.",
@@ -63,14 +61,11 @@ async fn gather_tables(
 ) -> Result<Vec<TableInfo>> {
     let list =
         engine_introspect(config, &IntrospectOperation::ListTables, database, schema).await?;
-    let names = match list {
-        IntrospectResult::TableList { tables } => tables,
-        _ => {
-            return Err(PlenumError::engine_error(
-                config.engine.as_str(),
-                "ListTables returned unexpected result type",
-            ))
-        }
+    let IntrospectResult::TableList { tables: names } = list else {
+        return Err(PlenumError::engine_error(
+            config.engine.as_str(),
+            "ListTables returned unexpected result type",
+        ));
     };
 
     let mut tables = Vec::with_capacity(names.len());
@@ -97,16 +92,12 @@ async fn gather_views(
     database: Option<&str>,
     schema: Option<&str>,
 ) -> Result<Vec<ViewInfo>> {
-    let list =
-        engine_introspect(config, &IntrospectOperation::ListViews, database, schema).await?;
-    let names = match list {
-        IntrospectResult::ViewList { views } => views,
-        _ => {
-            return Err(PlenumError::engine_error(
-                config.engine.as_str(),
-                "ListViews returned unexpected result type",
-            ))
-        }
+    let list = engine_introspect(config, &IntrospectOperation::ListViews, database, schema).await?;
+    let IntrospectResult::ViewList { views: names } = list else {
+        return Err(PlenumError::engine_error(
+            config.engine.as_str(),
+            "ListViews returned unexpected result type",
+        ));
     };
 
     let mut views = Vec::with_capacity(names.len());
@@ -161,8 +152,7 @@ fn diff_tables(
     base: &[TableInfo],
     target: &[TableInfo],
 ) -> (Vec<String>, Vec<String>, Vec<TableDiff>) {
-    let base_map: BTreeMap<&str, &TableInfo> =
-        base.iter().map(|t| (t.name.as_str(), t)).collect();
+    let base_map: BTreeMap<&str, &TableInfo> = base.iter().map(|t| (t.name.as_str(), t)).collect();
     let target_map: BTreeMap<&str, &TableInfo> =
         target.iter().map(|t| (t.name.as_str(), t)).collect();
 
@@ -183,7 +173,11 @@ fn diff_tables(
         .filter_map(|(name, base_t)| {
             target_map.get(name).and_then(|target_t| {
                 let d = diff_single_table(base_t, target_t);
-                if table_diff_is_nonempty(&d) { Some(d) } else { None }
+                if table_diff_is_nonempty(&d) {
+                    Some(d)
+                } else {
+                    None
+                }
             })
         })
         .collect();
@@ -232,8 +226,7 @@ fn diff_columns(
     base: &[ColumnInfo],
     target: &[ColumnInfo],
 ) -> (Vec<ColumnInfo>, Vec<ColumnInfo>, Vec<ColumnChange>) {
-    let base_map: BTreeMap<&str, &ColumnInfo> =
-        base.iter().map(|c| (c.name.as_str(), c)).collect();
+    let base_map: BTreeMap<&str, &ColumnInfo> = base.iter().map(|c| (c.name.as_str(), c)).collect();
     let target_map: BTreeMap<&str, &ColumnInfo> =
         target.iter().map(|c| (c.name.as_str(), c)).collect();
 
@@ -287,12 +280,14 @@ fn diff_primary_key(
     if base == target {
         return None;
     }
-    Some(PrimaryKeyChange { from: base.map(|s| s.to_vec()), to: target.map(|s| s.to_vec()) })
+    Some(PrimaryKeyChange {
+        from: base.map(<[std::string::String]>::to_vec),
+        to: target.map(<[std::string::String]>::to_vec),
+    })
 }
 
 fn diff_indexes(base: &[IndexInfo], target: &[IndexInfo]) -> (Vec<IndexInfo>, Vec<IndexInfo>) {
-    let base_map: BTreeMap<&str, &IndexInfo> =
-        base.iter().map(|i| (i.name.as_str(), i)).collect();
+    let base_map: BTreeMap<&str, &IndexInfo> = base.iter().map(|i| (i.name.as_str(), i)).collect();
     let target_map: BTreeMap<&str, &IndexInfo> =
         target.iter().map(|i| (i.name.as_str(), i)).collect();
 
@@ -341,12 +336,8 @@ fn diff_foreign_keys(
     (added, removed)
 }
 
-fn diff_views(
-    base: &[ViewInfo],
-    target: &[ViewInfo],
-) -> (Vec<String>, Vec<String>, Vec<ViewDiff>) {
-    let base_map: BTreeMap<&str, &ViewInfo> =
-        base.iter().map(|v| (v.name.as_str(), v)).collect();
+fn diff_views(base: &[ViewInfo], target: &[ViewInfo]) -> (Vec<String>, Vec<String>, Vec<ViewDiff>) {
+    let base_map: BTreeMap<&str, &ViewInfo> = base.iter().map(|v| (v.name.as_str(), v)).collect();
     let target_map: BTreeMap<&str, &ViewInfo> =
         target.iter().map(|v| (v.name.as_str(), v)).collect();
 
@@ -367,7 +358,11 @@ fn diff_views(
         .filter_map(|(name, base_v)| {
             target_map.get(name).and_then(|target_v| {
                 let d = diff_single_view(base_v, target_v);
-                if view_diff_is_nonempty(&d) { Some(d) } else { None }
+                if view_diff_is_nonempty(&d) {
+                    Some(d)
+                } else {
+                    None
+                }
             })
         })
         .collect();
@@ -387,10 +382,10 @@ fn view_diff_is_nonempty(d: &ViewDiff) -> bool {
 }
 
 fn diff_single_view(base: &ViewInfo, target: &ViewInfo) -> ViewDiff {
-    let definition_changed = if base.definition != target.definition {
-        Some(DefinitionChange { from: base.definition.clone(), to: target.definition.clone() })
-    } else {
+    let definition_changed = if base.definition == target.definition {
         None
+    } else {
+        Some(DefinitionChange { from: base.definition.clone(), to: target.definition.clone() })
     };
 
     let (columns_added, columns_removed, columns_changed) =
@@ -492,8 +487,8 @@ mod tests {
         let base = vec![make_table("t", vec![make_col("name", "text", false)])];
         let target = vec![make_table("t", vec![make_col("name", "text", true)])];
         let (_, _, changed) = diff_tables(&base, &target);
-        assert_eq!(changed[0].columns_changed[0].from.nullable, false);
-        assert_eq!(changed[0].columns_changed[0].to.nullable, true);
+        assert!(!changed[0].columns_changed[0].from.nullable);
+        assert!(changed[0].columns_changed[0].to.nullable);
     }
 
     #[test]
@@ -550,8 +545,11 @@ mod tests {
 
     #[test]
     fn test_index_added() {
-        let idx =
-            IndexInfo { name: "idx_email".to_string(), columns: vec!["email".to_string()], unique: true };
+        let idx = IndexInfo {
+            name: "idx_email".to_string(),
+            columns: vec!["email".to_string()],
+            unique: true,
+        };
         let base = vec![make_table("users", vec![make_col("id", "int", false)])];
         let mut target_t = make_table("users", vec![make_col("id", "int", false)]);
         target_t.indexes = vec![idx];
@@ -582,7 +580,8 @@ mod tests {
 
     #[test]
     fn test_identical_views_produce_empty_diff() {
-        let views = vec![make_view("v_active", Some("SELECT 1"), vec![make_col("id", "int", false)])];
+        let views =
+            vec![make_view("v_active", Some("SELECT 1"), vec![make_col("id", "int", false)])];
         let (added, removed, changed) = diff_views(&views, &views);
         assert!(added.is_empty());
         assert!(removed.is_empty());
@@ -591,8 +590,11 @@ mod tests {
 
     #[test]
     fn test_view_definition_change() {
-        let base =
-            vec![make_view("v_users", Some("SELECT id FROM users"), vec![make_col("id", "int", false)])];
+        let base = vec![make_view(
+            "v_users",
+            Some("SELECT id FROM users"),
+            vec![make_col("id", "int", false)],
+        )];
         let target = vec![make_view(
             "v_users",
             Some("SELECT id, name FROM users"),

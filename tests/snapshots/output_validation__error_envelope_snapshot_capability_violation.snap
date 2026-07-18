@@ -1,0 +1,17 @@
+---
+source: tests/output_validation.rs
+expression: json_str
+---
+{
+  "ok": false,
+  "engine": "postgres",
+  "command": "query",
+  "error": {
+    "code": "CAPABILITY_VIOLATION",
+    "message": "Capability violation: DDL operations are not permitted"
+  },
+  "meta": {
+    "contract_version": "1",
+    "execution_ms": 0
+  }
+}

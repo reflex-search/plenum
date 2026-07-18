@@ -241,7 +241,7 @@ pub struct ExplainPlanNode {
     /// Planner's estimated cost (engine-specific units); `null` when not available
     pub estimated_cost: Option<f64>,
     /// Child plan nodes (empty for leaf nodes)
-    pub children: Vec<ExplainPlanNode>,
+    pub children: Vec<Self>,
 }
 
 /// Return `true` when `sql` opens with the `EXPLAIN` keyword (case-insensitive).

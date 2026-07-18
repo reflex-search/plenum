@@ -1,0 +1,17 @@
+---
+source: tests/output_validation.rs
+expression: json_str
+---
+{
+  "ok": false,
+  "engine": "",
+  "command": "query",
+  "error": {
+    "code": "INVALID_INPUT",
+    "message": "Invalid input: Query cannot be empty"
+  },
+  "meta": {
+    "contract_version": "1",
+    "execution_ms": 0
+  }
+}

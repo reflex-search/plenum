@@ -1,0 +1,17 @@
+---
+source: tests/output_validation.rs
+expression: json_str
+---
+{
+  "ok": false,
+  "engine": "postgres",
+  "command": "query",
+  "error": {
+    "code": "QUERY_FAILED",
+    "message": "Query execution failed: relation \"users\" does not exist"
+  },
+  "meta": {
+    "contract_version": "1",
+    "execution_ms": 0
+  }
+}

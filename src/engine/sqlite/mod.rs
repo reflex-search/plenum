@@ -692,9 +692,12 @@ fn json_to_sqlite_value(val: &serde_json::Value) -> rusqlite::types::Value {
 /// the interrupt handle fired and `SQLite` cancelled the running statement.
 /// Run `EXPLAIN QUERY PLAN` on `inner_sql` and normalize the result into an `ExplainPlanNode` tree.
 ///
-/// SQLite's EXPLAIN QUERY PLAN returns rows of `(id, parent, notused, detail)`.
+/// `SQLite`'s EXPLAIN QUERY PLAN returns rows of `(id, parent, notused, detail)`.
 /// We build a parent-pointer tree and return the virtual root containing all top-level nodes.
-fn execute_structured_explain_sqlite(conn: &Connection, inner_sql: &str) -> Result<ExplainPlanNode> {
+fn execute_structured_explain_sqlite(
+    conn: &Connection,
+    inner_sql: &str,
+) -> Result<ExplainPlanNode> {
     let sql = format!("EXPLAIN QUERY PLAN {inner_sql}");
 
     #[derive(Debug)]
@@ -716,8 +719,10 @@ fn execute_structured_explain_sqlite(conn: &Connection, inner_sql: &str) -> Resu
                 detail: row.get::<_, String>(3).unwrap_or_default(),
             })
         })
-        .map_err(|e| PlenumError::query_failed(format!("Failed to execute EXPLAIN QUERY PLAN: {e}")))?
-        .filter_map(|r| r.ok())
+        .map_err(|e| {
+            PlenumError::query_failed(format!("Failed to execute EXPLAIN QUERY PLAN: {e}"))
+        })?
+        .filter_map(std::result::Result::ok)
         .collect();
 
     // Build children map: parent_id → Vec<child>

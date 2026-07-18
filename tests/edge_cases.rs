@@ -89,8 +89,13 @@ async fn test_large_result_set_with_max_rows() {
     }
 
     let config = ConnectionConfig::sqlite(temp_file.clone());
-    let caps =
-        Capabilities { max_rows: Some(100), timeout_ms: None, offset: None, max_bytes: None, explain_format: None };
+    let caps = Capabilities {
+        max_rows: Some(100),
+        timeout_ms: None,
+        offset: None,
+        max_bytes: None,
+        explain_format: None,
+    };
 
     let result = SqliteEngine::execute(&config, "SELECT * FROM large_table", &[], &caps).await;
     assert!(result.is_ok());

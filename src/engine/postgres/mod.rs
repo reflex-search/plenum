@@ -989,10 +989,9 @@ async fn execute_structured_explain_postgres(
 ) -> Result<ExplainPlanNode> {
     let sql = format!("EXPLAIN (FORMAT JSON) {inner_sql}");
 
-    let rows = client
-        .query(sql.as_str(), &[])
-        .await
-        .map_err(|e| PlenumError::query_failed(format!("Failed to execute EXPLAIN (FORMAT JSON): {e}")))?;
+    let rows = client.query(sql.as_str(), &[]).await.map_err(|e| {
+        PlenumError::query_failed(format!("Failed to execute EXPLAIN (FORMAT JSON): {e}"))
+    })?;
 
     let row = rows.first().ok_or_else(|| {
         PlenumError::query_failed("EXPLAIN (FORMAT JSON) returned no rows".to_string())
@@ -1021,18 +1020,12 @@ async fn execute_structured_explain_postgres(
     Ok(normalize_pg_plan_node(plan_obj))
 }
 
-/// Recursively normalize a PostgreSQL EXPLAIN JSON plan node.
+/// Recursively normalize a `PostgreSQL` EXPLAIN JSON plan node.
 fn normalize_pg_plan_node(node: &serde_json::Value) -> ExplainPlanNode {
-    let node_type = node
-        .get("Node Type")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown")
-        .to_string();
+    let node_type =
+        node.get("Node Type").and_then(serde_json::Value::as_str).unwrap_or("unknown").to_string();
 
-    let relation = node
-        .get("Relation Name")
-        .and_then(serde_json::Value::as_str)
-        .map(String::from);
+    let relation = node.get("Relation Name").and_then(serde_json::Value::as_str).map(String::from);
 
     let estimated_rows = node.get("Plan Rows").and_then(serde_json::Value::as_f64);
     let estimated_cost = node.get("Total Cost").and_then(serde_json::Value::as_f64);
@@ -1916,15 +1909,11 @@ mod tests {
             "postgres".to_string(),
             "postgres".to_string(),
         );
-        let caps =
-            Capabilities { explain_format: Some(ExplainFormat::Structured), ..Capabilities::default() };
-        let result = PostgresEngine::execute(
-            &config,
-            "EXPLAIN SELECT 1 AS n",
-            &[],
-            &caps,
-        )
-        .await;
+        let caps = Capabilities {
+            explain_format: Some(ExplainFormat::Structured),
+            ..Capabilities::default()
+        };
+        let result = PostgresEngine::execute(&config, "EXPLAIN SELECT 1 AS n", &[], &caps).await;
         assert!(result.is_ok(), "structured EXPLAIN should succeed: {:?}", result.err());
         let qr = result.unwrap();
         assert!(qr.plan.is_some(), "plan must be populated");
@@ -1943,8 +1932,10 @@ mod tests {
             "postgres".to_string(),
             "postgres".to_string(),
         );
-        let caps =
-            Capabilities { explain_format: Some(ExplainFormat::Structured), ..Capabilities::default() };
+        let caps = Capabilities {
+            explain_format: Some(ExplainFormat::Structured),
+            ..Capabilities::default()
+        };
         let result = PostgresEngine::execute(&config, "SELECT 1", &[], &caps).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().error_code(), "INVALID_INPUT");

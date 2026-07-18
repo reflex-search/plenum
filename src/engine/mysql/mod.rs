@@ -1077,22 +1077,24 @@ async fn execute_query(
 }
 
 /// Execute `EXPLAIN FORMAT=JSON` against the inner SQL and normalize the result.
-async fn execute_structured_explain_mysql(conn: &mut Conn, inner_sql: &str) -> Result<ExplainPlanNode> {
+async fn execute_structured_explain_mysql(
+    conn: &mut Conn,
+    inner_sql: &str,
+) -> Result<ExplainPlanNode> {
     let sql = format!("EXPLAIN FORMAT=JSON {inner_sql}");
 
-    let rows: Vec<Row> = conn
-        .query(sql)
-        .await
-        .map_err(|e| PlenumError::query_failed(format!("Failed to execute EXPLAIN FORMAT=JSON: {e}")))?;
+    let rows: Vec<Row> = conn.query(sql).await.map_err(|e| {
+        PlenumError::query_failed(format!("Failed to execute EXPLAIN FORMAT=JSON: {e}"))
+    })?;
 
     let row = rows.first().ok_or_else(|| {
         PlenumError::query_failed("EXPLAIN FORMAT=JSON returned no rows".to_string())
     })?;
 
     // MySQL returns one text column containing the JSON plan
-    let plan_json: String = row
-        .get(0)
-        .ok_or_else(|| PlenumError::query_failed("EXPLAIN FORMAT=JSON row was empty".to_string()))?;
+    let plan_json: String = row.get(0).ok_or_else(|| {
+        PlenumError::query_failed("EXPLAIN FORMAT=JSON row was empty".to_string())
+    })?;
 
     let plan_value: serde_json::Value = serde_json::from_str(&plan_json).map_err(|e| {
         PlenumError::query_failed(format!("Failed to parse EXPLAIN JSON from MySQL: {e}"))
@@ -1107,7 +1109,7 @@ async fn execute_structured_explain_mysql(conn: &mut Conn, inner_sql: &str) -> R
     Ok(normalize_mysql_query_block(query_block))
 }
 
-/// Normalize a MySQL `query_block` into an `ExplainPlanNode`.
+/// Normalize a `MySQL` `query_block` into an `ExplainPlanNode`.
 fn normalize_mysql_query_block(block: &serde_json::Value) -> ExplainPlanNode {
     let estimated_cost = block
         .get("cost_info")
@@ -1124,7 +1126,7 @@ fn normalize_mysql_query_block(block: &serde_json::Value) -> ExplainPlanNode {
     }
 }
 
-/// Collect child plan nodes from a MySQL plan block.
+/// Collect child plan nodes from a `MySQL` plan block.
 fn collect_mysql_children(block: &serde_json::Value) -> Vec<ExplainPlanNode> {
     let mut children = Vec::new();
 
@@ -1156,7 +1158,7 @@ fn collect_mysql_children(block: &serde_json::Value) -> Vec<ExplainPlanNode> {
     children
 }
 
-/// Normalize a MySQL `table` object into an `ExplainPlanNode`.
+/// Normalize a `MySQL` `table` object into an `ExplainPlanNode`.
 fn normalize_mysql_table_node(table: &serde_json::Value) -> ExplainPlanNode {
     let node_type = table
         .get("access_type")
@@ -1164,10 +1166,7 @@ fn normalize_mysql_table_node(table: &serde_json::Value) -> ExplainPlanNode {
         .unwrap_or("unknown")
         .to_string();
 
-    let relation = table
-        .get("table_name")
-        .and_then(serde_json::Value::as_str)
-        .map(String::from);
+    let relation = table.get("table_name").and_then(serde_json::Value::as_str).map(String::from);
 
     let estimated_rows = table.get("rows_examined_per_scan").and_then(serde_json::Value::as_f64);
 

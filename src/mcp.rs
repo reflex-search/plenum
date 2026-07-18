@@ -549,8 +549,8 @@ async fn tool_introspect(args: &Value) -> Result<Value> {
     // ── diff-against path ──────────────────────────────────────────────────────
     if let Some(target_name) = args.get("diff_against").and_then(|v| v.as_str()) {
         let target_proj = args.get("diff_against_project_path").and_then(|v| v.as_str());
-        let (target_config, _) =
-            crate::resolve_connection(target_proj, Some(target_name)).map_err(|e| {
+        let (target_config, _) = crate::resolve_connection(target_proj, Some(target_name))
+            .map_err(|e| {
                 anyhow!("Failed to resolve diff-against connection '{target_name}': {e}")
             })?;
 
@@ -706,14 +706,14 @@ async fn tool_query(args: &Value) -> Result<Value> {
         Some("structured") => Some(crate::engine::ExplainFormat::Structured),
         Some(other) => {
             return Err(anyhow!(
-                "Invalid explain_format '{}'. Valid values: native, structured",
-                other
+                "Invalid explain_format '{other}'. Valid values: native, structured"
             ));
         }
     };
 
     // Build capabilities (read-only only; max_bytes is post-processed below)
-    let capabilities = Capabilities { max_rows, max_bytes: None, timeout_ms, offset: None, explain_format };
+    let capabilities =
+        Capabilities { max_rows, max_bytes: None, timeout_ms, offset: None, explain_format };
 
     // Validate query is read-only (pre-execution check)
     crate::validate_query(sql, &capabilities, config.engine).map_err(|e| anyhow!("{e}"))?;
