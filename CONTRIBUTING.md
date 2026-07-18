@@ -61,6 +61,39 @@ cargo test test_name
 cargo test module_name
 ```
 
+### Live Database Tests
+
+When a change touches engine code (`src/engines/`), connection handling, or the JSON output contract (`src/output.rs`), the live database suites are **mandatory** before the work is considered verified. This rule is enforced in CLAUDE.md and CI.
+
+**Spin up all containers and run the full matrix (MySQL 8.0, MySQL 8.4, PostgreSQL 16):**
+
+```bash
+scripts/test-live.sh
+```
+
+This brings up seeded containers via Docker Compose, runs `tests/live_mysql.rs` and `tests/live_postgres.rs` with `--include-ignored`, then tears everything down.
+
+**Iteration mode** — keep containers running between runs:
+
+```bash
+scripts/test-live.sh --keep
+# ... iterate ...
+docker compose -f tests/live/compose.yaml down --volumes
+```
+
+**Point live suites at existing servers** by exporting DSN env vars:
+
+```bash
+export PLENUM_TEST_MYSQL_DSN="mysql://user:pass@127.0.0.1:3306/plenum_test"
+export PLENUM_TEST_MYSQL84_DSN="mysql://user:pass@127.0.0.1:3307/plenum_test"
+export PLENUM_TEST_POSTGRES_DSN="postgresql://user:pass@127.0.0.1:5432/plenum_test"
+cargo test --test live_mysql --test live_postgres -- --include-ignored
+```
+
+If a DSN variable is missing during an `--include-ignored` run, the tests fail fast — they never silently skip.
+
+**Containers are ephemeral.** Never assume they are running. See `tests/live/compose.yaml` and seed data in `tests/live/seed/{mysql,postgres}/`.
+
 ### Code Quality
 
 Before submitting a PR, ensure your code passes all quality checks:
@@ -84,9 +117,24 @@ cargo audit
 Before committing, run:
 
 ```bash
-cargo fmt
-cargo clippy --all-targets --all-features
+cargo build --all-targets
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
 cargo test
+```
+
+When engine, connection, or output code changed — also run:
+
+```bash
+scripts/test-live.sh
+```
+
+When `src/output.rs` changed — also run:
+
+```bash
+cargo run --bin generate-schemas
+cargo test --test schema_drift
+# commit the updated schemas/ files
 ```
 
 ## Contribution Guidelines
@@ -144,10 +192,11 @@ Do NOT implement:
 
 ### Testing Requirements
 
-- All new features must have tests
+- All new features must have tests (write the failing test first — see TDD Mandate in CLAUDE.md)
 - Tests must be deterministic
 - No external cloud services in tests
 - Use snapshot tests for JSON output validation
+- Run `scripts/test-live.sh` when engine, connection, or JSON output code changes
 
 ### Documentation
 
@@ -167,10 +216,12 @@ Do NOT implement:
 
 ### PR Requirements
 
-- [ ] Code compiles without errors
-- [ ] All tests pass
-- [ ] Code is formatted (`cargo fmt`)
-- [ ] No clippy warnings (`cargo clippy`)
+- [ ] Code compiles without errors (`cargo build --all-targets`)
+- [ ] All unit/snapshot/capability tests pass (`cargo test`)
+- [ ] Code is formatted (`cargo fmt --check`)
+- [ ] No clippy warnings (`cargo clippy --all-targets --all-features -- -D warnings`)
+- [ ] Live suites pass if engine/connection/output code changed (`scripts/test-live.sh`)
+- [ ] JSON schemas regenerated and committed if `src/output.rs` changed (`cargo run --bin generate-schemas`)
 - [ ] Documentation is updated
 - [ ] Commit messages are clear and descriptive
 
