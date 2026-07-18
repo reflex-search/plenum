@@ -218,6 +218,37 @@ pub struct ConnectionInfo {
     pub user: String,
 }
 
+/// EXPLAIN output format for the `query` command
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExplainFormat {
+    /// Return raw engine rows (default — byte-for-byte unchanged from pre-REF-282 behavior)
+    #[default]
+    Native,
+    /// Return a normalized, engine-stable plan tree in `data.plan`
+    Structured,
+}
+
+/// Normalized EXPLAIN plan node — engine-stable shape agents can reason about
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExplainPlanNode {
+    /// Engine-specific operation label (e.g. "Seq Scan", "Hash Join", "SCAN TABLE")
+    pub node_type: String,
+    /// Table or relation name; `null` when the node does not reference one
+    pub relation: Option<String>,
+    /// Planner's estimated row count; `null` when the engine does not supply it
+    pub estimated_rows: Option<f64>,
+    /// Planner's estimated cost (engine-specific units); `null` when not available
+    pub estimated_cost: Option<f64>,
+    /// Child plan nodes (empty for leaf nodes)
+    pub children: Vec<Self>,
+}
+
+/// Return `true` when `sql` opens with the `EXPLAIN` keyword (case-insensitive).
+pub(crate) fn is_explain_query(sql: &str) -> bool {
+    sql.trim().to_uppercase().starts_with("EXPLAIN")
+}
+
 /// Query execution capabilities
 ///
 /// Capabilities define constraints for query execution.
@@ -244,13 +275,17 @@ pub struct Capabilities {
     /// None means start from the first row
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<usize>,
+
+    /// EXPLAIN output format; `None` / `Native` preserves pre-REF-282 behavior
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explain_format: Option<ExplainFormat>,
 }
 
 impl Capabilities {
     /// Create new capabilities with optional constraints
     #[must_use]
     pub const fn new(max_rows: Option<usize>, timeout_ms: Option<u64>) -> Self {
-        Self { max_rows, max_bytes: None, timeout_ms, offset: None }
+        Self { max_rows, max_bytes: None, timeout_ms, offset: None, explain_format: None }
     }
 }
 
@@ -371,6 +406,10 @@ pub struct QueryResult {
     /// Why the result was truncated: "rows" (`max_rows`) or "bytes" (`max_bytes`); absent when not truncated
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_by: Option<String>,
+
+    /// Normalized EXPLAIN plan; populated only when `--explain-format structured` is used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<ExplainPlanNode>,
 }
 
 /// Trim `result.rows` to fit within `max_bytes` of serialized JSON, at row boundaries.
@@ -633,6 +672,106 @@ pub trait DatabaseEngine {
     ) -> impl std::future::Future<Output = Result<QueryResult>> + Send;
 }
 
+/// Change to a column's properties between two schemas
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ColumnChange {
+    /// Column name
+    pub name: String,
+    /// Column state in the base connection
+    pub from: ColumnInfo,
+    /// Column state in the diff-against connection
+    pub to: ColumnInfo,
+}
+
+/// Change to a table's primary key between two schemas
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PrimaryKeyChange {
+    /// Primary key columns in the base connection; null if no primary key
+    pub from: Option<Vec<String>>,
+    /// Primary key columns in the diff-against connection; null if no primary key
+    pub to: Option<Vec<String>>,
+}
+
+/// Change to a view's SQL definition between two schemas
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DefinitionChange {
+    /// View definition in the base connection; null if not available
+    pub from: Option<String>,
+    /// View definition in the diff-against connection; null if not available
+    pub to: Option<String>,
+}
+
+/// Structural diff of a single table between two schemas
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TableDiff {
+    /// Table name
+    pub name: String,
+    /// Columns present in the diff-against connection but not in the base
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns_added: Vec<ColumnInfo>,
+    /// Columns present in the base connection but not in the diff-against
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns_removed: Vec<ColumnInfo>,
+    /// Columns present in both connections whose definition changed
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns_changed: Vec<ColumnChange>,
+    /// Primary key change; present only when the primary key differs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_key_changed: Option<PrimaryKeyChange>,
+    /// Indexes present in the diff-against connection but not in the base
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indexes_added: Vec<IndexInfo>,
+    /// Indexes present in the base connection but not in the diff-against
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indexes_removed: Vec<IndexInfo>,
+    /// Foreign keys present in the diff-against connection but not in the base
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub foreign_keys_added: Vec<ForeignKeyInfo>,
+    /// Foreign keys present in the base connection but not in the diff-against
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub foreign_keys_removed: Vec<ForeignKeyInfo>,
+}
+
+/// Structural diff of a single view between two schemas
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ViewDiff {
+    /// View name
+    pub name: String,
+    /// SQL definition change; present only when the definition differs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub definition_changed: Option<DefinitionChange>,
+    /// Columns present in the diff-against connection but not in the base
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns_added: Vec<ColumnInfo>,
+    /// Columns present in the base connection but not in the diff-against
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns_removed: Vec<ColumnInfo>,
+    /// Columns present in both connections whose definition changed
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns_changed: Vec<ColumnChange>,
+}
+
+/// Full structural schema diff between two connections
+///
+/// Produced by `plenum introspect --diff-against <name>`.
+/// All top-level arrays are always present; identical schemas produce all-empty arrays.
+/// Stable ordering: all arrays sorted alphabetically by name for deterministic output.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SchemaDiff {
+    /// Tables present in the diff-against connection but not in the base
+    pub tables_added: Vec<String>,
+    /// Tables present in the base connection but not in the diff-against
+    pub tables_removed: Vec<String>,
+    /// Tables present in both connections with structural changes
+    pub tables_changed: Vec<TableDiff>,
+    /// Views present in the diff-against connection but not in the base
+    pub views_added: Vec<String>,
+    /// Views present in the base connection but not in the diff-against
+    pub views_removed: Vec<String>,
+    /// Views present in both connections with changes
+    pub views_changed: Vec<ViewDiff>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -770,6 +909,7 @@ mod tests {
             execution_ms: 0,
             rows_truncated: false,
             truncated_by: None,
+            plan: None,
         };
         // Budget tight enough for 2 rows but not 3
         apply_byte_budget(&mut result, 30);
@@ -788,6 +928,7 @@ mod tests {
             execution_ms: 0,
             rows_truncated: false,
             truncated_by: None,
+            plan: None,
         };
         apply_byte_budget(&mut result, 1_000_000);
         assert_eq!(result.rows.len(), 2);
@@ -805,6 +946,7 @@ mod tests {
             execution_ms: 0,
             rows_truncated: false,
             truncated_by: None,
+            plan: None,
         };
         apply_byte_budget(&mut result, 0);
         assert_eq!(result.rows.len(), 0);

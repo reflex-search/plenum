@@ -16,7 +16,8 @@ use std::time::Instant;
 use plenum::engine::{SslMode, TlsConfig};
 use plenum::{
     parse_dsn, redact_dsn, Capabilities, ConfigLocation, ConnectionConfig, DatabaseEngine,
-    DatabaseType, ErrorEnvelope, KeychainEntry, Metadata, PlenumError, Result, SuccessEnvelope,
+    DatabaseType, ErrorEnvelope, ExplainFormat, KeychainEntry, Metadata, PlenumError, Result,
+    SuccessEnvelope,
 };
 
 // Import database engines
@@ -195,32 +196,44 @@ enum Commands {
 
         // ===== OPERATIONS (mutually exclusive) =====
         /// List all databases (requires wildcard database connection)
-        #[arg(long, conflicts_with_all = ["list_schemas", "list_tables", "list_views", "list_indexes", "table", "view"])]
+        #[arg(long, conflicts_with_all = ["list_schemas", "list_tables", "list_views", "list_indexes", "table", "view", "diff_against"])]
         list_databases: bool,
 
         /// List all schemas (`PostgreSQL` only)
-        #[arg(long, conflicts_with_all = ["list_databases", "list_tables", "list_views", "list_indexes", "table", "view"])]
+        #[arg(long, conflicts_with_all = ["list_databases", "list_tables", "list_views", "list_indexes", "table", "view", "diff_against"])]
         list_schemas: bool,
 
         /// List all table names
-        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_views", "list_indexes", "table", "view"])]
+        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_views", "list_indexes", "table", "view", "diff_against"])]
         list_tables: bool,
 
         /// List all view names
-        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_tables", "list_indexes", "table", "view"])]
+        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_tables", "list_indexes", "table", "view", "diff_against"])]
         list_views: bool,
 
         /// List all indexes (optionally filtered by table name)
-        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_tables", "list_views", "table", "view"])]
+        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_tables", "list_views", "table", "view", "diff_against"])]
         list_indexes: Option<String>,
 
         /// Get full details for a specific table
-        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_tables", "list_views", "list_indexes", "view"])]
+        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_tables", "list_views", "list_indexes", "view", "diff_against"])]
         table: Option<String>,
 
         /// Get details for a specific view
-        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_tables", "list_views", "list_indexes", "table"])]
+        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_tables", "list_views", "list_indexes", "table", "diff_against"])]
         view: Option<String>,
+
+        /// Compare the current connection against this named connection (structural schema diff).
+        /// Mutually exclusive with all other operation flags.
+        /// Returns a full structural diff: tables/views added, removed, and changed (columns,
+        /// indexes, foreign keys, primary keys).
+        #[arg(long, conflicts_with_all = ["list_databases", "list_schemas", "list_tables", "list_views", "list_indexes", "table", "view"])]
+        diff_against: Option<String>,
+
+        /// Project path for the --diff-against connection (defaults to the current project path).
+        /// Use for cross-project comparison.
+        #[arg(long, requires = "diff_against")]
+        diff_against_project_path: Option<String>,
 
         // ===== MODIFIERS =====
         /// Target database (switch to different database before introspecting)
@@ -346,6 +359,12 @@ enum Commands {
         /// Validate SQL without executing: runs capability checks and returns a verdict, no DB call
         #[arg(long)]
         check_only: bool,
+
+        /// EXPLAIN output format: "native" (default) returns raw engine rows unchanged;
+        /// "structured" requires an EXPLAIN statement and returns data.plan — a normalized,
+        /// engine-stable plan tree. Non-EXPLAIN queries with "structured" are rejected.
+        #[arg(long)]
+        explain_format: Option<String>,
     },
 
     /// Start MCP server (hidden from help, for AI agent integration)
@@ -458,6 +477,8 @@ async fn main() {
             list_indexes,
             table,
             view,
+            diff_against,
+            diff_against_project_path,
             target_database,
             schema,
             columns,
@@ -485,6 +506,8 @@ async fn main() {
                 list_indexes,
                 table,
                 view,
+                diff_against,
+                diff_against_project_path,
                 target_database,
                 schema,
                 columns,
@@ -518,6 +541,7 @@ async fn main() {
             param,
             time_only,
             check_only,
+            explain_format,
         }) => {
             let tls = build_tls_config(ssl_mode.as_deref(), ssl_ca, ssl_cert, ssl_key);
             handle_query(
@@ -541,6 +565,7 @@ async fn main() {
                 param,
                 time_only,
                 check_only,
+                explain_format,
             )
             .await
         }
@@ -1255,6 +1280,8 @@ async fn handle_introspect(
     list_indexes: Option<String>,
     table: Option<String>,
     view: Option<String>,
+    diff_against: Option<String>,
+    diff_against_project_path: Option<String>,
     target_database: Option<String>,
     schema: Option<String>,
     columns: Option<bool>,
@@ -1267,7 +1294,7 @@ async fn handle_introspect(
     // Start timing
     let start = Instant::now();
 
-    // Resolve connection config — DSN path bypasses saved config entirely
+    // Resolve base connection config — DSN path bypasses saved config entirely
     let (config, _is_readonly) = if let Some(ref dsn_str) = dsn {
         match parse_dsn(dsn_str) {
             Ok(cfg) => (cfg, false),
@@ -1306,141 +1333,180 @@ async fn handle_introspect(
         }
     };
 
-    // Parse introspect operation from CLI args
-    let operation = {
-        // Count how many operations were specified
-        let ops = [
-            list_databases,
-            list_schemas,
-            list_tables,
-            list_views,
-            list_indexes.is_some(),
-            table.is_some(),
-            view.is_some(),
-        ];
-        let op_count = ops.iter().filter(|&&x| x).count();
+    // ── diff-against path ─────────────────────────────────────────────────────
+    if let Some(target_name) = diff_against {
+        // Resolve the second (target) connection via the same config precedence rules.
+        // --diff-against-project-path overrides; otherwise fall back to the primary project path
+        // (or current directory when neither is specified).
+        let target_proj = diff_against_project_path.as_deref().or(project_path.as_deref());
+        let target_config = match plenum::resolve_connection(target_proj, Some(&target_name)) {
+            Ok((cfg, _)) => cfg,
+            Err(e) => {
+                let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "introspect", &e);
+                output_error(&envelope);
+                return Err(1);
+            }
+        };
 
-        if op_count == 0 {
-            let envelope = ErrorEnvelope::new(
-                config.engine.as_str(),
-                "introspect",
-                plenum::ErrorInfo::new(
-                    "INVALID_INPUT",
-                    "No introspect operation specified. Must provide exactly one of: \
-                     --list-databases, --list-schemas, --list-tables, --list-views, --list-indexes, --table, or --view. \
-                     Use --help for more information.",
-                ),
-            );
-            output_error(&envelope);
-            return Err(1);
+        let diff_result = plenum::diff::compute_schema_diff(
+            &config,
+            &target_config,
+            target_database.as_deref(),
+            schema.as_deref(),
+        )
+        .await;
+
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        match diff_result {
+            Ok(diff) => {
+                let envelope = SuccessEnvelope::new(
+                    config.engine.as_str(),
+                    "introspect",
+                    serde_json::json!({ "diff": diff }),
+                    Metadata::new(elapsed_ms),
+                );
+                output_success(&envelope);
+                Ok(())
+            }
+            Err(e) => {
+                let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "introspect", &e);
+                output_error(&envelope);
+                Err(1)
+            }
         }
+    } else {
+        // ── standard introspect path ──────────────────────────────────────────
+        let operation = {
+            let ops = [
+                list_databases,
+                list_schemas,
+                list_tables,
+                list_views,
+                list_indexes.is_some(),
+                table.is_some(),
+                view.is_some(),
+            ];
+            let op_count = ops.iter().filter(|&&x| x).count();
 
-        if op_count > 1 {
-            let envelope = ErrorEnvelope::new(
-                config.engine.as_str(),
-                "introspect",
-                plenum::ErrorInfo::new(
-                    "INVALID_INPUT",
-                    "Multiple introspect operations specified. Only one operation allowed per invocation.",
-                ),
-            );
-            output_error(&envelope);
-            return Err(1);
-        }
+            if op_count == 0 {
+                let envelope = ErrorEnvelope::new(
+                    config.engine.as_str(),
+                    "introspect",
+                    plenum::ErrorInfo::new(
+                        "INVALID_INPUT",
+                        "No introspect operation specified. Must provide exactly one of: \
+                         --list-databases, --list-schemas, --list-tables, --list-views, \
+                         --list-indexes, --table, --view, or --diff-against. \
+                         Use --help for more information.",
+                    ),
+                );
+                output_error(&envelope);
+                return Err(1);
+            }
 
-        // Build the operation
-        if list_databases {
-            IntrospectOperation::ListDatabases
-        } else if list_schemas {
-            IntrospectOperation::ListSchemas
-        } else if list_tables {
-            IntrospectOperation::ListTables
-        } else if list_views {
-            IntrospectOperation::ListViews
-        } else if let Some(table_filter) = list_indexes {
-            let filter = if table_filter.is_empty() { None } else { Some(table_filter) };
-            IntrospectOperation::ListIndexes { table: filter }
-        } else if let Some(table_name) = table {
-            // Parse table field selectors
-            let fields = TableFields {
-                columns: columns.unwrap_or(true),
-                primary_key: primary_key.unwrap_or(true),
-                foreign_keys: foreign_keys.unwrap_or(true),
-                indexes: indexes.unwrap_or(true),
-            };
+            if op_count > 1 {
+                let envelope = ErrorEnvelope::new(
+                    config.engine.as_str(),
+                    "introspect",
+                    plenum::ErrorInfo::new(
+                        "INVALID_INPUT",
+                        "Multiple introspect operations specified. Only one operation allowed per invocation.",
+                    ),
+                );
+                output_error(&envelope);
+                return Err(1);
+            }
 
-            IntrospectOperation::TableDetails { name: table_name, fields }
-        } else if let Some(view_name) = view {
-            IntrospectOperation::ViewDetails { name: view_name }
-        } else {
-            unreachable!("Operation validation above ensures we have exactly one operation")
-        }
-    };
+            if list_databases {
+                IntrospectOperation::ListDatabases
+            } else if list_schemas {
+                IntrospectOperation::ListSchemas
+            } else if list_tables {
+                IntrospectOperation::ListTables
+            } else if list_views {
+                IntrospectOperation::ListViews
+            } else if let Some(table_filter) = list_indexes {
+                let filter = if table_filter.is_empty() { None } else { Some(table_filter) };
+                IntrospectOperation::ListIndexes { table: filter }
+            } else if let Some(table_name) = table {
+                let fields = TableFields {
+                    columns: columns.unwrap_or(true),
+                    primary_key: primary_key.unwrap_or(true),
+                    foreign_keys: foreign_keys.unwrap_or(true),
+                    indexes: indexes.unwrap_or(true),
+                };
+                IntrospectOperation::TableDetails { name: table_name, fields }
+            } else if let Some(view_name) = view {
+                IntrospectOperation::ViewDetails { name: view_name }
+            } else {
+                unreachable!("Operation validation above ensures we have exactly one operation")
+            }
+        };
 
-    // Call appropriate database engine for introspection
-    let introspect_result = match config.engine {
-        #[cfg(feature = "sqlite")]
-        DatabaseType::SQLite => {
-            SqliteEngine::introspect(
-                &config,
-                &operation,
-                target_database.as_deref(),
-                schema.as_deref(),
-            )
-            .await
-        }
-        #[cfg(not(feature = "sqlite"))]
-        DatabaseType::SQLite => Err(PlenumError::invalid_input(
-            "SQLite engine not enabled. Build with --features sqlite to enable SQLite support.",
-        )),
+        let introspect_result = match config.engine {
+            #[cfg(feature = "sqlite")]
+            DatabaseType::SQLite => {
+                SqliteEngine::introspect(
+                    &config,
+                    &operation,
+                    target_database.as_deref(),
+                    schema.as_deref(),
+                )
+                .await
+            }
+            #[cfg(not(feature = "sqlite"))]
+            DatabaseType::SQLite => Err(PlenumError::invalid_input(
+                "SQLite engine not enabled. Build with --features sqlite to enable SQLite support.",
+            )),
 
-        #[cfg(feature = "postgres")]
-        DatabaseType::Postgres => {
-            PostgresEngine::introspect(
-                &config,
-                &operation,
-                target_database.as_deref(),
-                schema.as_deref(),
-            )
-            .await
-        }
-        #[cfg(not(feature = "postgres"))]
-        DatabaseType::Postgres => Err(PlenumError::invalid_input(
-            "PostgreSQL engine not enabled. Build with --features postgres to enable PostgreSQL support.",
-        )),
+            #[cfg(feature = "postgres")]
+            DatabaseType::Postgres => {
+                PostgresEngine::introspect(
+                    &config,
+                    &operation,
+                    target_database.as_deref(),
+                    schema.as_deref(),
+                )
+                .await
+            }
+            #[cfg(not(feature = "postgres"))]
+            DatabaseType::Postgres => Err(PlenumError::invalid_input(
+                "PostgreSQL engine not enabled. Build with --features postgres to enable PostgreSQL support.",
+            )),
 
-        #[cfg(feature = "mysql")]
-        DatabaseType::MySQL => {
-            MySqlEngine::introspect(
-                &config,
-                &operation,
-                target_database.as_deref(),
-                schema.as_deref(),
-            )
-            .await
-        }
-        #[cfg(not(feature = "mysql"))]
-        DatabaseType::MySQL => Err(PlenumError::invalid_input(
-            "MySQL engine not enabled. Build with --features mysql to enable MySQL support.",
-        )),
-    };
+            #[cfg(feature = "mysql")]
+            DatabaseType::MySQL => {
+                MySqlEngine::introspect(
+                    &config,
+                    &operation,
+                    target_database.as_deref(),
+                    schema.as_deref(),
+                )
+                .await
+            }
+            #[cfg(not(feature = "mysql"))]
+            DatabaseType::MySQL => Err(PlenumError::invalid_input(
+                "MySQL engine not enabled. Build with --features mysql to enable MySQL support.",
+            )),
+        };
 
-    match introspect_result {
-        Ok(introspect_result) => {
-            let elapsed_ms = start.elapsed().as_millis() as u64;
-            let envelope = SuccessEnvelope::new(
-                config.engine.as_str(),
-                "introspect",
-                introspect_result,
-                Metadata::new(elapsed_ms),
-            );
-            output_success(&envelope);
-            Ok(())
-        }
-        Err(e) => {
-            let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "introspect", &e);
-            output_error(&envelope);
-            Err(1)
+        match introspect_result {
+            Ok(introspect_result) => {
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+                let envelope = SuccessEnvelope::new(
+                    config.engine.as_str(),
+                    "introspect",
+                    introspect_result,
+                    Metadata::new(elapsed_ms),
+                );
+                output_success(&envelope);
+                Ok(())
+            }
+            Err(e) => {
+                let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "introspect", &e);
+                output_error(&envelope);
+                Err(1)
+            }
         }
     }
 }
@@ -1466,6 +1532,7 @@ async fn handle_query(
     raw_params: Vec<String>,
     time_only: bool,
     check_only: bool,
+    explain_format: Option<String>,
 ) -> std::result::Result<(), i32> {
     let start = Instant::now();
 
@@ -1548,7 +1615,17 @@ async fn handle_query(
     };
 
     // Build capabilities (read-only only)
-    let capabilities = Capabilities { max_rows, max_bytes: None, timeout_ms, offset };
+    let explain_format_parsed = explain_format.as_deref().map(|s| match s {
+        "structured" | "Structured" => ExplainFormat::Structured,
+        _ => ExplainFormat::Native,
+    });
+    let capabilities = Capabilities {
+        max_rows,
+        max_bytes: None,
+        timeout_ms,
+        offset,
+        explain_format: explain_format_parsed,
+    };
     // max_bytes is applied post-engine as a post-processing step (see apply_byte_budget call below)
 
     // Parse --param strings into typed JSON values.

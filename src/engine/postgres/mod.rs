@@ -22,11 +22,11 @@
 use std::time::{Duration, Instant};
 use tokio_postgres::{error::SqlState, Client, Config, NoTls, Row};
 
-use crate::capability::validate_query;
+use crate::capability::{strip_explain_prefix, validate_query};
 use crate::engine::{
-    Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine, DatabaseType,
-    ForeignKeyInfo, IndexInfo, IntrospectOperation, IntrospectResult, QueryResult, SslMode,
-    TableInfo, TlsConfig,
+    is_explain_query, Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine,
+    DatabaseType, ExplainFormat, ExplainPlanNode, ForeignKeyInfo, IndexInfo, IntrospectOperation,
+    IntrospectResult, QueryResult, SslMode, TableInfo, TlsConfig,
 };
 use crate::error::{PlenumError, Result};
 
@@ -200,6 +200,30 @@ impl DatabaseEngine for PostgresEngine {
                         format!("Failed to set statement_timeout: {e}"),
                     )
                 })?;
+        }
+
+        // Structured explain path: rewrite to EXPLAIN (FORMAT JSON), normalize the plan tree.
+        // The server-side statement_timeout (set above) still bounds this query.
+        if caps.explain_format == Some(ExplainFormat::Structured) {
+            if !is_explain_query(query) {
+                return Err(PlenumError::invalid_input(
+                    "--explain-format structured requires an EXPLAIN statement; \
+                     non-EXPLAIN queries must omit this flag",
+                ));
+            }
+            let inner = strip_explain_prefix(query);
+            let start = Instant::now();
+            let plan = execute_structured_explain_postgres(&client, &inner).await?;
+            let elapsed = start.elapsed();
+            return Ok(QueryResult {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                rows_affected: None,
+                execution_ms: elapsed.as_millis() as u64,
+                rows_truncated: false,
+                truncated_by: None,
+                plan: Some(plan),
+            });
         }
 
         // Execute with a client-side tokio timeout as a backstop for unresponsive servers.
@@ -932,6 +956,7 @@ async fn execute_query(
             execution_ms: 0,
             rows_truncated,
             truncated_by: None,
+            plan: None,
         })
     } else {
         // Non-SELECT query (INSERT, UPDATE, DELETE, DDL)
@@ -952,8 +977,66 @@ async fn execute_query(
             execution_ms: 0,
             rows_truncated: false,
             truncated_by: None,
+            plan: None,
         })
     }
+}
+
+/// Execute `EXPLAIN (FORMAT JSON)` against the inner SQL and normalize the result.
+async fn execute_structured_explain_postgres(
+    client: &Client,
+    inner_sql: &str,
+) -> Result<ExplainPlanNode> {
+    let sql = format!("EXPLAIN (FORMAT JSON) {inner_sql}");
+
+    let rows = client.query(sql.as_str(), &[]).await.map_err(|e| {
+        PlenumError::query_failed(format!("Failed to execute EXPLAIN (FORMAT JSON): {e}"))
+    })?;
+
+    let row = rows.first().ok_or_else(|| {
+        PlenumError::query_failed("EXPLAIN (FORMAT JSON) returned no rows".to_string())
+    })?;
+
+    // PostgreSQL returns a single text column ("QUERY PLAN") containing the JSON array
+    let plan_json: String = row.try_get(0).map_err(|e| {
+        PlenumError::query_failed(format!("Failed to read EXPLAIN JSON column: {e}"))
+    })?;
+
+    let plan_value: serde_json::Value = serde_json::from_str(&plan_json).map_err(|e| {
+        PlenumError::query_failed(format!("Failed to parse EXPLAIN JSON from PostgreSQL: {e}"))
+    })?;
+
+    // PostgreSQL wraps the plan in [{Plan: {...}}, ...]; we take the first entry
+    let plan_obj = plan_value
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|o| o.get("Plan"))
+        .ok_or_else(|| {
+            PlenumError::query_failed(
+                "Unexpected EXPLAIN JSON structure from PostgreSQL (missing Plan key)".to_string(),
+            )
+        })?;
+
+    Ok(normalize_pg_plan_node(plan_obj))
+}
+
+/// Recursively normalize a `PostgreSQL` EXPLAIN JSON plan node.
+fn normalize_pg_plan_node(node: &serde_json::Value) -> ExplainPlanNode {
+    let node_type =
+        node.get("Node Type").and_then(serde_json::Value::as_str).unwrap_or("unknown").to_string();
+
+    let relation = node.get("Relation Name").and_then(serde_json::Value::as_str).map(String::from);
+
+    let estimated_rows = node.get("Plan Rows").and_then(serde_json::Value::as_f64);
+    let estimated_cost = node.get("Total Cost").and_then(serde_json::Value::as_f64);
+
+    let children = node
+        .get("Plans")
+        .and_then(serde_json::Value::as_array)
+        .map(|plans| plans.iter().map(normalize_pg_plan_node).collect())
+        .unwrap_or_default();
+
+    ExplainPlanNode { node_type, relation, estimated_rows, estimated_cost, children }
 }
 
 /// Convert a `PostgreSQL` row to a JSON-safe `Vec`
@@ -1759,5 +1842,120 @@ mod tests {
 
         // Cleanup
         setup.execute("DROP TABLE IF EXISTS ref263_pg", &[]).await.ok();
+    }
+
+    // -------------------------------------------------------------------------
+    // REF-282: normalize_pg_plan_node unit tests (no live DB needed)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_normalize_pg_plan_node_seq_scan() {
+        let node = serde_json::json!({
+            "Node Type": "Seq Scan",
+            "Relation Name": "users",
+            "Plan Rows": 100.0,
+            "Total Cost": 10.5,
+            "Plans": []
+        });
+        let result = normalize_pg_plan_node(&node);
+        assert_eq!(result.node_type, "Seq Scan");
+        assert_eq!(result.relation, Some("users".to_string()));
+        assert_eq!(result.estimated_rows, Some(100.0));
+        assert_eq!(result.estimated_cost, Some(10.5));
+        assert!(result.children.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_pg_plan_node_missing_optional_fields() {
+        let node = serde_json::json!({ "Node Type": "Hash Join" });
+        let result = normalize_pg_plan_node(&node);
+        assert_eq!(result.node_type, "Hash Join");
+        assert_eq!(result.relation, None);
+        assert_eq!(result.estimated_rows, None);
+        assert_eq!(result.estimated_cost, None);
+        assert!(result.children.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_pg_plan_node_nested_children() {
+        let node = serde_json::json!({
+            "Node Type": "Hash Join",
+            "Total Cost": 25.0,
+            "Plan Rows": 50.0,
+            "Plans": [
+                { "Node Type": "Seq Scan", "Relation Name": "a", "Plan Rows": 10.0, "Total Cost": 5.0 },
+                { "Node Type": "Hash", "Plan Rows": 20.0, "Total Cost": 8.0,
+                  "Plans": [{ "Node Type": "Seq Scan", "Relation Name": "b", "Plan Rows": 20.0, "Total Cost": 6.0 }]
+                }
+            ]
+        });
+        let result = normalize_pg_plan_node(&node);
+        assert_eq!(result.node_type, "Hash Join");
+        assert_eq!(result.children.len(), 2);
+        assert_eq!(result.children[0].node_type, "Seq Scan");
+        assert_eq!(result.children[0].relation, Some("a".to_string()));
+        assert_eq!(result.children[1].node_type, "Hash");
+        assert_eq!(result.children[1].children.len(), 1);
+        assert_eq!(result.children[1].children[0].relation, Some("b".to_string()));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running PostgreSQL instance"]
+    async fn test_structured_explain_postgres_live() {
+        let config = ConnectionConfig::postgres(
+            "localhost".to_string(),
+            5432,
+            "postgres".to_string(),
+            "postgres".to_string(),
+            "postgres".to_string(),
+        );
+        let caps = Capabilities {
+            explain_format: Some(ExplainFormat::Structured),
+            ..Capabilities::default()
+        };
+        let result = PostgresEngine::execute(&config, "EXPLAIN SELECT 1 AS n", &[], &caps).await;
+        assert!(result.is_ok(), "structured EXPLAIN should succeed: {:?}", result.err());
+        let qr = result.unwrap();
+        assert!(qr.plan.is_some(), "plan must be populated");
+        assert!(qr.rows.is_empty(), "raw rows must be empty in structured mode");
+        let plan = qr.plan.unwrap();
+        assert!(!plan.node_type.is_empty(), "node_type must not be empty");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running PostgreSQL instance"]
+    async fn test_structured_explain_non_explain_returns_invalid_input() {
+        let config = ConnectionConfig::postgres(
+            "localhost".to_string(),
+            5432,
+            "postgres".to_string(),
+            "postgres".to_string(),
+            "postgres".to_string(),
+        );
+        let caps = Capabilities {
+            explain_format: Some(ExplainFormat::Structured),
+            ..Capabilities::default()
+        };
+        let result = PostgresEngine::execute(&config, "SELECT 1", &[], &caps).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().error_code(), "INVALID_INPUT");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running PostgreSQL instance"]
+    async fn test_native_explain_path_unchanged_postgres() {
+        let config = ConnectionConfig::postgres(
+            "localhost".to_string(),
+            5432,
+            "postgres".to_string(),
+            "postgres".to_string(),
+            "postgres".to_string(),
+        );
+        let caps = Capabilities::default(); // native mode
+        let result = PostgresEngine::execute(&config, "EXPLAIN SELECT 1 AS n", &[], &caps).await;
+        assert!(result.is_ok(), "native EXPLAIN should still work");
+        let qr = result.unwrap();
+        assert!(qr.plan.is_none(), "plan must be absent in native mode");
+        assert!(!qr.rows.is_empty(), "native mode must return raw plan rows");
     }
 }

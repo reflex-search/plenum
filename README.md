@@ -46,47 +46,192 @@ Plenum provides exactly three commands:
 
 ### 1. `plenum connect` - Configure Database Connections
 
-Manage database connection configurations (interactive or non-interactive):
+Manage database connection configurations (interactive or non-interactive).
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--list` | — | List saved connections for the project as JSON (no secrets emitted) |
+| `--name <NAME>` | `"default"` | Connection name |
+| `--project-path <PATH>` | current directory | Project path for connection lookup |
+| `--engine <ENGINE>` | — | Database engine: `postgres`, `mysql`, or `sqlite` |
+| `--host <HOST>` | — | Hostname (postgres/mysql) |
+| `--port <PORT>` | — | Port (postgres/mysql) |
+| `--user <USER>` | — | Username (postgres/mysql) |
+| `--password <PASSWORD>` | — | Password (postgres/mysql; visible in process list — prefer `--password-env`) |
+| `--password-env <VAR>` | — | Name of an environment variable whose value is the password |
+| `--password-command <CMD>` | — | Shell command (`sh -c`) whose stdout is used as the password at connection time |
+| `--keychain-service <SVC>` | — | OS keychain service name (pair with `--keychain-account`) |
+| `--keychain-account <ACCT>` | — | OS keychain account name (pair with `--keychain-service`) |
+| `--database <DATABASE>` | — | Database name (postgres/mysql) |
+| `--file <FILE>` | — | SQLite file path |
+| `--save <LOCATION>` | — | Save location: `local` (`.plenum/config.json`) or `global` (`~/.config/plenum/connections.json`) |
+| `--ssl-mode <MODE>` | — | TLS/SSL mode: `disable`, `require`, `verify-ca`, or `verify-full` (postgres/mysql) |
+| `--ssl-ca <PATH>` | — | PEM CA certificate for TLS verification (required for `verify-ca`/`verify-full`) |
+| `--ssl-cert <PATH>` | — | PEM client certificate for mTLS (must be paired with `--ssl-key`) |
+| `--ssl-key <PATH>` | — | PEM client private key for mTLS (must be paired with `--ssl-cert`) |
+| `--test` | — | Test connection liveness and return server metadata without saving config |
+
+#### Examples
 
 ```bash
-# Interactive connection picker
-plenum connect
+# List saved connections for the current project
+plenum connect --list
 
-# Create new connection interactively
+# Save a PostgreSQL connection globally (password via env var — recommended)
 plenum connect --name prod --engine postgres --host db.example.com \
-  --port 5432 --user readonly --password secret --database myapp \
-  --save global
+  --port 5432 --user readonly --password-env DB_PASSWORD \
+  --database myapp --save global
 
-# Validate existing connection
-plenum connect --name prod
+# Save a PostgreSQL connection with full TLS verification
+plenum connect --name prod-tls --engine postgres --host db.example.com \
+  --user readonly --password-env DB_PASSWORD --database myapp \
+  --ssl-mode verify-full --ssl-ca /etc/ssl/certs/ca.pem --save global
+
+# Save a connection using OS keychain for the password
+plenum connect --name staging --engine mysql --host staging.db.internal \
+  --user agent --keychain-service MyApp --keychain-account db-staging \
+  --database app --save local
+
+# Save a connection using a shell command to retrieve the password (e.g. 1Password CLI)
+plenum connect --name vault --engine postgres --host localhost \
+  --user app --password-command "op read op://vault/db/password" \
+  --database mydb --save global
+
+# Save a SQLite connection
+plenum connect --name dev --engine sqlite --file ./dev.db --save local
+
+# Test a connection without saving
+plenum connect --engine postgres --host localhost --user dev \
+  --password-env DEV_DB_PASSWORD --database mydb --test
 ```
 
 Connection configurations are stored:
-- **Local**: `.plenum/config.json` (team-shareable)
+- **Local**: `.plenum/config.json` (team-shareable, per-project)
 - **Global**: `~/.config/plenum/connections.json` (per-user)
+
+These files use **different schemas**:
+
+**Local** (`.plenum/config.json`) — flat `ProjectConfig`, already scoped to this directory:
+```json
+{
+  "connections": {
+    "local": { "engine": "sqlite", "file": "./app.db" },
+    "prod":  { "engine": "postgres", "host": "db.example.com", "port": 5432,
+               "user": "readonly", "database": "myapp", "password_env": "PROD_DB_PASSWORD" }
+  },
+  "default": "local"
+}
+```
+
+**Global** (`~/.config/plenum/connections.json`) — `ConnectionRegistry`, projects keyed by absolute path:
+```json
+{
+  "projects": {
+    "/home/user/myapp": {
+      "connections": {
+        "local": { "engine": "sqlite", "file": "./app.db" },
+        "prod":  { "engine": "postgres", "host": "db.example.com", "port": 5432,
+                   "user": "readonly", "database": "myapp", "password_env": "PROD_DB_PASSWORD" }
+      },
+      "default": "local"
+    }
+  }
+}
+```
+
+The first connection created for a project is automatically set as the default. Run `plenum connect --list` to see the current registry.
 
 ### 2. `plenum introspect` - Schema Introspection
 
-Inspect database schema and return structured JSON:
+Inspect database schema and return structured JSON.
+
+#### Connection flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dsn <DSN>` | — | One-off connection URL (mutually exclusive with `--name` and explicit flags). Accepted schemes: `postgres://`, `postgresql://`, `mysql://`, `sqlite:` |
+| `--name <NAME>` | `"default"` | Named connection from the saved registry |
+| `--project-path <PATH>` | current directory | Project path for connection lookup |
+| `--engine <ENGINE>` | — | Engine override: `postgres`, `mysql`, or `sqlite` |
+| `--host <HOST>` | — | Host override |
+| `--port <PORT>` | — | Port override |
+| `--user <USER>` | — | Username override |
+| `--password <PASSWORD>` | — | Password override |
+| `--database <DATABASE>` | — | Database override |
+| `--file <FILE>` | — | SQLite file override |
+| `--ssl-mode <MODE>` | — | TLS/SSL mode: `disable`, `require`, `verify-ca`, or `verify-full` (postgres/mysql) |
+| `--ssl-ca <PATH>` | — | PEM CA certificate (required for `verify-ca`/`verify-full`) |
+| `--ssl-cert <PATH>` | — | PEM client certificate for mTLS (pair with `--ssl-key`) |
+| `--ssl-key <PATH>` | — | PEM client private key for mTLS (pair with `--ssl-cert`) |
+
+#### Operation flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--list-databases` | — | List all databases (requires a wildcard/no-database connection) |
+| `--list-schemas` | — | List all schemas (PostgreSQL only) |
+| `--list-tables` | — | List all table names |
+| `--list-views` | — | List all view names |
+| `--list-indexes [TABLE]` | — | List all indexes, optionally filtered to a single table |
+| `--table <TABLE>` | — | Return full details for a specific table |
+| `--view <VIEW>` | — | Return details for a specific view |
+| `--target-database <DB>` | — | Switch to a different database before introspecting |
+| `--schema <SCHEMA>` | — | Filter results to a specific schema (PostgreSQL/MySQL only) |
+| `--diff-against <NAME>` | — | Structural schema diff against another named connection. Mutually exclusive with all other operation flags. Returns tables/views added, removed, and changed (columns, indexes, foreign keys, primary keys) |
+| `--diff-against-project-path <PATH>` | current project | Project path for the `--diff-against` connection (for cross-project comparison) |
+
+#### Detail flags (apply when using `--table`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--columns <true\|false>` | `true` | Include column details |
+| `--primary-key <true\|false>` | `true` | Include primary key details |
+| `--foreign-keys <true\|false>` | `true` | Include foreign key details |
+| `--indexes <true\|false>` | `true` | Include index details |
+
+#### Examples
 
 ```bash
-# Introspect using named connection
+# Full schema introspection using the default saved connection
 plenum introspect --name prod
 
-# Introspect with explicit parameters
-plenum introspect --engine postgres --host localhost --port 5432 \
-  --user admin --password secret --database mydb
+# One-off introspection via DSN (no saved config needed)
+plenum introspect --dsn "postgres://user:pass@localhost/mydb"
 
-# Introspect specific schema
-plenum introspect --name prod --schema public
+# List all databases on a server
+plenum introspect --name dev --list-databases
+
+# List all schemas (PostgreSQL)
+plenum introspect --name prod --list-schemas
+
+# List tables in a specific schema
+plenum introspect --name prod --list-tables --schema public
+
+# List views
+plenum introspect --name prod --list-views
+
+# List indexes for a specific table
+plenum introspect --name prod --list-indexes users
+
+# Get full details for a table (columns, PKs, FKs, indexes)
+plenum introspect --name prod --table users
+
+# Get table details without indexes
+plenum introspect --name prod --table users --indexes false
+
+# Get details for a view
+plenum introspect --name prod --view active_users
+
+# Diff current schema against a saved baseline (useful in CI)
+plenum introspect --name prod --diff-against baseline
+
+# Cross-project schema diff
+plenum introspect --name prod \
+  --diff-against staging \
+  --diff-against-project-path /other/project
 ```
-
-Returns JSON with:
-- Tables
-- Columns (name, type, nullable)
-- Primary keys
-- Foreign keys
-- Indexes
 
 ### 3. `plenum query` - Read-Only Query Execution
 
@@ -148,7 +293,7 @@ All commands output structured JSON to stdout:
   "command": "query",
   "error": {
     "code": "CAPABILITY_VIOLATION",
-    "message": "DDL statements require --allow-ddl flag"
+    "message": "Plenum is read-only and cannot execute this query. Please run this query manually:\n\nCREATE TABLE users (id INT)"
   }
 }
 ```
@@ -237,29 +382,11 @@ Plenum is built around strict architectural principles:
 
 ### Core Principles
 
-1. **No query language abstraction** - SQL remains vendor-specific
-2. **Agent-first, machine-only** - No interactive UX, JSON-only output
-3. **Explicit over implicit** - No inferred values, fail-fast on missing inputs
-4. **Least privilege** - Read-only default, explicit capability requirements
-5. **Determinism** - Identical inputs → identical outputs
+The five core invariants governing all design decisions are defined in [CLAUDE.md](CLAUDE.md).
 
 ### Security Model
 
-Plenum's security boundary is **strict read-only enforcement**, not SQL validation.
-
-**Plenum enforces:**
-- ✅ **Strict read-only operation** - all write/DDL operations are rejected
-- ✅ Row limits (`max_rows`) and query timeouts (`timeout_ms`)
-- ✅ Pre-execution validation (queries validated before execution)
-- ✅ Credential security (best-effort, no intentional logging)
-
-**Plenum does NOT enforce:**
-- ❌ SQL injection prevention (agent's responsibility)
-- ❌ Query semantic correctness
-- ❌ Business logic constraints
-- ❌ Data access policies (row-level security, column masking)
-
-**Critical**: Agents must sanitize all user inputs before constructing SQL. Plenum assumes read-only SQL passed to it is safe and passes it verbatim to database drivers.
+Plenum's security boundary is **strict read-only enforcement**, not SQL validation. For the full security model — what Plenum enforces, agent responsibilities, and what falls outside Plenum's scope — see [CLAUDE.md](CLAUDE.md).
 
 #### Credential Security
 
@@ -334,7 +461,7 @@ plenum/
 ├── tests/
 │   ├── schema_drift.rs  # Fails if schemas diverge from types
 │   └── ...
-├── CLAUDE.md            # Core principles and architecture
+├── CLAUDE.md            # Canonical agent rules, invariants, and non-negotiable requirements
 ├── PROJECT_PLAN.md      # Implementation roadmap
 ├── RESEARCH.md          # Design decisions and rationale
 └── PROBLEMS.md          # Resolved architectural issues
@@ -342,24 +469,19 @@ plenum/
 
 ## Documentation
 
-- [CLAUDE.md](CLAUDE.md) - Core principles and non-negotiable requirements
-- [PROJECT_PLAN.md](PROJECT_PLAN.md) - Complete implementation roadmap
+- [CLAUDE.md](CLAUDE.md) - **Canonical** agent rules, core invariants, and non-negotiable requirements
+- [ARCHITECTURE.md](ARCHITECTURE.md) - Internal design, module structure, data flow, and design rationale
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Development guidelines
 - [SECURITY.md](SECURITY.md) - Security model, threat analysis, and vulnerability reporting
+- [PROJECT_PLAN.md](PROJECT_PLAN.md) - Complete implementation roadmap
 - [RESEARCH.md](RESEARCH.md) - Design decisions, rationale, and research
 - [PROBLEMS.md](PROBLEMS.md) - Architectural issues and resolutions
-- [CONTRIBUTING.md](CONTRIBUTING.md) - Development guidelines
 
 ## Roadmap
 
-Plenum has completed **Phase 8: Security Audit**.
+Plenum has completed **Phase 8: Security Audit** and is actively progressing through **Phase 9: Release Preparation**.
 
-**Recent Accomplishments:**
-- Phase 7: MCP Server implementation complete ✅
-- Phase 8: Comprehensive security audit complete ✅
-- Critical security fixes applied (password masking, path panic prevention)
-- SECURITY.md documentation created
-
-See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the complete implementation roadmap:
+**Completed phases:**
 - Phase 0: Project Foundation ✅
 - Phase 1: Core Architecture ✅
 - Phase 2: CLI Foundation ✅
@@ -369,7 +491,22 @@ See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the complete implementation roadmap:
 - Phase 6: Integration & Polish ✅
 - Phase 7: MCP Server ✅
 - Phase 8: Security Audit ✅
-- Phase 9: Release Preparation ← **Next Phase**
+
+**Phase 9: Release Preparation — In Progress**
+
+Key deliverables shipped in this phase:
+
+| Area | Status | Details |
+|------|--------|---------|
+| Live test infrastructure | ✅ Done | Docker Compose harness, vendor seeds, `test-live.sh`; MySQL 8.0/8.4 and PostgreSQL 16 matrices ([REF-275](/REF/issues/REF-275), [REF-276](/REF/issues/REF-276), [REF-277](/REF/issues/REF-277), [REF-278](/REF/issues/REF-278), [REF-279](/REF/issues/REF-279)) |
+| Output schema versioning | ✅ Done | JSON Schemas (Draft 7) for all envelopes; schema-drift CI gate ([REF-265](/REF/issues/REF-265)) |
+| Introspect enhancements | ✅ Done | Column comments, row estimates, `--diff-against` schema diff ([REF-263](/REF/issues/REF-263), [REF-281](/REF/issues/REF-281)) |
+| Connection improvements | ✅ Done | `--dsn`, `--list`, `--test`, `password_command`, `keychain_entry` ([REF-267](/REF/issues/REF-267)–[REF-272](/REF/issues/REF-272)) |
+| Query safety | ✅ Done | `max_bytes` byte-budget guard, session-level driver read-only enforcement ([REF-261](/REF/issues/REF-261), [REF-269](/REF/issues/REF-269)) |
+| Security hardening | ✅ Done | CTE DML bypass rejection, SQLite PRAGMA allowlist tightened ([REF-41](/REF/issues/REF-41), [REF-44](/REF/issues/REF-44)) |
+| Versioned release | ⏳ Pending | crates.io and npm publish |
+
+See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full implementation roadmap and [CHANGELOG.md](CHANGELOG.md) for a categorized history of all changes.
 
 ## Contributing
 

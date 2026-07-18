@@ -41,6 +41,50 @@
     }
   },
   "definitions": {
+    "ExplainPlanNode": {
+      "description": "Normalized EXPLAIN plan node — engine-stable shape agents can reason about",
+      "type": "object",
+      "required": [
+        "children",
+        "node_type"
+      ],
+      "properties": {
+        "children": {
+          "description": "Child plan nodes (empty for leaf nodes)",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ExplainPlanNode"
+          }
+        },
+        "estimated_cost": {
+          "description": "Planner's estimated cost (engine-specific units); `null` when not available",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "estimated_rows": {
+          "description": "Planner's estimated row count; `null` when the engine does not supply it",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "node_type": {
+          "description": "Engine-specific operation label (e.g. \"Seq Scan\", \"Hash Join\", \"SCAN TABLE\")",
+          "type": "string"
+        },
+        "relation": {
+          "description": "Table or relation name; `null` when the node does not reference one",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
     "Metadata": {
       "description": "Execution metadata included in all responses",
       "type": "object",
@@ -121,6 +165,17 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0.0
+        },
+        "plan": {
+          "description": "Normalized EXPLAIN plan; populated only when `--explain-format structured` is used",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExplainPlanNode"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "rows": {
           "description": "Result rows (each row is an array of values in column order)",

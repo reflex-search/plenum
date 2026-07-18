@@ -23,11 +23,12 @@ use mysql_async::{prelude::*, Conn, OptsBuilder, Params, Row, SslOpts, Value};
 use std::collections::HashMap; // Used for grouping foreign keys during introspection
 use std::time::{Duration, Instant};
 
-use crate::capability::validate_query;
+use crate::capability::{strip_explain_prefix, validate_query};
 use crate::engine::{
-    Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine, DatabaseType,
-    ForeignKeyInfo, IndexInfo, IndexSummary, IntrospectOperation, IntrospectResult, QueryResult,
-    SslMode, TableFields, TableInfo, TlsConfig, ViewInfo,
+    is_explain_query, Capabilities, ColumnInfo, ConnectionConfig, ConnectionInfo, DatabaseEngine,
+    DatabaseType, ExplainFormat, ExplainPlanNode, ForeignKeyInfo, IndexInfo, IndexSummary,
+    IntrospectOperation, IntrospectResult, QueryResult, SslMode, TableFields, TableInfo, TlsConfig,
+    ViewInfo,
 };
 use crate::error::{PlenumError, Result};
 
@@ -252,6 +253,31 @@ impl DatabaseEngine for MySqlEngine {
         // to the limit is reported as a timeout error rather than as a success with partial
         // or interrupted data (REF-258 Bug 4) — even for statements like SELECT SLEEP() that
         // the server-side MAX_EXECUTION_TIME would let return "successfully".
+
+        // Structured explain path: rewrite to EXPLAIN FORMAT=JSON, normalize the plan tree.
+        if caps.explain_format == Some(ExplainFormat::Structured) {
+            if !is_explain_query(query) {
+                return Err(PlenumError::invalid_input(
+                    "--explain-format structured requires an EXPLAIN statement; \
+                     non-EXPLAIN queries must omit this flag",
+                ));
+            }
+            let inner = strip_explain_prefix(query);
+            let start = Instant::now();
+            let plan = execute_structured_explain_mysql(&mut conn, &inner).await?;
+            let elapsed = start.elapsed();
+            conn.disconnect().await.ok();
+            return Ok(QueryResult {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                rows_affected: None,
+                execution_ms: elapsed.as_millis() as u64,
+                rows_truncated: false,
+                truncated_by: None,
+                plan: Some(plan),
+            });
+        }
+
         let start = Instant::now();
         let mut query_result = if let Some(timeout_ms) = caps.timeout_ms {
             let deadline = Duration::from_millis(timeout_ms);
@@ -1019,6 +1045,7 @@ async fn execute_query(
             execution_ms: 0,
             rows_truncated,
             truncated_by: None,
+            plan: None,
         })
     } else {
         // Non-row statement (e.g. transaction control: BEGIN/START TRANSACTION).
@@ -1044,8 +1071,112 @@ async fn execute_query(
             execution_ms: 0,
             rows_truncated: false,
             truncated_by: None,
+            plan: None,
         })
     }
+}
+
+/// Execute `EXPLAIN FORMAT=JSON` against the inner SQL and normalize the result.
+async fn execute_structured_explain_mysql(
+    conn: &mut Conn,
+    inner_sql: &str,
+) -> Result<ExplainPlanNode> {
+    let sql = format!("EXPLAIN FORMAT=JSON {inner_sql}");
+
+    let rows: Vec<Row> = conn.query(sql).await.map_err(|e| {
+        PlenumError::query_failed(format!("Failed to execute EXPLAIN FORMAT=JSON: {e}"))
+    })?;
+
+    let row = rows.first().ok_or_else(|| {
+        PlenumError::query_failed("EXPLAIN FORMAT=JSON returned no rows".to_string())
+    })?;
+
+    // MySQL returns one text column containing the JSON plan
+    let plan_json: String = row.get(0).ok_or_else(|| {
+        PlenumError::query_failed("EXPLAIN FORMAT=JSON row was empty".to_string())
+    })?;
+
+    let plan_value: serde_json::Value = serde_json::from_str(&plan_json).map_err(|e| {
+        PlenumError::query_failed(format!("Failed to parse EXPLAIN JSON from MySQL: {e}"))
+    })?;
+
+    let query_block = plan_value.get("query_block").ok_or_else(|| {
+        PlenumError::query_failed(
+            "Unexpected MySQL EXPLAIN JSON structure (missing query_block)".to_string(),
+        )
+    })?;
+
+    Ok(normalize_mysql_query_block(query_block))
+}
+
+/// Normalize a `MySQL` `query_block` into an `ExplainPlanNode`.
+fn normalize_mysql_query_block(block: &serde_json::Value) -> ExplainPlanNode {
+    let estimated_cost = block
+        .get("cost_info")
+        .and_then(|c| c.get("query_cost"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| s.parse::<f64>().ok());
+
+    ExplainPlanNode {
+        node_type: "query_block".to_string(),
+        relation: None,
+        estimated_rows: None,
+        estimated_cost,
+        children: collect_mysql_children(block),
+    }
+}
+
+/// Collect child plan nodes from a `MySQL` plan block.
+fn collect_mysql_children(block: &serde_json::Value) -> Vec<ExplainPlanNode> {
+    let mut children = Vec::new();
+
+    // Direct single-table access
+    if let Some(table) = block.get("table") {
+        children.push(normalize_mysql_table_node(table));
+    }
+
+    // JOIN: nested_loop is an array of {table: {...}} entries
+    if let Some(nested) = block.get("nested_loop").and_then(serde_json::Value::as_array) {
+        for item in nested {
+            if let Some(table) = item.get("table") {
+                children.push(normalize_mysql_table_node(table));
+            }
+        }
+    }
+
+    // Derived / subquery blocks
+    for key in &["select_list_subqueries", "attached_subqueries", "grouping_operation"] {
+        if let Some(arr) = block.get(key).and_then(serde_json::Value::as_array) {
+            for item in arr {
+                if let Some(qb) = item.get("query_block") {
+                    children.push(normalize_mysql_query_block(qb));
+                }
+            }
+        }
+    }
+
+    children
+}
+
+/// Normalize a `MySQL` `table` object into an `ExplainPlanNode`.
+fn normalize_mysql_table_node(table: &serde_json::Value) -> ExplainPlanNode {
+    let node_type = table
+        .get("access_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+
+    let relation = table.get("table_name").and_then(serde_json::Value::as_str).map(String::from);
+
+    let estimated_rows = table.get("rows_examined_per_scan").and_then(serde_json::Value::as_f64);
+
+    let estimated_cost = table
+        .get("cost_info")
+        .and_then(|c| c.get("read_cost"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| s.parse::<f64>().ok());
+
+    ExplainPlanNode { node_type, relation, estimated_rows, estimated_cost, children: Vec::new() }
 }
 
 /// Convert a `MySQL` row to a JSON-safe `Vec`
@@ -1663,5 +1794,52 @@ mod tests {
         let mut conn2 = Conn::new(opts2).await.expect("connect2");
         conn2.exec_drop("DROP TABLE IF EXISTS ref263_mysql", ()).await.ok();
         conn2.disconnect().await.ok();
+    }
+
+    // -------------------------------------------------------------------------
+    // REF-282: normalize_mysql_table_node / normalize_mysql_query_block unit tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_normalize_mysql_table_node_full_scan() {
+        let table = serde_json::json!({
+            "table_name": "users",
+            "access_type": "ALL",
+            "rows_examined_per_scan": 42.0,
+            "cost_info": { "read_cost": "1.25" }
+        });
+        let result = normalize_mysql_table_node(&table);
+        assert_eq!(result.node_type, "ALL");
+        assert_eq!(result.relation, Some("users".to_string()));
+        assert_eq!(result.estimated_rows, Some(42.0));
+        assert_eq!(result.estimated_cost, Some(1.25));
+        assert!(result.children.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_mysql_table_node_missing_optional_fields() {
+        let table = serde_json::json!({ "table_name": "orders", "access_type": "ref" });
+        let result = normalize_mysql_table_node(&table);
+        assert_eq!(result.node_type, "ref");
+        assert_eq!(result.relation, Some("orders".to_string()));
+        assert_eq!(result.estimated_rows, None);
+        assert_eq!(result.estimated_cost, None);
+    }
+
+    #[test]
+    fn test_normalize_mysql_query_block_with_table() {
+        let block = serde_json::json!({
+            "cost_info": { "query_cost": "3.50" },
+            "table": {
+                "table_name": "items",
+                "access_type": "ALL",
+                "rows_examined_per_scan": 10.0
+            }
+        });
+        let result = normalize_mysql_query_block(&block);
+        assert_eq!(result.node_type, "query_block");
+        assert_eq!(result.estimated_cost, Some(3.50));
+        assert_eq!(result.children.len(), 1);
+        assert_eq!(result.children[0].relation, Some("items".to_string()));
     }
 }

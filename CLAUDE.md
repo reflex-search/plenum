@@ -33,10 +33,10 @@ The implementation language is Rust.
    - No auto-commit.
    - Missing inputs MUST fail fast.
 
-4. Least privilege
-   - Read-only is the default mode.
-   - Writes and DDL require explicit capabilities.
-   - Capability checks occur BEFORE execution.
+4. Strict read-only enforcement
+   - All write and DDL operations are unconditionally rejected.
+   - No `--allow-write`, `--allow-ddl`, or capability flags exist.
+   - The read-only boundary is enforced before execution.
 
 5. Determinism
    - Identical inputs produce identical outputs (excluding timing metadata).
@@ -89,7 +89,7 @@ Exactly three commands:
 
 **plenum query** - Constrained query execution
   - Uses stored connections or explicit connection flags
-  - Requires explicit capability flags for writes/DDL
+  - Strictly read-only: all write and DDL operations are rejected
   - Returns query results as JSON
 
 No aliases.
@@ -247,7 +247,7 @@ Because MySQL behavior varies by version and storage engine:
 - The engine implementation MUST:
   - detect server version explicitly
   - avoid reliance on non-standard INFORMATION_SCHEMA extensions
-  - treat implicit commits (e.g. DDL) as write operations requiring capability flags
+  - treat implicit commits (e.g. DDL) as write operations (rejected unconditionally)
 - No MySQL-specific behavior may leak into core logic.
 
 If behavior differs across MySQL versions, it MUST be surfaced explicitly in metadata.
@@ -350,6 +350,62 @@ This brings up all services with healthchecks (`docker compose up --wait`), runs
 Export these to point the live suites at existing servers explicitly (`cargo test --test live_mysql --test live_postgres -- --include-ignored`). If a DSN var is missing during an `--include-ignored` run, the tests fail fast with a clear message — they never silently skip.
 
 **Seeding:** vendor-specific SQL in `tests/live/seed/{mysql,postgres}/` runs via `/docker-entrypoint-initdb.d/` on a fresh `up`. No SQL is shared between engines. To change the dataset, edit the seed files and recreate the containers (`down --volumes` then `up --wait`).
+
+---
+
+## Development Workflow
+
+### TDD Mandate
+
+Every bug fix and feature MUST follow red-green-refactor:
+
+1. **Red** — write a failing test that reproduces the bug or describes the new behavior. Run it; confirm it fails.
+2. **Green** — write the minimum code to make the test pass. Nothing more.
+3. **Refactor** — clean up without changing behavior. Re-run tests to confirm green.
+
+Do not write implementation code before the failing test exists. A fix without a covering test is not done.
+
+### Verification Gate
+
+Run this sequence before every commit:
+
+```bash
+cargo build --all-targets                                      # must compile cleanly
+cargo fmt --check                                              # no formatting drift
+cargo clippy --all-targets --all-features -- -D warnings       # zero warnings
+cargo test                                                     # unit, snapshot, capability tests
+```
+
+When the change touches engine code (`src/engines/`), connection handling, or the JSON output contract (`src/output.rs`):
+
+```bash
+scripts/test-live.sh   # MySQL 8.0, MySQL 8.4, PostgreSQL 16
+```
+
+When the change modifies `src/output.rs` or any type that appears in the JSON output envelope:
+
+```bash
+cargo run --bin generate-schemas   # regenerate JSON schemas into schemas/
+cargo test --test schema_drift     # confirm no drift between types and schemas
+```
+
+Commit the updated `schemas/` files alongside the source change. Omitting this step causes `schema_drift` to fail CI.
+
+**Schema-drift trap:** `tests/schema_drift.rs` fails CI if checked-in schemas diverge from live types. If you edited `src/output.rs` and see a CI failure on `schema_drift`, run `cargo run --bin generate-schemas` and commit the result.
+
+### Definition of Done
+
+A contribution is complete when **all** of the following are true:
+
+- [ ] A failing test was written before the implementation (TDD red step confirmed)
+- [ ] `cargo build --all-targets` — compiles cleanly
+- [ ] `cargo fmt --check` — no formatting drift
+- [ ] `cargo clippy --all-targets --all-features -- -D warnings` — zero warnings
+- [ ] `cargo test` — all unit, snapshot, and capability tests pass
+- [ ] `scripts/test-live.sh` — live suites pass (required when engine, connection, or output code changed)
+- [ ] `cargo run --bin generate-schemas` + `cargo test --test schema_drift` — schemas regenerated and committed (required when `src/output.rs` changed)
+- [ ] No new implicit behavior, abstractions, or scope creep introduced
+- [ ] Stdout remains JSON-only; no log or diagnostic leakage
 
 ---
 
