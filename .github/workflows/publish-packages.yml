@@ -75,7 +75,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           # No registry-url - let npm use OIDC trusted publishing instead of token auth
 
       - name: Upgrade npm for Trusted Publishing
