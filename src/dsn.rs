@@ -16,6 +16,7 @@ use crate::error::{PlenumError, Result};
 /// - `postgres://…` or `postgresql://…` → `PostgreSQL`
 /// - `mysql://…` → `MySQL`
 /// - `sqlite:…` (various path forms) → `SQLite`
+/// - `duckdb:…` (various path forms) → `DuckDB`
 ///
 /// Engine is inferred from the scheme. Error messages never echo credentials.
 /// Use [`redact_dsn`] when including the original DSN string in any output.
@@ -26,9 +27,11 @@ pub fn parse_dsn(dsn: &str) -> Result<ConnectionConfig> {
         parse_mysql_dsn(dsn)
     } else if dsn.starts_with("sqlite:") {
         parse_sqlite_dsn(dsn)
+    } else if dsn.starts_with("duckdb:") {
+        parse_duckdb_dsn(dsn)
     } else {
         Err(PlenumError::invalid_input(
-            "Unrecognized DSN scheme. Use postgres://, postgresql://, mysql://, or sqlite: prefix",
+            "Unrecognized DSN scheme. Use postgres://, postgresql://, mysql://, sqlite:, or duckdb: prefix",
         ))
     }
 }
@@ -118,6 +121,33 @@ fn parse_sqlite_dsn(dsn: &str) -> Result<ConnectionConfig> {
     }
 
     Ok(ConnectionConfig::sqlite(PathBuf::from(path_str)))
+}
+
+fn parse_duckdb_dsn(dsn: &str) -> Result<ConnectionConfig> {
+    // Same pragmatic path forms as the sqlite: scheme:
+    //   duckdb:///absolute/path.duckdb  →  /absolute/path.duckdb
+    //   duckdb://relative/path.duckdb   →  relative/path.duckdb
+    //   duckdb:/absolute/path.duckdb    →  /absolute/path.duckdb
+    //   duckdb:relative/path.duckdb     →  relative/path.duckdb
+    //   duckdb::memory:                 →  :memory:  (DuckDB in-memory database)
+
+    let path_str: String = if let Some(p) = dsn.strip_prefix("duckdb:///") {
+        format!("/{p}")
+    } else if let Some(p) = dsn.strip_prefix("duckdb://") {
+        p.to_string()
+    } else if let Some(p) = dsn.strip_prefix("duckdb:/") {
+        format!("/{p}")
+    } else {
+        dsn.strip_prefix("duckdb:").expect("caller verified prefix").to_string()
+    };
+
+    if path_str.is_empty() {
+        return Err(PlenumError::invalid_input(
+            "DuckDB DSN missing file path (e.g. duckdb:///path/to/db.duckdb or duckdb::memory:)",
+        ));
+    }
+
+    Ok(ConnectionConfig::duckdb(PathBuf::from(path_str)))
 }
 
 // ============================================================================
@@ -368,6 +398,52 @@ mod tests {
     fn sqlite_empty_path_fails() {
         let err = parse_dsn("sqlite:").unwrap_err();
         assert!(err.message().contains("missing file path"), "got: {}", err.message());
+    }
+
+    // ─── DuckDB ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn duckdb_triple_slash_absolute() {
+        let cfg = parse_dsn("duckdb:///tmp/test.duckdb").unwrap();
+        assert_eq!(cfg.engine, DatabaseType::DuckDB);
+        assert_eq!(cfg.file, Some(PathBuf::from("/tmp/test.duckdb")));
+    }
+
+    #[test]
+    fn duckdb_single_slash_absolute() {
+        let cfg = parse_dsn("duckdb:/tmp/test.duckdb").unwrap();
+        assert_eq!(cfg.file, Some(PathBuf::from("/tmp/test.duckdb")));
+    }
+
+    #[test]
+    fn duckdb_relative_path() {
+        let cfg = parse_dsn("duckdb:relative/path.duckdb").unwrap();
+        assert_eq!(cfg.file, Some(PathBuf::from("relative/path.duckdb")));
+    }
+
+    #[test]
+    fn duckdb_double_slash_path() {
+        let cfg = parse_dsn("duckdb://./local.duckdb").unwrap();
+        assert_eq!(cfg.file, Some(PathBuf::from("./local.duckdb")));
+    }
+
+    #[test]
+    fn duckdb_memory() {
+        let cfg = parse_dsn("duckdb::memory:").unwrap();
+        assert_eq!(cfg.engine, DatabaseType::DuckDB);
+        assert_eq!(cfg.file, Some(PathBuf::from(":memory:")));
+    }
+
+    #[test]
+    fn duckdb_empty_path_fails() {
+        let err = parse_dsn("duckdb:").unwrap_err();
+        assert!(err.message().contains("missing file path"), "got: {}", err.message());
+    }
+
+    #[test]
+    fn redact_duckdb_no_op() {
+        let dsn = "duckdb:///tmp/test.duckdb";
+        assert_eq!(redact_dsn(dsn), dsn);
     }
 
     // ─── Redaction ─────────────────────────────────────────────────────────────

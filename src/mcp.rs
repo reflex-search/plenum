@@ -49,6 +49,8 @@ use std::path::PathBuf;
 use crate::{parse_dsn, redact_dsn, Capabilities, ConnectionConfig, DatabaseEngine, DatabaseType};
 
 // Import database engines
+#[cfg(feature = "duckdb")]
+use crate::engine::duckdb::DuckDbEngine;
 #[cfg(feature = "mysql")]
 use crate::engine::mysql::MySqlEngine;
 #[cfg(feature = "postgres")]
@@ -263,7 +265,7 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "engine": {
                             "type": "string",
-                            "enum": ["postgres", "mysql", "sqlite"],
+                            "enum": ["postgres", "mysql", "sqlite", "duckdb"],
                             "description": "DISCOURAGED: Database engine type for explicit one-off connections. Only use if no saved connection exists. If omitted along with 'connection', auto-resolves project's default connection (RECOMMENDED)."
                         },
                         "host": {
@@ -288,7 +290,7 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "file": {
                             "type": "string",
-                            "description": "DISCOURAGED: SQLite database file path. Only for one-off sqlite explicit connections or as override. Prefer using saved connections."
+                            "description": "DISCOURAGED: SQLite/DuckDB database file path. Only for one-off sqlite/duckdb explicit connections or as override. Prefer using saved connections."
                         },
                         "list_databases": {
                             "type": "boolean",
@@ -373,8 +375,8 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "engine": {
                             "type": "string",
-                            "enum": ["postgres", "mysql", "sqlite"],
-                            "description": "DISCOURAGED: Database engine type for explicit one-off connections. Only use if no saved connection exists. Valid values: 'postgres', 'mysql', 'sqlite'. If omitted along with 'connection', auto-resolves project's default connection (RECOMMENDED)."
+                            "enum": ["postgres", "mysql", "sqlite", "duckdb"],
+                            "description": "DISCOURAGED: Database engine type for explicit one-off connections. Only use if no saved connection exists. Valid values: 'postgres', 'mysql', 'sqlite', 'duckdb'. If omitted along with 'connection', auto-resolves project's default connection (RECOMMENDED)."
                         },
                         "host": {
                             "type": "string",
@@ -398,7 +400,7 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "file": {
                             "type": "string",
-                            "description": "DISCOURAGED: File path to SQLite database file. Only for one-off sqlite explicit connections. Can be relative or absolute path. Example: './app.db', '/var/lib/data.db'. Prefer using saved connections."
+                            "description": "DISCOURAGED: File path to SQLite/DuckDB database file. Only for one-off sqlite/duckdb explicit connections. Can be relative or absolute path. Example: './app.db', '/var/lib/data.duckdb'. Prefer using saved connections."
                         },
                         "max_rows": {
                             "type": "number",
@@ -441,7 +443,7 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "engine": {
                             "type": "string",
-                            "enum": ["postgres", "mysql", "sqlite"],
+                            "enum": ["postgres", "mysql", "sqlite", "duckdb"],
                             "description": "DISCOURAGED: Database engine type for explicit one-off connection tests. Only use if no saved connection exists."
                         },
                         "host": {
@@ -466,7 +468,7 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "file": {
                             "type": "string",
-                            "description": "DISCOURAGED: SQLite database file path. Only for explicit one-off tests."
+                            "description": "DISCOURAGED: SQLite/DuckDB database file path. Only for explicit one-off tests."
                         }
                     }
                 }
@@ -528,6 +530,15 @@ async fn tool_connect(args: &Value) -> Result<Value> {
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => {
             return Err(anyhow!("MySQL engine not enabled. Build with --features mysql"));
+        }
+
+        #[cfg(feature = "duckdb")]
+        DatabaseType::DuckDB => DuckDbEngine::validate_connection(&config)
+            .await
+            .map_err(|e| anyhow!("DuckDB connection test failed: {e}"))?,
+        #[cfg(not(feature = "duckdb"))]
+        DatabaseType::DuckDB => {
+            return Err(anyhow!("DuckDB engine not enabled. Build with --features duckdb"));
         }
     };
 
@@ -591,6 +602,15 @@ async fn tool_introspect(args: &Value) -> Result<Value> {
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => {
             return Err(anyhow!("MySQL engine not enabled. Build with --features mysql"));
+        }
+
+        #[cfg(feature = "duckdb")]
+        DatabaseType::DuckDB => DuckDbEngine::introspect(&config, &operation, database, schema)
+            .await
+            .map_err(|e| anyhow!("DuckDB introspection failed: {e}"))?,
+        #[cfg(not(feature = "duckdb"))]
+        DatabaseType::DuckDB => {
+            return Err(anyhow!("DuckDB engine not enabled. Build with --features duckdb"));
         }
     };
 
@@ -755,7 +775,8 @@ fn build_connection_config_from_args(args: &Value, engine_str: &str) -> Result<C
         "postgres" => DatabaseType::Postgres,
         "mysql" => DatabaseType::MySQL,
         "sqlite" => DatabaseType::SQLite,
-        _ => return Err(anyhow!("Invalid engine. Must be postgres, mysql, or sqlite")),
+        "duckdb" => DatabaseType::DuckDB,
+        _ => return Err(anyhow!("Invalid engine. Must be postgres, mysql, sqlite, or duckdb")),
     };
 
     match engine_type {
@@ -792,6 +813,12 @@ fn build_connection_config_from_args(args: &Value, engine_str: &str) -> Result<C
                 .as_str()
                 .ok_or_else(|| anyhow!("Missing required field for sqlite: file"))?;
             Ok(ConnectionConfig::sqlite(PathBuf::from(file_str)))
+        }
+        DatabaseType::DuckDB => {
+            let file_str = args["file"]
+                .as_str()
+                .ok_or_else(|| anyhow!("Missing required field for duckdb: file"))?;
+            Ok(ConnectionConfig::duckdb(PathBuf::from(file_str)))
         }
     }
 }
@@ -836,6 +863,7 @@ fn resolve_connection_from_args(args: &Value) -> Result<(ConnectionConfig, bool)
                 "postgres" => DatabaseType::Postgres,
                 "mysql" => DatabaseType::MySQL,
                 "sqlite" => DatabaseType::SQLite,
+                "duckdb" => DatabaseType::DuckDB,
                 _ => return Err(anyhow!("Invalid engine: {eng}")),
             };
         }
@@ -912,6 +940,15 @@ async fn validate_connection(config: &ConnectionConfig) -> Result<crate::Connect
         DatabaseType::MySQL => {
             Err(anyhow!("MySQL engine not enabled. Build with --features mysql"))
         }
+
+        #[cfg(feature = "duckdb")]
+        DatabaseType::DuckDB => DuckDbEngine::validate_connection(config)
+            .await
+            .map_err(|e| anyhow!("DuckDB connection failed: {e}")),
+        #[cfg(not(feature = "duckdb"))]
+        DatabaseType::DuckDB => {
+            Err(anyhow!("DuckDB engine not enabled. Build with --features duckdb"))
+        }
     }
 }
 
@@ -950,6 +987,15 @@ async fn execute_query(
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => {
             Err(anyhow!("MySQL engine not enabled. Build with --features mysql"))
+        }
+
+        #[cfg(feature = "duckdb")]
+        DatabaseType::DuckDB => DuckDbEngine::execute(config, sql, &[], capabilities)
+            .await
+            .map_err(|e| anyhow!("DuckDB query failed: {e}")),
+        #[cfg(not(feature = "duckdb"))]
+        DatabaseType::DuckDB => {
+            Err(anyhow!("DuckDB engine not enabled. Build with --features duckdb"))
         }
     }
 }

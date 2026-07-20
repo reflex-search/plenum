@@ -122,6 +122,7 @@ fn is_read_only(sql: &str, engine: DatabaseType) -> bool {
         DatabaseType::Postgres => is_read_only_postgres(sql),
         DatabaseType::MySQL => is_read_only_mysql(sql),
         DatabaseType::SQLite => is_read_only_sqlite(sql),
+        DatabaseType::DuckDB => is_read_only_duckdb(sql),
     }
 }
 
@@ -506,6 +507,102 @@ fn is_read_only_sqlite(sql: &str) -> bool {
     sql.starts_with("SELECT ")
         || is_safe_cte_query(sql)
         || is_safe_pragma(sql)
+        || sql.starts_with("BEGIN")
+        || sql.starts_with("COMMIT")
+        || sql.starts_with("ROLLBACK")
+        || sql.starts_with("SAVEPOINT")
+        || sql.starts_with("RELEASE")
+}
+
+/// `DuckDB` PRAGMAs that are read-only when invoked in argument form
+/// (`PRAGMA name(arg)`). These treat the argument as a query parameter rather
+/// than a setter value, so the parenthesized form does not write state.
+///
+/// Names are uppercase to match the preprocessed SQL produced by
+/// `preprocess_sql`.
+const READ_ONLY_DUCKDB_PRAGMAS_WITH_ARGS: &[&str] =
+    &["TABLE_INFO", "STORAGE_INFO", "SHOW", "DATABASE_SIZE"];
+
+/// `DuckDB` PRAGMAs whose bare form (`PRAGMA name`) is a pure read.
+///
+/// `DuckDB` setter PRAGMAs (`memory_limit`, `threads`, `enable_progress_bar`,
+/// …) use the `= value` assignment form, which is rejected unconditionally by
+/// `is_safe_duckdb_pragma`. Only pure introspection names are admitted here.
+const READ_ONLY_DUCKDB_PRAGMAS_BARE: &[&str] = &[
+    "DATABASE_LIST",
+    "DATABASE_SIZE",
+    "SHOW_TABLES",
+    "SHOW_TABLES_EXPANDED",
+    "SHOW_DATABASES",
+    "FUNCTIONS",
+    "COLLATIONS",
+    "VERSION",
+    "PLATFORM",
+    "USER_AGENT",
+    "METADATA_INFO",
+];
+
+/// Validate a `PRAGMA …` statement against the `DuckDB` read-only allowlist.
+///
+/// Same shape as the `SQLite` PRAGMA guard: the `= value` setter form is
+/// always rejected, the argument form is allowed only for names in
+/// [`READ_ONLY_DUCKDB_PRAGMAS_WITH_ARGS`], and the bare form only for names
+/// in [`READ_ONLY_DUCKDB_PRAGMAS_BARE`].
+fn is_safe_duckdb_pragma(sql: &str) -> bool {
+    let Some(rest) = sql.strip_prefix("PRAGMA ") else {
+        return false;
+    };
+    let rest = rest.trim().trim_end_matches(';').trim();
+    if rest.is_empty() {
+        return false;
+    }
+
+    // `=` always indicates the assignment / setter form (e.g.
+    // `PRAGMA memory_limit='1GB'`, `PRAGMA threads=4`). Reject unconditionally.
+    if rest.contains('=') {
+        return false;
+    }
+
+    let (name, has_args) = match rest.find('(') {
+        Some(open) => {
+            if !rest.ends_with(')') {
+                return false;
+            }
+            (rest[..open].trim(), true)
+        }
+        None => (rest, false),
+    };
+
+    if name.is_empty() || name.contains(|c: char| c.is_whitespace()) {
+        return false;
+    }
+
+    if has_args {
+        READ_ONLY_DUCKDB_PRAGMAS_WITH_ARGS.contains(&name)
+    } else {
+        READ_ONLY_DUCKDB_PRAGMAS_BARE.contains(&name)
+    }
+}
+
+// DuckDB read-only check
+fn is_read_only_duckdb(sql: &str) -> bool {
+    // Strip EXPLAIN prefix (DuckDB supports EXPLAIN and EXPLAIN ANALYZE)
+    let sql = strip_explain_prefix(sql);
+    let sql = sql.trim();
+
+    if sql.starts_with("SELECT ") {
+        // Guard against `SELECT ... INTO new_table` (DuckDB supports the
+        // CREATE-TABLE-AS shorthand) with the same quote-aware keyword scan
+        // used for Postgres (REF-42) and WITH-CTE queries (REF-41).
+        return scan_for_write_keyword(sql).is_none();
+    }
+
+    is_safe_cte_query(sql)
+        || is_safe_duckdb_pragma(sql)
+        || sql.starts_with("SHOW ")
+        || sql.starts_with("DESCRIBE ")
+        || sql.starts_with("DESC ")
+        || sql.starts_with("SUMMARIZE ")
         || sql.starts_with("BEGIN")
         || sql.starts_with("COMMIT")
         || sql.starts_with("ROLLBACK")
@@ -1540,5 +1637,112 @@ mod tests {
     #[test]
     fn test_sqlite_explain_query_plan_delete_rejected() {
         assert_rejected("EXPLAIN QUERY PLAN DELETE FROM items", DatabaseType::SQLite);
+    }
+
+    // =========================================================================
+    // DuckDB dialect (REF-290)
+    // =========================================================================
+
+    #[test]
+    fn test_duckdb_select_allowed() {
+        assert_allowed("SELECT * FROM users", DatabaseType::DuckDB);
+        assert_allowed("SELECT count(*) FROM range(10)", DatabaseType::DuckDB);
+    }
+
+    #[test]
+    fn test_duckdb_cte_select_allowed() {
+        assert_allowed("WITH t AS (SELECT 1 AS x) SELECT x FROM t", DatabaseType::DuckDB);
+    }
+
+    #[test]
+    fn test_duckdb_show_describe_summarize_allowed() {
+        assert_allowed("SHOW TABLES", DatabaseType::DuckDB);
+        assert_allowed("DESCRIBE users", DatabaseType::DuckDB);
+        assert_allowed("DESC users", DatabaseType::DuckDB);
+        assert_allowed("SUMMARIZE users", DatabaseType::DuckDB);
+    }
+
+    #[test]
+    fn test_duckdb_explain_allowed() {
+        assert_allowed("EXPLAIN SELECT * FROM users", DatabaseType::DuckDB);
+        assert_allowed("EXPLAIN ANALYZE SELECT * FROM users", DatabaseType::DuckDB);
+        assert_allowed("EXPLAIN (FORMAT JSON) SELECT * FROM users", DatabaseType::DuckDB);
+    }
+
+    #[test]
+    fn test_duckdb_explain_hidden_write_rejected() {
+        assert_rejected("EXPLAIN DELETE FROM users", DatabaseType::DuckDB);
+        assert_rejected("EXPLAIN (FORMAT JSON) INSERT INTO t VALUES (1)", DatabaseType::DuckDB);
+    }
+
+    #[test]
+    fn test_duckdb_transaction_control_allowed() {
+        assert_allowed("BEGIN", DatabaseType::DuckDB);
+        assert_allowed("BEGIN TRANSACTION", DatabaseType::DuckDB);
+        assert_allowed("COMMIT", DatabaseType::DuckDB);
+        assert_allowed("ROLLBACK", DatabaseType::DuckDB);
+    }
+
+    #[test]
+    fn test_duckdb_writes_rejected() {
+        assert_rejected("INSERT INTO users VALUES (1)", DatabaseType::DuckDB);
+        assert_rejected("UPDATE users SET name = 'x'", DatabaseType::DuckDB);
+        assert_rejected("DELETE FROM users", DatabaseType::DuckDB);
+        assert_rejected("CREATE TABLE t (id INTEGER)", DatabaseType::DuckDB);
+        assert_rejected("DROP TABLE users", DatabaseType::DuckDB);
+        assert_rejected("ALTER TABLE users ADD COLUMN c INTEGER", DatabaseType::DuckDB);
+        assert_rejected("TRUNCATE users", DatabaseType::DuckDB);
+    }
+
+    #[test]
+    fn test_duckdb_file_and_extension_operations_rejected() {
+        // COPY writes to the filesystem; ATTACH/DETACH mutate catalog state;
+        // INSTALL/LOAD pull in extensions.
+        assert_rejected("COPY users TO 'out.csv'", DatabaseType::DuckDB);
+        assert_rejected("ATTACH 'other.duckdb' AS other", DatabaseType::DuckDB);
+        assert_rejected("DETACH other", DatabaseType::DuckDB);
+        assert_rejected("LOAD httpfs", DatabaseType::DuckDB);
+        assert_rejected("INSTALL httpfs", DatabaseType::DuckDB);
+    }
+
+    #[test]
+    fn test_duckdb_select_into_rejected() {
+        // CREATE-TABLE-AS shorthand hidden behind a SELECT prefix
+        assert_rejected("SELECT * INTO new_table FROM users", DatabaseType::DuckDB);
+    }
+
+    #[test]
+    fn test_duckdb_cte_hidden_write_rejected() {
+        assert_rejected(
+            "WITH t AS (SELECT 1) INSERT INTO users SELECT * FROM t",
+            DatabaseType::DuckDB,
+        );
+        assert_rejected("WITH t AS (SELECT 1) DELETE FROM users", DatabaseType::DuckDB);
+    }
+
+    #[test]
+    fn test_duckdb_read_only_pragmas_allowed() {
+        assert_allowed("PRAGMA database_list", DatabaseType::DuckDB);
+        assert_allowed("PRAGMA show_tables", DatabaseType::DuckDB);
+        assert_allowed("PRAGMA version", DatabaseType::DuckDB);
+        assert_allowed("PRAGMA table_info('users')", DatabaseType::DuckDB);
+        assert_allowed("PRAGMA storage_info('users')", DatabaseType::DuckDB);
+        assert_allowed("PRAGMA database_size", DatabaseType::DuckDB);
+    }
+
+    #[test]
+    fn test_duckdb_setter_pragmas_rejected() {
+        assert_rejected("PRAGMA memory_limit='1GB'", DatabaseType::DuckDB);
+        assert_rejected("PRAGMA threads=4", DatabaseType::DuckDB);
+        assert_rejected("PRAGMA enable_progress_bar", DatabaseType::DuckDB);
+        assert_rejected("PRAGMA enable_profiling", DatabaseType::DuckDB);
+        assert_rejected("PRAGMA disable_progress_bar", DatabaseType::DuckDB);
+    }
+
+    #[test]
+    fn test_duckdb_multi_statement_rejected() {
+        let caps = Capabilities::default();
+        let result = validate_query("SELECT 1; DROP TABLE users", &caps, DatabaseType::DuckDB);
+        assert!(result.is_err());
     }
 }

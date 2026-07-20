@@ -67,6 +67,7 @@ The MVP MUST support:
 - PostgreSQL
 - MySQL (primary target)
 - SQLite
+- DuckDB
 
 All engines are first-class and equally constrained.
 

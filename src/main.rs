@@ -21,6 +21,8 @@ use plenum::{
 };
 
 // Import database engines
+#[cfg(feature = "duckdb")]
+use plenum::engine::duckdb::DuckDbEngine;
 #[cfg(feature = "mysql")]
 use plenum::engine::mysql::MySqlEngine;
 #[cfg(feature = "postgres")]
@@ -923,6 +925,13 @@ async fn handle_connect_test(
         DatabaseType::MySQL => Err(PlenumError::invalid_input(
             "MySQL engine not enabled. Build with --features mysql to enable MySQL support.",
         )),
+
+        #[cfg(feature = "duckdb")]
+        DatabaseType::DuckDB => DuckDbEngine::validate_connection(&config).await,
+        #[cfg(not(feature = "duckdb"))]
+        DatabaseType::DuckDB => Err(PlenumError::invalid_input(
+            "DuckDB engine not enabled. Build with --features duckdb to enable DuckDB support.",
+        )),
     };
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -980,7 +989,7 @@ async fn interactive_connect_picker(
                             config.port.unwrap_or(0)
                         )
                     }
-                    DatabaseType::SQLite => {
+                    DatabaseType::SQLite | DatabaseType::DuckDB => {
                         config.file.as_ref().and_then(|f| f.to_str()).unwrap_or("?").to_string()
                     }
                 }
@@ -1020,7 +1029,7 @@ async fn interactive_connect_wizard(
     eprintln!("\n=== Create New Database Connection ===\n");
 
     // Prompt for engine
-    let engine_choices = vec!["postgres", "mysql", "sqlite"];
+    let engine_choices = vec!["postgres", "mysql", "sqlite", "duckdb"];
     let engine_idx = Select::new()
         .with_prompt("Select database engine")
         .items(&engine_choices)
@@ -1064,13 +1073,17 @@ async fn interactive_connect_wizard(
                 ConnectionConfig::mysql(host, port, user, password, database)
             }
         }
-        DatabaseType::SQLite => {
+        DatabaseType::SQLite | DatabaseType::DuckDB => {
             let file: String = Input::new()
                 .with_prompt("Database file path")
                 .interact_text()
                 .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
 
-            ConnectionConfig::sqlite(PathBuf::from(file))
+            if engine == DatabaseType::DuckDB {
+                ConnectionConfig::duckdb(PathBuf::from(file))
+            } else {
+                ConnectionConfig::sqlite(PathBuf::from(file))
+            }
         }
     };
 
@@ -1171,11 +1184,11 @@ async fn non_interactive_connect(
     }
 
     // Indirect sources are only meaningful for engines that use passwords.
-    if engine_type == DatabaseType::SQLite
+    if matches!(engine_type, DatabaseType::SQLite | DatabaseType::DuckDB)
         && (password_env.is_some() || password_command.is_some() || keychain_entry.is_some())
     {
         return Err(PlenumError::invalid_input(
-            "--password-env, --password-command, and --keychain-service are not applicable to sqlite (no authentication)",
+            "--password-env, --password-command, and --keychain-service are not applicable to file-based engines (no authentication)",
         ));
     }
 
@@ -1219,10 +1232,15 @@ async fn non_interactive_connect(
                 tls,
             }
         }
-        DatabaseType::SQLite => {
-            let file =
-                file.ok_or_else(|| PlenumError::invalid_input("--file is required for sqlite"))?;
-            let mut cfg = ConnectionConfig::sqlite(file);
+        DatabaseType::SQLite | DatabaseType::DuckDB => {
+            let file = file.ok_or_else(|| {
+                PlenumError::invalid_input(format!("--file is required for {engine_str}"))
+            })?;
+            let mut cfg = if engine_type == DatabaseType::DuckDB {
+                ConnectionConfig::duckdb(file)
+            } else {
+                ConnectionConfig::sqlite(file)
+            };
             cfg.tls = tls;
             cfg
         }
@@ -1488,6 +1506,21 @@ async fn handle_introspect(
             DatabaseType::MySQL => Err(PlenumError::invalid_input(
                 "MySQL engine not enabled. Build with --features mysql to enable MySQL support.",
             )),
+
+            #[cfg(feature = "duckdb")]
+            DatabaseType::DuckDB => {
+                DuckDbEngine::introspect(
+                    &config,
+                    &operation,
+                    target_database.as_deref(),
+                    schema.as_deref(),
+                )
+                .await
+            }
+            #[cfg(not(feature = "duckdb"))]
+            DatabaseType::DuckDB => Err(PlenumError::invalid_input(
+                "DuckDB engine not enabled. Build with --features duckdb to enable DuckDB support.",
+            )),
         };
 
         match introspect_result {
@@ -1691,6 +1724,17 @@ async fn handle_query(
         DatabaseType::MySQL => {
             Err(PlenumError::invalid_input(
                 "MySQL engine not enabled. Build with --features mysql to enable MySQL support."
+            ))
+        }
+
+        #[cfg(feature = "duckdb")]
+        DatabaseType::DuckDB => {
+            DuckDbEngine::execute(&config, &sql_text, &params, &capabilities).await
+        }
+        #[cfg(not(feature = "duckdb"))]
+        DatabaseType::DuckDB => {
+            Err(PlenumError::invalid_input(
+                "DuckDB engine not enabled. Build with --features duckdb to enable DuckDB support."
             ))
         }
     };
@@ -1920,6 +1964,11 @@ fn build_connection_config(
                 file.ok_or_else(|| PlenumError::invalid_input("--file is required for sqlite"))?;
             ConnectionConfig::sqlite(file)
         }
+        DatabaseType::DuckDB => {
+            let file =
+                file.ok_or_else(|| PlenumError::invalid_input("--file is required for duckdb"))?;
+            ConnectionConfig::duckdb(file)
+        }
     };
     config.tls = tls;
 
@@ -1932,8 +1981,9 @@ fn parse_engine(engine: &str) -> Result<DatabaseType> {
         "postgres" => Ok(DatabaseType::Postgres),
         "mysql" => Ok(DatabaseType::MySQL),
         "sqlite" => Ok(DatabaseType::SQLite),
+        "duckdb" => Ok(DatabaseType::DuckDB),
         _ => Err(PlenumError::invalid_input(format!(
-            "Invalid engine '{engine}'. Must be postgres, mysql, or sqlite"
+            "Invalid engine '{engine}'. Must be postgres, mysql, sqlite, or duckdb"
         ))),
     }
 }
