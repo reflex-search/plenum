@@ -371,7 +371,20 @@ enum Commands {
 
     /// Start MCP server (hidden from help, for AI agent integration)
     #[command(hide = true)]
-    Mcp,
+    Mcp {
+        /// Pin config resolution to this project path (overrides the launcher's cwd)
+        #[arg(long)]
+        project_path: Option<String>,
+
+        /// Pin to a named connection within the resolved project
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Read the DSN from this named environment variable at connection time.
+        /// Only the named variable is read — never an ambient fallback.
+        #[arg(long, conflicts_with_all = ["project_path", "name"])]
+        dsn_env: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -571,7 +584,9 @@ async fn main() {
             )
             .await
         }
-        Some(Commands::Mcp) => handle_mcp().await,
+        Some(Commands::Mcp { project_path, name, dsn_env }) => {
+            handle_mcp(project_path, name, dsn_env).await
+        }
         None => {
             // No subcommand provided
             let error_envelope = ErrorEnvelope::new(
@@ -1787,10 +1802,25 @@ async fn handle_query(
 }
 
 #[allow(clippy::future_not_send)]
-async fn handle_mcp() -> std::result::Result<(), i32> {
+async fn handle_mcp(
+    project_path: Option<String>,
+    name: Option<String>,
+    dsn_env: Option<String>,
+) -> std::result::Result<(), i32> {
     // Phase 7: MCP server using manual JSON-RPC 2.0 implementation
     // Follows the proven pattern from reflex-search (no unstable rmcp dependency)
-    match plenum::mcp::serve().await {
+    //
+    // Bind the connection source at server registration so resolution is
+    // decoupled from the launcher's cwd (REF-297).
+    let binding = match plenum::mcp::McpBinding::new(project_path, name, dsn_env) {
+        Ok(binding) => binding,
+        Err(e) => {
+            eprintln!("MCP server error: {e}");
+            return Err(1);
+        }
+    };
+
+    match plenum::mcp::serve(binding).await {
         Ok(()) => Ok(()),
         Err(e) => {
             // MCP server errors go to stderr (not stdout, which is for JSON-RPC)

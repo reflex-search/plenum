@@ -59,6 +59,57 @@ use crate::engine::postgres::PostgresEngine;
 use crate::engine::sqlite::SqliteEngine;
 
 // ============================================================================
+// Connection Binding (captured at server registration)
+// ============================================================================
+
+/// Connection binding captured from `plenum mcp` flags at server registration.
+///
+/// The MCP server is long-lived and its launcher's cwd is not a meaningful
+/// signal (Claude Desktop, editors, and daemons start it from arbitrary
+/// directories). This binding pins config resolution to an explicit source so
+/// resolution never silently depends on cwd.
+///
+/// Per-call tool arguments (`dsn`, `connection`, `engine`, ...) still take
+/// precedence; the binding only supplies the default a call omits.
+#[derive(Debug, Clone, Default)]
+pub struct McpBinding {
+    /// `--project-path`: pins config resolution to this project path.
+    project_path: Option<String>,
+    /// `--name`: pins to a named connection within the resolved project.
+    name: Option<String>,
+    /// `--dsn-env`: reads the DSN from this named environment variable at
+    /// connection time. Only the named variable is ever read — never an ambient
+    /// fallback such as `DATABASE_URL` or `PGPASSWORD`.
+    dsn_env: Option<String>,
+}
+
+impl McpBinding {
+    /// Construct a binding from `plenum mcp` flags, rejecting conflicting
+    /// combinations.
+    ///
+    /// `--dsn-env` names a complete one-off connection source, so it cannot be
+    /// combined with the saved-config selectors `--project-path` / `--name`.
+    ///
+    /// # Errors
+    /// Returns an error when `--dsn-env` is combined with `--project-path` or
+    /// `--name`.
+    pub fn new(
+        project_path: Option<String>,
+        name: Option<String>,
+        dsn_env: Option<String>,
+    ) -> Result<Self> {
+        if dsn_env.is_some() && (project_path.is_some() || name.is_some()) {
+            return Err(anyhow!(
+                "'--dsn-env' cannot be combined with '--project-path' or '--name': \
+                 a DSN environment variable is a complete connection source, \
+                 not a saved-config selector"
+            ));
+        }
+        Ok(Self { project_path, name, dsn_env })
+    }
+}
+
+// ============================================================================
 // JSON-RPC 2.0 Structures
 // ============================================================================
 
@@ -156,7 +207,7 @@ impl CallToolResult {
 ///
 /// Returns an error if stdio communication fails or if there's a fatal error.
 #[allow(clippy::future_not_send)]
-pub async fn serve() -> Result<()> {
+pub async fn serve(binding: McpBinding) -> Result<()> {
     let stdin = io::stdin();
     let reader = stdin.lock();
     let mut stdout = io::stdout();
@@ -183,7 +234,7 @@ pub async fn serve() -> Result<()> {
             continue;
         }
 
-        let response = handle_request(request).await;
+        let response = handle_request(request, &binding).await;
         let response_json = serde_json::to_string(&response)?;
         writeln!(stdout, "{response_json}")?;
         stdout.flush()?;
@@ -195,11 +246,11 @@ pub async fn serve() -> Result<()> {
 /// Handle a JSON-RPC request
 ///
 /// Routes the request to the appropriate handler based on the method name.
-async fn handle_request(request: JsonRpcRequest) -> JsonRpcResponse {
+async fn handle_request(request: JsonRpcRequest, binding: &McpBinding) -> JsonRpcResponse {
     let result = match request.method.as_str() {
         "initialize" => handle_initialize(request.params),
         "tools/list" => handle_list_tools(),
-        "tools/call" => handle_call_tool(request.params).await,
+        "tools/call" => handle_call_tool(request.params, binding).await,
         _ => Err(anyhow!("Unknown method: {}", request.method)),
     };
 
@@ -480,15 +531,15 @@ fn handle_list_tools() -> Result<Value> {
 /// Handle tools/call request
 ///
 /// Routes the tool call to the appropriate tool implementation.
-async fn handle_call_tool(params: Option<Value>) -> Result<Value> {
+async fn handle_call_tool(params: Option<Value>, binding: &McpBinding) -> Result<Value> {
     let params = params.ok_or_else(|| anyhow!("Missing params"))?;
     let name = params["name"].as_str().ok_or_else(|| anyhow!("Missing tool name"))?;
     let arguments = &params["arguments"];
 
     match name {
-        "connect" => tool_connect(arguments).await,
-        "introspect" => tool_introspect(arguments).await,
-        "query" => tool_query(arguments).await,
+        "connect" => tool_connect(arguments, binding).await,
+        "introspect" => tool_introspect(arguments, binding).await,
+        "query" => tool_query(arguments, binding).await,
         _ => Err(anyhow!("Unknown tool: {name}")),
     }
 }
@@ -501,8 +552,8 @@ async fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 ///
 /// Tests a database connection and returns server metadata.
 /// Stateless and read-only — no config is saved or mutated.
-async fn tool_connect(args: &Value) -> Result<Value> {
-    let (config, _is_readonly) = resolve_connection_from_args(args)?;
+async fn tool_connect(args: &Value, binding: &McpBinding) -> Result<Value> {
+    let (config, _is_readonly) = resolve_connection_from_args(args, binding)?;
 
     let connection_info = match config.engine {
         #[cfg(feature = "sqlite")]
@@ -549,9 +600,9 @@ async fn tool_connect(args: &Value) -> Result<Value> {
 ///
 /// Introspects database schema and returns table/column information.
 /// When `diff_against` is provided, computes a structural schema diff instead.
-async fn tool_introspect(args: &Value) -> Result<Value> {
+async fn tool_introspect(args: &Value, binding: &McpBinding) -> Result<Value> {
     // Resolve base connection config
-    let (config, _is_readonly) = resolve_connection_from_args(args)?;
+    let (config, _is_readonly) = resolve_connection_from_args(args, binding)?;
 
     // Get optional database and schema modifiers (shared by both paths)
     let database = args.get("target_database").and_then(|v| v.as_str());
@@ -703,12 +754,12 @@ fn parse_introspect_operation(args: &Value) -> Result<crate::engine::IntrospectO
 /// MCP Tool: query
 ///
 /// Executes a READ-ONLY SQL query.
-async fn tool_query(args: &Value) -> Result<Value> {
+async fn tool_query(args: &Value, binding: &McpBinding) -> Result<Value> {
     // Extract SQL
     let sql = args["sql"].as_str().ok_or_else(|| anyhow!("Missing required field: sql"))?;
 
     // Resolve connection config
-    let (mut config, _is_readonly) = resolve_connection_from_args(args)?;
+    let (mut config, _is_readonly) = resolve_connection_from_args(args, binding)?;
 
     // Apply target_database override if provided
     if let Some(target_db) = args.get("target_database").and_then(|v| v.as_str()) {
@@ -823,16 +874,21 @@ fn build_connection_config_from_args(args: &Value, engine_str: &str) -> Result<C
     }
 }
 
-/// Resolve connection config from JSON arguments
+/// Resolve connection config from JSON arguments, falling back to the
+/// server-registration `binding` when the call omits connection selectors.
 ///
 /// Resolution order:
 /// 1. DSN string: one-off URL, bypasses saved config; mutually exclusive with connection/engine
-/// 2. Named connection: loads saved connection, optionally with overrides
+/// 2. Named connection: loads saved connection (within the bound project path), with overrides
 /// 3. Explicit parameters: requires engine and all connection details
-/// 4. Auto-resolve default: uses current project's default connection
+/// 4. Binding fallback: `--dsn-env`, or `--project-path` / `--name`, or the
+///    cwd default — with a structured error when nothing resolves.
 ///
 /// Returns a tuple of (`ConnectionConfig`, `is_readonly`).
-fn resolve_connection_from_args(args: &Value) -> Result<(ConnectionConfig, bool)> {
+fn resolve_connection_from_args(
+    args: &Value,
+    binding: &McpBinding,
+) -> Result<(ConnectionConfig, bool)> {
     // Scenario 0: DSN one-off URL (mutually exclusive with connection and engine)
     if let Some(dsn_str) = args.get("dsn").and_then(|v| v.as_str()) {
         if args.get("connection").and_then(|v| v.as_str()).is_some() {
@@ -853,9 +909,14 @@ fn resolve_connection_from_args(args: &Value) -> Result<(ConnectionConfig, bool)
     if has_connection {
         let connection = args["connection"].as_str().unwrap();
 
-        // Use None for project_path (defaults to current directory)
-        let (mut config, is_readonly) = crate::resolve_connection(None, Some(connection))
-            .map_err(|e| anyhow!("Failed to resolve connection '{connection}': {e}"))?;
+        // When --project-path is bound, look up the named connection inside that
+        // project's local config (not CWD).  Without a bound path, fall back to CWD.
+        let (mut config, is_readonly) = if let Some(path) = &binding.project_path {
+            crate::config::resolve_connection_in_project(path, Some(connection))
+        } else {
+            crate::resolve_connection(None, Some(connection))
+        }
+        .map_err(|e| anyhow!("Failed to resolve connection '{connection}': {e}"))?;
 
         // Apply overrides
         if let Some(eng) = args.get("engine").and_then(|v| v.as_str()) {
@@ -896,16 +957,58 @@ fn resolve_connection_from_args(args: &Value) -> Result<(ConnectionConfig, bool)
         return Ok((config, false)); // Explicit connections are never readonly
     }
 
-    // Scenario 3: Auto-resolve default connection for current project
-    // Use None for both project_path (current directory) and connection_name (use default)
-    let (config, is_readonly) = crate::resolve_connection(None, None).map_err(|e| {
-        anyhow!(
-            "No connection or engine specified, and failed to auto-resolve default connection: {e}. \
-             Either provide 'connection' (named), 'engine' (explicit), or ensure a default connection exists for this project."
-        )
-    })?;
+    // Scenario 3: Fall back to the server-registration binding.
+    resolve_from_binding(binding)
+}
 
-    Ok((config, is_readonly))
+/// Resolve a connection from the server-registration binding alone (no per-call
+/// connection selectors were provided).
+///
+/// Priority: `--dsn-env` (explicit env-sourced DSN) → `--project-path` / `--name`
+/// (or the cwd default when neither is bound). When nothing resolves and no
+/// binding flags were given, returns a structured error naming exactly which
+/// flags to add — never a silent fallback.
+fn resolve_from_binding(binding: &McpBinding) -> Result<(ConnectionConfig, bool)> {
+    // `--dsn-env`: read the DSN from ONLY the named variable. Plenum never reads
+    // an ambient credential source (DATABASE_URL, PGPASSWORD, ...) that the
+    // caller did not explicitly name.
+    if let Some(var) = &binding.dsn_env {
+        let dsn = std::env::var(var).map_err(|_| {
+            anyhow!(
+                "--dsn-env variable '{var}' is not set in the environment. \
+                 Plenum reads only the named variable and never falls back to \
+                 other environment variables."
+            )
+        })?;
+        let config =
+            parse_dsn(&dsn).map_err(|e| anyhow!("{} (from --dsn-env {})", e.message(), var))?;
+        return Ok((config, false));
+    }
+
+    // `--project-path`: load the local config from the project directory itself,
+    // not from the launcher's cwd — that's the whole point of the flag.
+    if let Some(path) = &binding.project_path {
+        return crate::config::resolve_connection_in_project(path, binding.name.as_deref())
+            .map_err(|e| anyhow!("Failed to resolve bound connection: {e}"));
+    }
+
+    // `--name` only (no --project-path): use cwd as project, pick the named connection.
+    // No flags at all: use cwd + project default.
+    crate::resolve_connection(None, binding.name.as_deref()).map_err(|e| {
+        if binding.name.is_none() {
+            // Nothing was bound and cwd has no usable config — name the flags exactly.
+            anyhow!(
+                "No connection could be resolved: no connection selectors were passed to this \
+                 tool call and 'plenum mcp' was started without a connection binding. \
+                 Restart the server with one of: '--project-path <path>' to pin the project, \
+                 '--name <connection>' to select a saved connection, or \
+                 '--dsn-env <ENV_VAR>' to read a DSN from a named environment variable. \
+                 Underlying error: {e}"
+            )
+        } else {
+            anyhow!("Failed to resolve bound connection: {e}")
+        }
+    })
 }
 
 /// Validate database connection
@@ -997,5 +1100,118 @@ async fn execute_query(
         DatabaseType::DuckDB => {
             Err(anyhow!("DuckDB engine not enabled. Build with --features duckdb"))
         }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── McpBinding construction / conflict rules ────────────────────────────
+
+    #[test]
+    fn binding_rejects_dsn_env_with_project_path() {
+        let err = McpBinding::new(Some("/p".to_string()), None, Some("PLENUM_DSN".to_string()))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--dsn-env"), "error should name --dsn-env: {err}");
+        assert!(err.contains("--project-path"), "error should name --project-path: {err}");
+    }
+
+    #[test]
+    fn binding_rejects_dsn_env_with_name() {
+        let err = McpBinding::new(None, Some("prod".to_string()), Some("PLENUM_DSN".to_string()))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--dsn-env"), "error should name --dsn-env: {err}");
+        assert!(err.contains("--name"), "error should name --name: {err}");
+    }
+
+    #[test]
+    fn binding_allows_project_path_and_name_together() {
+        let binding =
+            McpBinding::new(Some("/p".to_string()), Some("prod".to_string()), None).unwrap();
+        assert_eq!(binding.project_path.as_deref(), Some("/p"));
+        assert_eq!(binding.name.as_deref(), Some("prod"));
+    }
+
+    #[test]
+    fn binding_allows_dsn_env_alone_and_empty() {
+        assert!(McpBinding::new(None, None, Some("PLENUM_DSN".to_string())).is_ok());
+        assert!(McpBinding::default().dsn_env.is_none());
+    }
+
+    // ── --dsn-env resolution (credential-sourcing safety) ───────────────────
+
+    #[test]
+    fn dsn_env_reads_only_the_named_variable() {
+        // A named var holding a valid DSN resolves; nothing else is consulted.
+        std::env::set_var("PLENUM_TEST_DSN_ENV_OK", "sqlite::memory:");
+        let binding =
+            McpBinding::new(None, None, Some("PLENUM_TEST_DSN_ENV_OK".to_string())).unwrap();
+        let (config, is_readonly) = resolve_from_binding(&binding).unwrap();
+        assert_eq!(config.engine, DatabaseType::SQLite);
+        assert!(!is_readonly);
+        std::env::remove_var("PLENUM_TEST_DSN_ENV_OK");
+    }
+
+    #[test]
+    fn dsn_env_never_falls_back_to_ambient_credentials() {
+        // Set a plausible ambient credential source, then point --dsn-env at a
+        // DIFFERENT, unset variable. Plenum must NOT pick up the ambient one.
+        std::env::set_var("PLENUM_TEST_AMBIENT_DSN", "postgres://u:p@host:5432/db");
+        std::env::remove_var("PLENUM_TEST_DSN_ENV_UNSET");
+
+        let binding =
+            McpBinding::new(None, None, Some("PLENUM_TEST_DSN_ENV_UNSET".to_string())).unwrap();
+        let err = resolve_from_binding(&binding).unwrap_err().to_string();
+
+        assert!(
+            err.contains("PLENUM_TEST_DSN_ENV_UNSET"),
+            "error should name the missing var: {err}"
+        );
+        assert!(
+            !err.contains("PLENUM_TEST_AMBIENT_DSN"),
+            "must not reference the ambient var: {err}"
+        );
+        assert!(!err.contains("host"), "must not leak the ambient DSN value: {err}");
+        std::env::remove_var("PLENUM_TEST_AMBIENT_DSN");
+    }
+
+    #[test]
+    fn dsn_env_with_invalid_dsn_is_rejected() {
+        std::env::set_var("PLENUM_TEST_DSN_ENV_BAD", "not-a-valid-dsn");
+        let binding =
+            McpBinding::new(None, None, Some("PLENUM_TEST_DSN_ENV_BAD".to_string())).unwrap();
+        let err = resolve_from_binding(&binding).unwrap_err().to_string();
+        assert!(err.contains("PLENUM_TEST_DSN_ENV_BAD"), "error names the var: {err}");
+        std::env::remove_var("PLENUM_TEST_DSN_ENV_BAD");
+    }
+
+    // ── Per-call args still take precedence over the binding ────────────────
+
+    #[test]
+    fn per_call_dsn_overrides_binding_and_is_used_directly() {
+        // Even with a --dsn-env binding, an explicit per-call `dsn` wins.
+        std::env::set_var("PLENUM_TEST_DSN_ENV_BINDING", "sqlite::memory:");
+        let binding =
+            McpBinding::new(None, None, Some("PLENUM_TEST_DSN_ENV_BINDING".to_string())).unwrap();
+        let args = serde_json::json!({ "dsn": "sqlite:/tmp/explicit.db" });
+        let (config, _) = resolve_connection_from_args(&args, &binding).unwrap();
+        assert_eq!(config.engine, DatabaseType::SQLite);
+        assert_eq!(config.file.as_deref(), Some(std::path::Path::new("/tmp/explicit.db")));
+        std::env::remove_var("PLENUM_TEST_DSN_ENV_BINDING");
+    }
+
+    #[test]
+    fn per_call_dsn_and_connection_are_mutually_exclusive() {
+        let args = serde_json::json!({ "dsn": "sqlite::memory:", "connection": "prod" });
+        let err =
+            resolve_connection_from_args(&args, &McpBinding::default()).unwrap_err().to_string();
+        assert!(err.contains("mutually exclusive"), "got: {err}");
     }
 }
