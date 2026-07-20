@@ -53,7 +53,10 @@ pub use engine::{
     SchemaInfo, TableDiff, TableInfo, TimeOnlyResult, ViewDiff, ViewInfo,
 };
 pub use error::{PlenumError, Result};
-pub use output::{ErrorEnvelope, ErrorInfo, Metadata, SuccessEnvelope, CONTRACT_VERSION};
+pub use output::{
+    ErrorEnvelope, ErrorInfo, McpServerConfig, McpStanza, Metadata, SuccessEnvelope,
+    CONTRACT_VERSION,
+};
 
 #[cfg(test)]
 mod tests {

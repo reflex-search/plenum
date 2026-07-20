@@ -9,6 +9,8 @@
 //!
 //! Output is stable, versioned, and suitable for programmatic parsing by agents.
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +94,63 @@ impl ErrorEnvelope {
             command,
             ErrorInfo { code: err.error_code().to_string(), message: err.message() },
         )
+    }
+}
+
+/// A single MCP server entry within an [`McpStanza`].
+///
+/// Mirrors the shape MCP hosts expect under `mcpServers.<name>`: an executable
+/// plus the exact argv used to launch Plenum's MCP server for the saved connection.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct McpServerConfig {
+    /// Executable to launch (always `"plenum"`).
+    pub command: String,
+
+    /// Arguments passed to the executable. Reflects the W1 launch flags
+    /// (`mcp --project-path <path> --name <name>`) for the connection just saved.
+    pub args: Vec<String>,
+}
+
+/// Ready-to-paste `mcpServers` configuration block emitted after `plenum connect`
+/// saves a connection.
+///
+/// The agent operator can copy this verbatim into an MCP host config (e.g.
+/// `claude_desktop_config.json`) to wire up the Plenum MCP server for the saved
+/// connection without consulting setup documentation.
+///
+/// Only the connection's project path and name are encoded — never a credential
+/// or secret. Indirect credential sources remain resolved at connection time by
+/// the stored connection reference.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct McpStanza {
+    /// Map of MCP server name to launch config. Always contains a single
+    /// `"plenum"` entry.
+    #[serde(rename = "mcpServers")]
+    pub mcp_servers: BTreeMap<String, McpServerConfig>,
+}
+
+impl McpStanza {
+    /// Build the stanza for a connection that was just saved under
+    /// `project_path` with the given `name`.
+    ///
+    /// The MCP server binds resolution explicitly to `--project-path`/`--name`
+    /// (never inferring from cwd), so the emitted argv reproduces exactly that
+    /// binding.
+    #[must_use]
+    pub fn for_saved_connection(project_path: &str, name: &str) -> Self {
+        let server = McpServerConfig {
+            command: "plenum".to_string(),
+            args: vec![
+                "mcp".to_string(),
+                "--project-path".to_string(),
+                project_path.to_string(),
+                "--name".to_string(),
+                name.to_string(),
+            ],
+        };
+        let mut mcp_servers = BTreeMap::new();
+        mcp_servers.insert("plenum".to_string(), server);
+        Self { mcp_servers }
     }
 }
 
@@ -287,6 +346,38 @@ mod tests {
         let envelope =
             ErrorEnvelope::new("mysql", "query", ErrorInfo::new("QUERY_FAILED", "Syntax error"));
         assert!(!envelope.ok);
+    }
+
+    #[test]
+    fn test_mcp_stanza_shape_reflects_project_path_and_name() {
+        let stanza = McpStanza::for_saved_connection("/home/user/project1", "staging");
+        let json = serde_json::to_value(&stanza).unwrap();
+
+        // Ready-to-paste block is keyed by `mcpServers` -> `plenum`.
+        let server = &json["mcpServers"]["plenum"];
+        assert_eq!(server["command"], "plenum");
+        assert_eq!(
+            server["args"],
+            serde_json::json!([
+                "mcp",
+                "--project-path",
+                "/home/user/project1",
+                "--name",
+                "staging"
+            ])
+        );
+    }
+
+    #[test]
+    fn test_mcp_stanza_encodes_only_path_and_name_no_secret() {
+        // The stanza must never carry a credential — only the connection reference.
+        let stanza = McpStanza::for_saved_connection("/tmp/proj", "prod");
+        let json = serde_json::to_string(&stanza).unwrap();
+        assert!(!json.contains("password"));
+        assert!(!json.contains("dsn"));
+        // Single server entry named "plenum".
+        assert_eq!(stanza.mcp_servers.len(), 1);
+        assert!(stanza.mcp_servers.contains_key("plenum"));
     }
 
     #[test]

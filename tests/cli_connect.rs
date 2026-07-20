@@ -194,6 +194,64 @@ fn connect_rejects_password_and_password_env_together() {
     cleanup(&dir);
 }
 
+#[test]
+fn connect_save_emits_ready_to_paste_mcp_stanza() {
+    let dir = unique_tmp_dir("stanza");
+    let db_path = create_sqlite_db(&dir);
+    let canonical = std::fs::canonicalize(&dir).expect("canonicalize scratch dir");
+    let canonical = canonical.to_str().expect("utf-8 path").to_string();
+
+    let (code, stdout, _stderr) = run_connect(
+        &dir,
+        &[],
+        &[
+            "--name",
+            "staging",
+            "--engine",
+            "sqlite",
+            "--file",
+            db_path.to_str().unwrap(),
+            "--save",
+            "local",
+        ],
+    );
+
+    assert_eq!(code, 0, "expected success, stdout={stdout}");
+
+    let envelope: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("non-JSON stdout {stdout:?}: {e}"));
+    assert_eq!(envelope.get("ok").and_then(Value::as_bool), Some(true));
+
+    // A ready-to-paste mcpServers block must be present in the connect data.
+    let server = envelope
+        .pointer("/data/mcp_stanza/mcpServers/plenum")
+        .expect("mcp_stanza.mcpServers.plenum present in connect output");
+    assert_eq!(server.get("command").and_then(Value::as_str), Some("plenum"));
+
+    let args: Vec<String> = server
+        .get("args")
+        .and_then(Value::as_array)
+        .expect("args array present")
+        .iter()
+        .map(|v| v.as_str().unwrap_or_default().to_string())
+        .collect();
+
+    // Reflects the W1 launch flags for the connection just saved.
+    assert_eq!(
+        args,
+        vec![
+            "mcp".to_string(),
+            "--project-path".to_string(),
+            canonical,
+            "--name".to_string(),
+            "staging".to_string(),
+        ],
+        "stanza args should reproduce the exact --project-path/--name binding"
+    );
+
+    cleanup(&dir);
+}
+
 // ============================================================================
 // --test (connection ping) tests
 // ============================================================================
