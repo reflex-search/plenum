@@ -13,6 +13,8 @@ use crate::engine::{
 };
 use crate::error::{PlenumError, Result};
 
+#[cfg(feature = "duckdb")]
+use crate::engine::duckdb::DuckDbEngine;
 #[cfg(feature = "mysql")]
 use crate::engine::mysql::MySqlEngine;
 #[cfg(feature = "postgres")]
@@ -49,6 +51,13 @@ async fn engine_introspect(
         #[cfg(not(feature = "mysql"))]
         DatabaseType::MySQL => Err(PlenumError::invalid_input(
             "MySQL engine not enabled. Build with --features mysql.",
+        )),
+
+        #[cfg(feature = "duckdb")]
+        DatabaseType::DuckDB => DuckDbEngine::introspect(config, operation, database, schema).await,
+        #[cfg(not(feature = "duckdb"))]
+        DatabaseType::DuckDB => Err(PlenumError::invalid_input(
+            "DuckDB engine not enabled. Build with --features duckdb.",
         )),
     }
 }

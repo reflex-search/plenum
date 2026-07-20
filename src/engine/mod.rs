@@ -74,6 +74,10 @@ pub mod postgres; // Phase 4 (in progress)
 #[cfg(feature = "mysql")]
 pub mod mysql;
 
+// DuckDB engine (REF-290)
+#[cfg(feature = "duckdb")]
+pub mod duckdb;
+
 /// Supported database engine types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -84,6 +88,8 @@ pub enum DatabaseType {
     MySQL,
     /// `SQLite` database
     SQLite,
+    /// `DuckDB` database
+    DuckDB,
 }
 
 impl DatabaseType {
@@ -94,6 +100,7 @@ impl DatabaseType {
             Self::Postgres => "postgres",
             Self::MySQL => "mysql",
             Self::SQLite => "sqlite",
+            Self::DuckDB => "duckdb",
         }
     }
 }
@@ -191,6 +198,21 @@ impl ConnectionConfig {
     pub fn sqlite(file: PathBuf) -> Self {
         Self {
             engine: DatabaseType::SQLite,
+            host: None,
+            port: None,
+            user: None,
+            password: None,
+            database: None,
+            file: Some(file),
+            tls: None,
+        }
+    }
+
+    /// Create a new `DuckDB` connection config
+    #[must_use]
+    pub fn duckdb(file: PathBuf) -> Self {
+        Self {
+            engine: DatabaseType::DuckDB,
             host: None,
             port: None,
             user: None,
@@ -781,6 +803,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&DatabaseType::Postgres).unwrap(), r#""postgres""#);
         assert_eq!(serde_json::to_string(&DatabaseType::MySQL).unwrap(), r#""mysql""#);
         assert_eq!(serde_json::to_string(&DatabaseType::SQLite).unwrap(), r#""sqlite""#);
+        assert_eq!(serde_json::to_string(&DatabaseType::DuckDB).unwrap(), r#""duckdb""#);
     }
 
     #[test]
@@ -811,6 +834,11 @@ mod tests {
         assert_eq!(sqlite_config.engine, DatabaseType::SQLite);
         assert!(sqlite_config.file.is_some());
         assert!(sqlite_config.tls.is_none());
+
+        let duckdb_config = ConnectionConfig::duckdb(PathBuf::from("/tmp/test.duckdb"));
+        assert_eq!(duckdb_config.engine, DatabaseType::DuckDB);
+        assert!(duckdb_config.file.is_some());
+        assert!(duckdb_config.tls.is_none());
     }
 
     #[test]
