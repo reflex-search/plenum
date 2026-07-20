@@ -109,6 +109,48 @@ fn handshake_then_connect(child: &mut Child) -> Value {
     response.expect("no response for connect tool call")
 }
 
+/// Drive the handshake and a single tool call with explicit `arguments`,
+/// returning the JSON-RPC response for the call.
+fn handshake_then_call(child: &mut Child, tool: &str, arguments: &Value) -> Value {
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut reader = BufReader::new(stdout);
+
+    let init = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2024-11-05", "capabilities": {},
+                    "clientInfo": { "name": "test", "version": "0" } }
+    });
+    let notif = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
+    let call = json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": tool, "arguments": arguments.clone() }
+    });
+
+    writeln!(stdin, "{init}").unwrap();
+    writeln!(stdin, "{notif}").unwrap();
+    writeln!(stdin, "{call}").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+
+    let mut response = None;
+    while let Some(v) = read_line_json(&mut reader) {
+        if v.get("id") == Some(&json!(2)) {
+            response = Some(v);
+            break;
+        }
+    }
+    response.expect("no response for tool call")
+}
+
+/// Extract the JSON-decoded text payload from a successful tool result.
+fn tool_result_json(resp: &Value) -> Value {
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected a tool result text block, got: {resp}"));
+    serde_json::from_str(text).expect("tool result text is valid JSON")
+}
+
 /// Create an on-disk `SQLite` database at `path`. Plenum opens connections
 /// read-only, so the file must already exist for `connect` to succeed.
 fn create_sqlite_db(path: &Path) {
@@ -370,4 +412,110 @@ fn dsn_env_conflicts_with_name_at_cli() {
         stderr.contains("dsn-env") || stderr.contains("dsn_env"),
         "conflict error should mention --dsn-env: {stderr}"
     );
+}
+
+// ─── REF-298: credential safety on the MCP connect tool ──────────────────────
+
+#[test]
+fn connect_rejects_inline_plaintext_password() {
+    // Inline plaintext 'password' must be rejected with a capability error,
+    // directing the caller to reference-based credential sourcing.
+    let cwd = scratch("inline-pw");
+    let xdg = scratch("inline-pw-xdg");
+    let mut child = spawn_mcp(&[], &[], &cwd, &xdg);
+    let resp = handshake_then_call(
+        &mut child,
+        "connect",
+        &json!({
+            "engine": "postgres",
+            "host": "localhost",
+            "port": 5432,
+            "user": "u",
+            "database": "d",
+            "password": "hunter2"
+        }),
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let msg = error_message(&resp);
+    assert!(msg.contains("CAPABILITY_VIOLATION"), "must be a capability error: {msg}");
+    assert!(msg.contains("password_env"), "must point to references: {msg}");
+    // The plaintext secret must never be echoed back.
+    assert!(!msg.contains("hunter2"), "must not leak the secret: {msg}");
+
+    let _ = std::fs::remove_dir_all(&cwd);
+    let _ = std::fs::remove_dir_all(&xdg);
+}
+
+#[test]
+fn connect_save_local_persists_by_reference() {
+    // save: "local" writes <project>/.plenum/config.json storing only the
+    // credential reference — never the plaintext secret.
+    let cwd = scratch("save-local");
+    let xdg = scratch("save-local-xdg");
+    let mut child = spawn_mcp(&[], &[], &cwd, &xdg);
+    let resp = handshake_then_call(
+        &mut child,
+        "connect",
+        &json!({
+            "engine": "postgres",
+            "host": "db.example.com",
+            "port": 5432,
+            "user": "agent",
+            "database": "app",
+            "password_env": "DB_PASSWORD",
+            "save": "local",
+            "name": "prod",
+            "project_path": cwd.to_str().unwrap()
+        }),
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert_no_error(&resp);
+    let data = tool_result_json(&resp);
+    assert_eq!(data["saved"], json!(true));
+    assert_eq!(data["location"], json!("local"));
+    assert_eq!(data["name"], json!("prod"));
+    assert_eq!(data["credential_source"], json!("password_env"));
+
+    let written =
+        std::fs::read_to_string(cwd.join(".plenum").join("config.json")).expect("config written");
+    assert!(written.contains("password_env"), "reference stored: {written}");
+    assert!(written.contains("DB_PASSWORD"), "env var name stored: {written}");
+    assert!(!written.contains("\"password\":"), "no plaintext password: {written}");
+    assert!(written.contains("prod"));
+
+    let _ = std::fs::remove_dir_all(&cwd);
+    let _ = std::fs::remove_dir_all(&xdg);
+}
+
+#[test]
+fn connect_save_requires_a_credential_reference_shape() {
+    // A keychain reference needs BOTH service and account; supplying only one
+    // is rejected before anything is written.
+    let cwd = scratch("save-badkc");
+    let xdg = scratch("save-badkc-xdg");
+    let mut child = spawn_mcp(&[], &[], &cwd, &xdg);
+    let resp = handshake_then_call(
+        &mut child,
+        "connect",
+        &json!({
+            "engine": "postgres",
+            "host": "h", "port": 5432, "user": "u", "database": "d",
+            "keychain_service": "svc",
+            "save": "local",
+            "project_path": cwd.to_str().unwrap()
+        }),
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let msg = error_message(&resp);
+    assert!(msg.contains("keychain_account"), "must name the missing field: {msg}");
+    assert!(!cwd.join(".plenum").join("config.json").exists(), "nothing should be written");
+
+    let _ = std::fs::remove_dir_all(&cwd);
+    let _ = std::fs::remove_dir_all(&xdg);
 }

@@ -46,6 +46,7 @@ use serde_json::Value;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
+use crate::config::{ConfigLocation, KeychainEntry, StoredConnection};
 use crate::{parse_dsn, redact_dsn, Capabilities, ConnectionConfig, DatabaseEngine, DatabaseType};
 
 // Import database engines
@@ -343,6 +344,22 @@ fn handle_list_tools() -> Result<Value> {
                             "type": "string",
                             "description": "DISCOURAGED: SQLite/DuckDB database file path. Only for one-off sqlite/duckdb explicit connections or as override. Prefer using saved connections."
                         },
+                        "password_env": {
+                            "type": "string",
+                            "description": "Credential reference for one-off explicit connections: name of the environment variable holding the password. The secret value never passes through Plenum. Combine with engine + host/port/user/database. Mutually exclusive with password_command and keychain_service/keychain_account."
+                        },
+                        "password_command": {
+                            "type": "string",
+                            "description": "Credential reference for one-off explicit connections: shell command whose stdout (trimmed) is the password. Mutually exclusive with password_env and keychain_service/keychain_account."
+                        },
+                        "keychain_service": {
+                            "type": "string",
+                            "description": "Credential reference for one-off explicit connections: OS keychain service name. Must be paired with keychain_account. Mutually exclusive with password_env and password_command."
+                        },
+                        "keychain_account": {
+                            "type": "string",
+                            "description": "Credential reference for one-off explicit connections: OS keychain account name. Must be paired with keychain_service."
+                        },
                         "list_databases": {
                             "type": "boolean",
                             "description": "Operation: List all databases. Returns {\"type\": \"database_list\", \"databases\": [\"db1\", \"db2\", ...]}. Requires wildcard connection (database=\"*\"). MySQL/Postgres only. Mutually exclusive with other operations."
@@ -453,6 +470,22 @@ fn handle_list_tools() -> Result<Value> {
                             "type": "string",
                             "description": "DISCOURAGED: File path to SQLite/DuckDB database file. Only for one-off sqlite/duckdb explicit connections. Can be relative or absolute path. Example: './app.db', '/var/lib/data.duckdb'. Prefer using saved connections."
                         },
+                        "password_env": {
+                            "type": "string",
+                            "description": "Credential reference for one-off explicit connections: name of the environment variable holding the password. The secret value never passes through Plenum. Combine with engine + host/port/user/database. Mutually exclusive with password_command and keychain_service/keychain_account."
+                        },
+                        "password_command": {
+                            "type": "string",
+                            "description": "Credential reference for one-off explicit connections: shell command whose stdout (trimmed) is the password. Mutually exclusive with password_env and keychain_service/keychain_account."
+                        },
+                        "keychain_service": {
+                            "type": "string",
+                            "description": "Credential reference for one-off explicit connections: OS keychain service name. Must be paired with keychain_account. Mutually exclusive with password_env and password_command."
+                        },
+                        "keychain_account": {
+                            "type": "string",
+                            "description": "Credential reference for one-off explicit connections: OS keychain account name. Must be paired with keychain_service."
+                        },
                         "max_rows": {
                             "type": "number",
                             "description": "CRITICAL: Maximum number of rows to return from SELECT queries. Due to MCP's 25k token response limit, this parameter is effectively REQUIRED for all queries against tables of unknown size. Omitting this will cause tool failure on large tables. Start small and increase if needed: Use 10 for initial exploration/preview, 50-100 for small known tables, 100-500 for medium tables (only after confirming size with COUNT(*) query). Even with columnar format (30-50% token reduction), a 100-row result with 10+ columns can approach token limits. Always prefer smaller limits initially."
@@ -484,7 +517,7 @@ fn handle_list_tools() -> Result<Value> {
             },
             {
                 "name": "connect",
-                "description": "Test a database connection and return server metadata (version, database name, user). Opens a connection, verifies liveness, returns ConnectionInfo, then disconnects immediately. Stateless and read-only — no config is saved or mutated. Use to health-check a saved connection before running queries, or to verify credentials after setup. IMPORTANT CONNECTION WORKFLOW: (1) RECOMMENDED: Auto-resolve (omit all connection params) — uses project's default saved connection, (2) COMMON: Named connection (use 'connection' param only) — references saved connection by name, (3) DISCOURAGED: Explicit credentials (engine + host/user/password) — ONLY for one-off checks. Possible error codes: CONNECTION_FAILED (unreachable host, bad credentials, missing file), INVALID_INPUT (missing required params), CONFIG_ERROR (no saved connection found).",
+                "description": "Test a database connection OR save a connection config by reference. TWO MODES: (A) TEST (default, no 'save'): opens a connection, verifies liveness, returns ConnectionInfo, then disconnects. Stateless — no config mutated. (B) SAVE ('save': \"local\"|\"global\"): persists the connection config BY REFERENCE to .plenum/config.json (local) or ~/.config/plenum/connections.json (global), then returns a saved confirmation. No live connection required — provisions connections offline. CREDENTIAL SAFETY (non-negotiable): inline plaintext 'password' is REJECTED with CAPABILITY_VIOLATION. Source secrets ONLY by reference: 'password_env' (env var name), 'password_command' (shell command), or 'keychain_service'+'keychain_account' (OS keychain). The plaintext secret NEVER passes through Plenum — only the reference string is stored. Use TEST mode to health-check a saved connection; use SAVE mode to register a new one. Possible error codes: CAPABILITY_VIOLATION (inline plaintext password), CONNECTION_FAILED (unreachable host, bad credentials, missing file), INVALID_INPUT (missing required params), CONFIG_ERROR (no saved connection found).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -520,6 +553,35 @@ fn handle_list_tools() -> Result<Value> {
                         "file": {
                             "type": "string",
                             "description": "DISCOURAGED: SQLite/DuckDB database file path. Only for explicit one-off tests."
+                        },
+                        "password_env": {
+                            "type": "string",
+                            "description": "Credential reference: name of the environment variable that holds the password (e.g. \"DB_PASSWORD\"). The reference string is stored/used, never the secret value. Mutually exclusive with password_command and keychain_service/keychain_account. Use this instead of inline 'password' (which is rejected)."
+                        },
+                        "password_command": {
+                            "type": "string",
+                            "description": "Credential reference: shell command whose stdout (trimmed) is the password (e.g. \"op read op://vault/db/password\"). The command string is stored/used, never the secret value. Mutually exclusive with password_env and keychain_service/keychain_account."
+                        },
+                        "keychain_service": {
+                            "type": "string",
+                            "description": "Credential reference: OS keychain service name. Must be paired with keychain_account. The password is looked up from the platform keychain at connection time. Mutually exclusive with password_env and password_command."
+                        },
+                        "keychain_account": {
+                            "type": "string",
+                            "description": "Credential reference: OS keychain account name. Must be paired with keychain_service."
+                        },
+                        "save": {
+                            "type": "string",
+                            "enum": ["local", "global"],
+                            "description": "SAVE MODE: persist this connection config by reference. \"local\" writes .plenum/config.json (team-shareable, per-project); \"global\" writes ~/.config/plenum/connections.json (per-user). Requires explicit 'engine' + connection params. Credentials are stored only as references (password_env/password_command/keychain_*) — never plaintext. Omit to run in TEST mode instead."
+                        },
+                        "project_path": {
+                            "type": "string",
+                            "description": "SAVE MODE modifier: project path to key the saved connection under. Defaults to the server's bound --project-path, or the current working directory. Local saves are written to <project_path>/.plenum/config.json."
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "SAVE MODE modifier: name to store the connection under (e.g. \"prod\", \"staging\"). Defaults to \"default\". The first connection saved for a project becomes its default."
                         }
                     }
                 }
@@ -550,9 +612,33 @@ async fn handle_call_tool(params: Option<Value>, binding: &McpBinding) -> Result
 
 /// MCP Tool: connect
 ///
-/// Tests a database connection and returns server metadata.
-/// Stateless and read-only — no config is saved or mutated.
+/// Two modes:
+/// - Without `save`: tests a database connection and returns server metadata.
+///   Stateless — no config is mutated.
+/// - With `save` (`"local"` | `"global"`): persists the connection config **by
+///   reference** to `.plenum/config.json` or the global registry, then returns a
+///   saved confirmation. No live connection is required, so agents can provision
+///   connections offline.
+///
+/// Inline plaintext passwords are rejected unconditionally: callers must source
+/// secrets via `password_env`, `password_command`, or `keychain_service` +
+/// `keychain_account`. This guarantees the plaintext secret never passes through
+/// Plenum.
 async fn tool_connect(args: &Value, binding: &McpBinding) -> Result<Value> {
+    // Capability boundary: the MCP connect tool never handles plaintext secrets.
+    if args.get("password").and_then(|v| v.as_str()).is_some() {
+        return Err(anyhow!(
+            "CAPABILITY_VIOLATION: inline plaintext 'password' is not permitted on the MCP \
+             connect tool. Reference the secret instead via 'password_env', 'password_command', \
+             or 'keychain_service' + 'keychain_account'."
+        ));
+    }
+
+    // Save mode: persist by reference and return without opening a connection.
+    if let Some(save_raw) = args.get("save") {
+        return tool_connect_save(args, binding, save_raw);
+    }
+
     let (config, _is_readonly) = resolve_connection_from_args(args, binding)?;
 
     let connection_info = match config.engine {
@@ -594,6 +680,79 @@ async fn tool_connect(args: &Value, binding: &McpBinding) -> Result<Value> {
     };
 
     CallToolResult::success(connection_info)
+}
+
+/// Persist a connection config by reference for the `connect` tool's save mode.
+///
+/// The stored config carries no plaintext password (inline `password` was already
+/// rejected by the caller); credentials are recorded only as references.
+fn tool_connect_save(args: &Value, binding: &McpBinding, save_raw: &Value) -> Result<Value> {
+    let location = match save_raw.as_str() {
+        Some("local") => ConfigLocation::Local,
+        Some("global") => ConfigLocation::Global,
+        _ => {
+            return Err(anyhow!("Invalid 'save' value. Must be \"local\" or \"global\""));
+        }
+    };
+
+    // Saving requires explicit connection parameters — you cannot re-save a
+    // connection selected purely by name, and a DSN would carry inline secrets.
+    let engine_str = args.get("engine").and_then(|v| v.as_str()).ok_or_else(|| {
+        anyhow!("'save' requires explicit connection params, starting with 'engine'")
+    })?;
+
+    let (password_env, password_command, keychain_entry) = parse_credential_refs(args)?;
+    let has_ref = password_env.is_some() || password_command.is_some() || keychain_entry.is_some();
+
+    // Build the config to store. `allow_missing_password` keeps the config free of
+    // any inline secret — the reference is the sole password authority.
+    let config = build_connection_config_from_args(args, engine_str, true)?;
+
+    // Project path: explicit arg wins, else the server-registration binding, else cwd.
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p.to_string(),
+        None => match &binding.project_path {
+            Some(p) => p.clone(),
+            None => {
+                crate::config::get_current_project_path().map_err(|e| anyhow!("{}", e.message()))?
+            }
+        },
+    };
+
+    let name = args.get("name").and_then(|v| v.as_str()).map(String::from);
+
+    crate::config::save_connection_in_project(
+        &project_path,
+        name.clone(),
+        config,
+        password_env.clone(),
+        password_command.clone(),
+        keychain_entry.clone(),
+        location,
+    )
+    .map_err(|e| anyhow!("Failed to save connection: {}", e.message()))?;
+
+    let credential_source = if password_env.is_some() {
+        "password_env"
+    } else if password_command.is_some() {
+        "password_command"
+    } else if keychain_entry.is_some() {
+        "keychain"
+    } else {
+        "none"
+    };
+
+    CallToolResult::success(serde_json::json!({
+        "saved": true,
+        "location": match location {
+            ConfigLocation::Local => "local",
+            ConfigLocation::Global => "global",
+        },
+        "name": name.unwrap_or_else(|| "default".to_string()),
+        "project_path": project_path,
+        "credential_source": credential_source,
+        "has_reference": has_ref,
+    }))
 }
 
 /// MCP Tool: introspect
@@ -820,8 +979,64 @@ async fn tool_query(args: &Value, binding: &McpBinding) -> Result<Value> {
 // Helper Functions (Stateless)
 // ============================================================================
 
-/// Build `ConnectionConfig` from JSON arguments
-fn build_connection_config_from_args(args: &Value, engine_str: &str) -> Result<ConnectionConfig> {
+/// Extract credential-reference arguments from a tool call.
+///
+/// Recognizes `password_env`, `password_command`, and the keychain pair
+/// `keychain_service` + `keychain_account`. These name where a secret lives;
+/// the plaintext secret itself never passes through Plenum.
+///
+/// Enforces the same invariants the config layer does:
+/// - at most one credential source may be specified;
+/// - `keychain_service` and `keychain_account` must be supplied together.
+///
+/// Returns `(password_env, password_command, keychain_entry)` — all `None` when
+/// no reference was provided.
+fn parse_credential_refs(
+    args: &Value,
+) -> Result<(Option<String>, Option<String>, Option<KeychainEntry>)> {
+    let password_env = args.get("password_env").and_then(|v| v.as_str()).map(String::from);
+    let password_command = args.get("password_command").and_then(|v| v.as_str()).map(String::from);
+    let service = args.get("keychain_service").and_then(|v| v.as_str()).map(String::from);
+    let account = args.get("keychain_account").and_then(|v| v.as_str()).map(String::from);
+
+    let keychain_entry = match (service, account) {
+        (Some(service), Some(account)) => Some(KeychainEntry { service, account }),
+        (None, None) => None,
+        _ => {
+            return Err(anyhow!(
+                "'keychain_service' and 'keychain_account' must be provided together"
+            ));
+        }
+    };
+
+    let source_count =
+        [password_env.is_some(), password_command.is_some(), keychain_entry.is_some()]
+            .iter()
+            .filter(|&&b| b)
+            .count();
+
+    if source_count > 1 {
+        return Err(anyhow!(
+            "Only one credential reference is allowed: \
+             password_env, password_command, or keychain_service/keychain_account"
+        ));
+    }
+
+    Ok((password_env, password_command, keychain_entry))
+}
+
+/// Build `ConnectionConfig` from JSON arguments.
+///
+/// When `allow_missing_password` is true the inline `password` field is
+/// optional — the caller is expected to supply a credential reference
+/// (`password_env` / `password_command` / `keychain_service`+`keychain_account`)
+/// that resolves the secret at connection time. The resulting config carries
+/// `password: None` so the reference is the sole authority.
+fn build_connection_config_from_args(
+    args: &Value,
+    engine_str: &str,
+    allow_missing_password: bool,
+) -> Result<ConnectionConfig> {
     let engine_type = match engine_str {
         "postgres" => DatabaseType::Postgres,
         "mysql" => DatabaseType::MySQL,
@@ -844,20 +1059,30 @@ fn build_connection_config_from_args(args: &Value, engine_str: &str) -> Result<C
                 .as_str()
                 .ok_or_else(|| anyhow!("Missing required field for {engine_str}: user"))?
                 .to_string();
-            let password = args["password"]
-                .as_str()
-                .ok_or_else(|| anyhow!("Missing required field for {engine_str}: password"))?
-                .to_string();
+            let password = if allow_missing_password {
+                // Reference-sourced: no inline password is expected here.
+                args["password"].as_str().unwrap_or_default().to_string()
+            } else {
+                args["password"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("Missing required field for {engine_str}: password"))?
+                    .to_string()
+            };
             let database = args["database"]
                 .as_str()
                 .ok_or_else(|| anyhow!("Missing required field for {engine_str}: database"))?
                 .to_string();
 
-            if engine_type == DatabaseType::Postgres {
-                Ok(ConnectionConfig::postgres(host, port, user, password, database))
+            let mut config = if engine_type == DatabaseType::Postgres {
+                ConnectionConfig::postgres(host, port, user, password, database)
             } else {
-                Ok(ConnectionConfig::mysql(host, port, user, password, database))
+                ConnectionConfig::mysql(host, port, user, password, database)
+            };
+            // With a credential reference, the reference is the sole authority.
+            if allow_missing_password && args["password"].as_str().is_none() {
+                config.password = None;
             }
+            Ok(config)
         }
         DatabaseType::SQLite => {
             let file_str = args["file"]
@@ -953,7 +1178,28 @@ fn resolve_connection_from_args(
     // Scenario 2: Explicit connection parameters
     if has_engine {
         let engine_str = args["engine"].as_str().unwrap();
-        let config = build_connection_config_from_args(args, engine_str)?;
+        let (password_env, password_command, keychain_entry) = parse_credential_refs(args)?;
+        let has_ref =
+            password_env.is_some() || password_command.is_some() || keychain_entry.is_some();
+
+        let config = build_connection_config_from_args(args, engine_str, has_ref)?;
+
+        // A credential reference sources the secret at connection time; resolve it
+        // now so the one-off connection carries the real password. The plaintext
+        // never came through Plenum — only the reference string did.
+        if has_ref {
+            let stored = StoredConnection {
+                config,
+                password_env,
+                password_command,
+                keychain_entry,
+                readonly: None,
+            };
+            let (resolved, is_readonly) =
+                stored.resolve().map_err(|e| anyhow!("{}", e.message()))?;
+            return Ok((resolved, is_readonly));
+        }
+
         return Ok((config, false)); // Explicit connections are never readonly
     }
 
@@ -1213,5 +1459,124 @@ mod tests {
         let err =
             resolve_connection_from_args(&args, &McpBinding::default()).unwrap_err().to_string();
         assert!(err.contains("mutually exclusive"), "got: {err}");
+    }
+
+    // ── Credential-reference parsing (REF-298) ──────────────────────────────
+
+    #[test]
+    fn parse_credential_refs_none_when_absent() {
+        let (env, cmd, kc) = parse_credential_refs(&serde_json::json!({})).unwrap();
+        assert!(env.is_none() && cmd.is_none() && kc.is_none());
+    }
+
+    #[test]
+    fn parse_credential_refs_env() {
+        let (env, cmd, kc) =
+            parse_credential_refs(&serde_json::json!({ "password_env": "DB_PASSWORD" })).unwrap();
+        assert_eq!(env.as_deref(), Some("DB_PASSWORD"));
+        assert!(cmd.is_none() && kc.is_none());
+    }
+
+    #[test]
+    fn parse_credential_refs_keychain_requires_both() {
+        let err = parse_credential_refs(&serde_json::json!({ "keychain_service": "svc" }))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("keychain_service") && err.contains("keychain_account"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_credential_refs_rejects_multiple_sources() {
+        let args = serde_json::json!({ "password_env": "A", "password_command": "echo b" });
+        let err = parse_credential_refs(&args).unwrap_err().to_string();
+        assert!(err.contains("Only one credential reference"), "got: {err}");
+    }
+
+    // ── One-off explicit connection sourced from a credential reference ──────
+
+    #[test]
+    fn one_off_explicit_resolves_password_from_env_reference() {
+        // The reference string is passed; Plenum reads the secret from the env
+        // var at resolution time. No plaintext ever appeared in the args.
+        std::env::set_var("PLENUM_TEST_ONEOFF_PWD", "s3cret-from-env");
+        let args = serde_json::json!({
+            "engine": "postgres",
+            "host": "db.example.com",
+            "port": 5432,
+            "user": "agent",
+            "database": "app",
+            "password_env": "PLENUM_TEST_ONEOFF_PWD"
+        });
+        let (config, _ro) = resolve_connection_from_args(&args, &McpBinding::default()).unwrap();
+        assert_eq!(config.engine, DatabaseType::Postgres);
+        assert_eq!(config.password.as_deref(), Some("s3cret-from-env"));
+        std::env::remove_var("PLENUM_TEST_ONEOFF_PWD");
+    }
+
+    #[test]
+    fn one_off_explicit_missing_env_reference_is_error() {
+        std::env::remove_var("PLENUM_TEST_ONEOFF_MISSING");
+        let args = serde_json::json!({
+            "engine": "postgres",
+            "host": "h", "port": 5432, "user": "u", "database": "d",
+            "password_env": "PLENUM_TEST_ONEOFF_MISSING"
+        });
+        let err =
+            resolve_connection_from_args(&args, &McpBinding::default()).unwrap_err().to_string();
+        assert!(err.contains("PLENUM_TEST_ONEOFF_MISSING"), "names missing var: {err}");
+    }
+
+    // ── connect save mode persists by reference (no plaintext) ──────────────
+
+    #[test]
+    fn connect_save_local_writes_reference_no_plaintext() {
+        let project =
+            std::env::temp_dir().join(format!("plenum-mcp-save-{}-{:p}", std::process::id(), &0u8));
+        let _ = std::fs::remove_dir_all(&project);
+        std::fs::create_dir_all(&project).unwrap();
+
+        let args = serde_json::json!({
+            "engine": "postgres",
+            "host": "db.example.com",
+            "port": 5432,
+            "user": "agent",
+            "database": "app",
+            "password_env": "DB_PASSWORD",
+            "save": "local",
+            "name": "prod",
+            "project_path": project.to_str().unwrap(),
+        });
+
+        let result = tool_connect_save(&args, &McpBinding::default(), &args["save"]).unwrap();
+        // Tool result envelope wraps a JSON text block; assert the confirmation shape.
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("\"saved\": true"), "confirmation: {text}");
+        assert!(text.contains("\"location\": \"local\""), "location: {text}");
+
+        let written = std::fs::read_to_string(project.join(".plenum").join("config.json")).unwrap();
+        assert!(written.contains("password_env"), "reference stored: {written}");
+        assert!(written.contains("DB_PASSWORD"));
+        assert!(!written.contains("\"password\":"), "no plaintext: {written}");
+        assert!(written.contains("prod"));
+
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn connect_save_rejects_missing_engine() {
+        let args = serde_json::json!({ "save": "local", "connection": "prod" });
+        let err = tool_connect_save(&args, &McpBinding::default(), &args["save"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("engine"), "got: {err}");
+    }
+
+    #[test]
+    fn connect_save_rejects_invalid_location() {
+        let args = serde_json::json!({ "save": "cloud", "engine": "sqlite", "file": "/tmp/x.db" });
+        let err = tool_connect_save(&args, &McpBinding::default(), &args["save"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("local") && err.contains("global"), "got: {err}");
     }
 }
