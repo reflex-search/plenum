@@ -778,9 +778,14 @@ async fn handle_connect(
                 },
             };
 
-            // Save connection
-            match plenum::save_connection(
-                Some(effective_project_path.clone()),
+            // Save connection. Use the project-scoped writer so `--save local`
+            // targets `<project_path>/.plenum/config.json` rather than the
+            // current working directory. The local config format is
+            // single-project and keyed by its own directory, so writing under
+            // cwd while keying the entry under an explicit `--project-path`
+            // would silently drop the connection.
+            match plenum::save_connection_in_project(
+                &effective_project_path,
                 Some(conn_name.clone()),
                 config.clone(),
                 password_env,
@@ -1532,7 +1537,7 @@ async fn handle_introspect(
         // --diff-against-project-path overrides; otherwise fall back to the primary project path
         // (or current directory when neither is specified).
         let target_proj = diff_against_project_path.as_deref().or(project_path.as_deref());
-        let target_config = match plenum::resolve_connection(target_proj, Some(&target_name)) {
+        let target_config = match resolve_connection_cli(target_proj, Some(&target_name)) {
             Ok((cfg, _)) => cfg,
             Err(e) => {
                 let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "introspect", &e);
@@ -2052,6 +2057,23 @@ fn build_tls_config(
 /// This helper resolves a connection from config or builds one from CLI arguments.
 /// Precedence: Named connection at project path → CLI arguments only
 /// Returns a tuple of (`ConnectionConfig`, `is_readonly`).
+/// Resolve a saved connection honoring an explicit `--project-path`.
+///
+/// When a project path is given, the connection is resolved from that project's
+/// own `.plenum/config.json` (merged with the global registry), matching the
+/// documented `--project-path /other/project` semantics and the way
+/// `plenum mcp --project-path` binds. When no project path is given, resolution
+/// falls back to the current working directory's local config.
+fn resolve_connection_cli(
+    project_path: Option<&str>,
+    name: Option<&str>,
+) -> Result<(ConnectionConfig, bool)> {
+    match project_path {
+        Some(path) => plenum::resolve_connection_in_project(path, name),
+        None => plenum::resolve_connection(None, name),
+    }
+}
+
 fn build_connection_config(
     name: Option<&str>,
     project_path: Option<&str>,
@@ -2075,7 +2097,7 @@ fn build_connection_config(
 
     let mut resolved_connection: Option<(ConnectionConfig, bool)> = if should_try_resolve {
         // Try to load connection from config
-        match plenum::resolve_connection(project_path, name) {
+        match resolve_connection_cli(project_path, name) {
             Ok(cfg_tuple) => Some(cfg_tuple),
             Err(_) if has_explicit_args => None, // Ignore error if explicit args provided as fallback
             Err(e) => return Err(e),             // Propagate error if no fallback

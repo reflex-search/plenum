@@ -252,6 +252,75 @@ fn connect_save_emits_ready_to_paste_mcp_stanza() {
     cleanup(&dir);
 }
 
+#[test]
+fn connect_save_local_with_explicit_project_path_persists_to_that_project() {
+    // Regression: `connect --project-path X --save local` run from a DIFFERENT
+    // cwd must persist the connection under X's own `.plenum/config.json`, not
+    // silently drop it. The local config format is single-project and keyed by
+    // its own directory, so a save that keys the entry under X while writing the
+    // file under cwd loses the connection entirely (save reports ok, nothing
+    // persisted). The save must target <project_path>/.plenum/config.json.
+    let cwd = unique_tmp_dir("proj_cwd");
+    let project = unique_tmp_dir("proj_target");
+    let db_path = create_sqlite_db(&project);
+
+    let (code, stdout, _stderr) = run_connect(
+        &cwd,
+        &[],
+        &[
+            "--name",
+            "smoke",
+            "--project-path",
+            project.to_str().unwrap(),
+            "--engine",
+            "sqlite",
+            "--file",
+            db_path.to_str().unwrap(),
+            "--save",
+            "local",
+        ],
+    );
+
+    assert_eq!(code, 0, "expected success, stdout={stdout}");
+    let envelope: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("non-JSON stdout {stdout:?}: {e}"));
+    assert_eq!(envelope.get("ok").and_then(Value::as_bool), Some(true));
+
+    // The connection must land in the TARGET project's local config, keyed under
+    // its own directory (single-project local format).
+    let target_cfg = project.join(".plenum").join("config.json");
+    let contents = std::fs::read_to_string(&target_cfg).unwrap_or_else(|e| {
+        panic!(
+            "connection must persist to <project_path>/.plenum/config.json ({target_cfg:?}): {e}"
+        )
+    });
+    let parsed: Value = serde_json::from_str(&contents).expect("local config is valid JSON");
+    assert!(
+        parsed.pointer("/connections/smoke").is_some(),
+        "saved connection 'smoke' must be present in target config, got {contents}"
+    );
+
+    // It must NOT have been written under the unrelated cwd.
+    assert!(
+        !cwd.join(".plenum").join("config.json").exists(),
+        "connection must not leak into the working directory's config"
+    );
+
+    // And it must be resolvable via the same explicit project path.
+    let (test_code, test_stdout, _) = run_connect(
+        &cwd,
+        &[],
+        &["--test", "--project-path", project.to_str().unwrap(), "--name", "smoke"],
+    );
+    assert_eq!(
+        test_code, 0,
+        "saved connection must resolve by project-path+name, stdout={test_stdout}"
+    );
+
+    cleanup(&cwd);
+    cleanup(&project);
+}
+
 // ============================================================================
 // --test (connection ping) tests
 // ============================================================================
