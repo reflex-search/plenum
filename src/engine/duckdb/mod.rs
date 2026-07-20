@@ -113,6 +113,13 @@ impl DatabaseEngine for DuckDbEngine {
         // starts, then spawn a thread that fires the interrupt after timeout_ms.
         // DuckDB checks the interrupt flag during execution, cancelling the
         // query server-side rather than just abandoning the wait.
+        //
+        // The timer thread is detached and may outlive the connection: if the
+        // query finishes early, `handle.interrupt()` fires against an
+        // already-dropped `Connection`. This is safe by documented crate
+        // contract — `InterruptHandle` holds a mutex-guarded connection
+        // pointer that is nulled when the connection drops, making a late
+        // `interrupt()` a no-op (duckdb crate, `InterruptHandle::interrupt`).
         if let Some(timeout_ms) = caps.timeout_ms {
             let handle = conn.interrupt_handle();
             std::thread::spawn(move || {

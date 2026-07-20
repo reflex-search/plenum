@@ -376,7 +376,7 @@ fn handle_list_tools() -> Result<Value> {
                         "engine": {
                             "type": "string",
                             "enum": ["postgres", "mysql", "sqlite", "duckdb"],
-                            "description": "DISCOURAGED: Database engine type for explicit one-off connections. Only use if no saved connection exists. Valid values: 'postgres', 'mysql', 'sqlite'. If omitted along with 'connection', auto-resolves project's default connection (RECOMMENDED)."
+                            "description": "DISCOURAGED: Database engine type for explicit one-off connections. Only use if no saved connection exists. Valid values: 'postgres', 'mysql', 'sqlite', 'duckdb'. If omitted along with 'connection', auto-resolves project's default connection (RECOMMENDED)."
                         },
                         "host": {
                             "type": "string",
