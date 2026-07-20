@@ -154,6 +154,31 @@ impl McpStanza {
     }
 }
 
+/// Success `data` payload emitted by `plenum connect --save` after a connection
+/// is persisted.
+///
+/// Typing this envelope — rather than assembling it inline via
+/// `serde_json::json!` at the call site — keeps the emitted shape, including the
+/// nested [`McpStanza`], under `generate-schemas` + `tests/schema_drift.rs`
+/// coverage so the stanza cannot drift without a failing test.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ConnectSaveResult {
+    /// Name the connection was saved under.
+    pub connection_name: String,
+
+    /// Database engine of the saved connection (postgres, mysql, sqlite).
+    pub engine: String,
+
+    /// Where the connection was persisted: `"local"` or `"global"`.
+    pub saved_to: String,
+
+    /// Human-readable confirmation message.
+    pub message: String,
+
+    /// Ready-to-paste MCP server stanza for the saved connection.
+    pub mcp_stanza: McpStanza,
+}
+
 /// Error information structure
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ErrorInfo {
@@ -378,6 +403,27 @@ mod tests {
         // Single server entry named "plenum".
         assert_eq!(stanza.mcp_servers.len(), 1);
         assert!(stanza.mcp_servers.contains_key("plenum"));
+    }
+
+    #[test]
+    fn test_connect_save_result_shape() {
+        let data = ConnectSaveResult {
+            connection_name: "staging".to_string(),
+            engine: "postgres".to_string(),
+            saved_to: "local".to_string(),
+            message: "Connection 'staging' saved successfully".to_string(),
+            mcp_stanza: McpStanza::for_saved_connection("/home/user/project1", "staging"),
+        };
+        let json = serde_json::to_value(&data).unwrap();
+
+        assert_eq!(json["connection_name"], "staging");
+        assert_eq!(json["engine"], "postgres");
+        assert_eq!(json["saved_to"], "local");
+        assert_eq!(json["message"], "Connection 'staging' saved successfully");
+        // Nested stanza is carried through under the same `mcp_stanza` key the
+        // inline `serde_json::json!` builder used, keyed by `mcpServers` -> `plenum`.
+        assert_eq!(json["mcp_stanza"]["mcpServers"]["plenum"]["command"], "plenum");
+        assert!(!json.to_string().contains("password"));
     }
 
     #[test]

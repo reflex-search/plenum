@@ -54,8 +54,8 @@ pub use engine::{
 };
 pub use error::{PlenumError, Result};
 pub use output::{
-    ErrorEnvelope, ErrorInfo, McpServerConfig, McpStanza, Metadata, SuccessEnvelope,
-    CONTRACT_VERSION,
+    ConnectSaveResult, ErrorEnvelope, ErrorInfo, McpServerConfig, McpStanza, Metadata,
+    SuccessEnvelope, CONTRACT_VERSION,
 };
 
 #[cfg(test)]

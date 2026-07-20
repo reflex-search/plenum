@@ -30,17 +30,24 @@ use plenum::engine::postgres::PostgresEngine;
 #[cfg(feature = "sqlite")]
 use plenum::engine::sqlite::SqliteEngine;
 
-/// Resolved arguments for `plenum connect`:
-/// connection name, project path, config, `password_env`, `password_command`, `keychain_entry`, save location.
-type ConnectArgs = (
-    String,
-    Option<String>,
-    ConnectionConfig,
-    Option<String>,
-    Option<String>,
-    Option<KeychainEntry>,
-    ConfigLocation,
-);
+/// Resolved arguments for `plenum connect`, produced by the interactive picker,
+/// interactive wizard, or non-interactive flag path and consumed by the save step.
+struct ConnectArgs {
+    /// Connection name to save under.
+    name: String,
+    /// Explicit project path, or `None` to default to the current directory.
+    project_path: Option<String>,
+    /// Resolved connection configuration.
+    config: ConnectionConfig,
+    /// Indirect credential source: environment variable name.
+    password_env: Option<String>,
+    /// Indirect credential source: shell command producing the password.
+    password_command: Option<String>,
+    /// Indirect credential source: OS keychain entry.
+    keychain_entry: Option<KeychainEntry>,
+    /// Where to persist the connection (local or global).
+    location: ConfigLocation,
+}
 
 /// Plenum - Agent-First Database Control CLI
 #[derive(Parser)]
@@ -753,15 +760,15 @@ async fn handle_connect(
     };
 
     match result {
-        Ok((
-            conn_name,
-            proj_path,
+        Ok(ConnectArgs {
+            name: conn_name,
+            project_path: proj_path,
             config,
             password_env,
             password_command,
             keychain_entry,
             location,
-        )) => {
+        }) => {
             // Resolve the effective project path up front so the saved connection
             // and the emitted mcp_stanza reference the exact same path. When
             // proj_path is None, save_connection would fall back to the current
@@ -800,16 +807,16 @@ async fn handle_connect(
                         &effective_project_path,
                         &conn_name,
                     );
-                    let data = serde_json::json!({
-                        "connection_name": conn_name,
-                        "engine": config.engine.as_str(),
-                        "saved_to": match location {
-                            ConfigLocation::Local => "local",
-                            ConfigLocation::Global => "global",
+                    let data = plenum::ConnectSaveResult {
+                        message: format!("Connection '{conn_name}' saved successfully"),
+                        connection_name: conn_name,
+                        engine: config.engine.as_str().to_string(),
+                        saved_to: match location {
+                            ConfigLocation::Local => "local".to_string(),
+                            ConfigLocation::Global => "global".to_string(),
                         },
-                        "message": format!("Connection '{}' saved successfully", conn_name),
-                        "mcp_stanza": mcp_stanza,
-                    });
+                        mcp_stanza,
+                    };
 
                     let envelope = SuccessEnvelope::new(
                         config.engine.as_str(),
@@ -1059,7 +1066,15 @@ async fn interactive_connect_picker() -> Result<ConnectArgs> {
 
         // Re-saving an existing connection preserves its stored credential
         // reference as-is; the picker never re-prompts for or scans credentials.
-        Ok((name.clone(), None, config.clone(), None, None, None, location))
+        Ok(ConnectArgs {
+            name: name.clone(),
+            project_path: None,
+            config: config.clone(),
+            password_env: None,
+            password_command: None,
+            keychain_entry: None,
+            location,
+        })
     }
 }
 
@@ -1278,7 +1293,15 @@ async fn interactive_connect_wizard() -> Result<ConnectArgs> {
     let location = prompt_save_location()?;
 
     // Use None for project_path (will default to current directory)
-    Ok((name, None, config, password_env, password_command, keychain_entry, location))
+    Ok(ConnectArgs {
+        name,
+        project_path: None,
+        config,
+        password_env,
+        password_command,
+        keychain_entry,
+        location,
+    })
 }
 
 /// Non-interactive connect (with CLI args)
@@ -1440,7 +1463,15 @@ async fn non_interactive_connect(
         }
     };
 
-    Ok((conn_name, project_path, config, password_env, password_command, keychain_entry, location))
+    Ok(ConnectArgs {
+        name: conn_name,
+        project_path,
+        config,
+        password_env,
+        password_command,
+        keychain_entry,
+        location,
+    })
 }
 
 /// Prompt user for save location
