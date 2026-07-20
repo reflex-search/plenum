@@ -19,10 +19,10 @@ Plenum is exposed via a local MCP (Model Context Protocol) server, making it sea
 ## Key Features
 
 - **Agent-First Design**: JSON-only output, no interactive UX, deterministic behavior
-- **Vendor-Specific SQL**: No query abstraction layer - PostgreSQL SQL ≠ MySQL SQL ≠ SQLite SQL
+- **Vendor-Specific SQL**: No query abstraction layer - PostgreSQL SQL ≠ MySQL SQL ≠ SQLite SQL ≠ DuckDB SQL
 - **Strictly Read-Only**: All write and DDL operations are rejected - guaranteed safe for AI agents
 - **Stateless Execution**: No persistent connections, no caching, no implicit state
-- **Three Database Engines**: PostgreSQL, MySQL, and SQLite support (first-class, equally constrained)
+- **Four Database Engines**: PostgreSQL, MySQL, SQLite, and DuckDB support (first-class, equally constrained)
 
 ## Installation
 
@@ -55,7 +55,7 @@ Manage database connection configurations (interactive or non-interactive).
 | `--list` | — | List saved connections for the project as JSON (no secrets emitted) |
 | `--name <NAME>` | `"default"` | Connection name |
 | `--project-path <PATH>` | current directory | Project path for connection lookup |
-| `--engine <ENGINE>` | — | Database engine: `postgres`, `mysql`, or `sqlite` |
+| `--engine <ENGINE>` | — | Database engine: `postgres`, `mysql`, `sqlite`, or `duckdb` |
 | `--host <HOST>` | — | Hostname (postgres/mysql) |
 | `--port <PORT>` | — | Port (postgres/mysql) |
 | `--user <USER>` | — | Username (postgres/mysql) |
@@ -65,7 +65,7 @@ Manage database connection configurations (interactive or non-interactive).
 | `--keychain-service <SVC>` | — | OS keychain service name (pair with `--keychain-account`) |
 | `--keychain-account <ACCT>` | — | OS keychain account name (pair with `--keychain-service`) |
 | `--database <DATABASE>` | — | Database name (postgres/mysql) |
-| `--file <FILE>` | — | SQLite file path |
+| `--file <FILE>` | — | SQLite/DuckDB file path |
 | `--save <LOCATION>` | — | Save location: `local` (`.plenum/config.json`) or `global` (`~/.config/plenum/connections.json`) |
 | `--ssl-mode <MODE>` | — | TLS/SSL mode: `disable`, `require`, `verify-ca`, or `verify-full` (postgres/mysql) |
 | `--ssl-ca <PATH>` | — | PEM CA certificate for TLS verification (required for `verify-ca`/`verify-full`) |
@@ -101,6 +101,9 @@ plenum connect --name vault --engine postgres --host localhost \
 
 # Save a SQLite connection
 plenum connect --name dev --engine sqlite --file ./dev.db --save local
+
+# Save a DuckDB connection
+plenum connect --name analytics --engine duckdb --file ./analytics.duckdb --save local
 
 # Test a connection without saving
 plenum connect --engine postgres --host localhost --user dev \
@@ -151,16 +154,16 @@ Inspect database schema and return structured JSON.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--dsn <DSN>` | — | One-off connection URL (mutually exclusive with `--name` and explicit flags). Accepted schemes: `postgres://`, `postgresql://`, `mysql://`, `sqlite:` |
+| `--dsn <DSN>` | — | One-off connection URL (mutually exclusive with `--name` and explicit flags). Accepted schemes: `postgres://`, `postgresql://`, `mysql://`, `sqlite:`, `duckdb:` |
 | `--name <NAME>` | `"default"` | Named connection from the saved registry |
 | `--project-path <PATH>` | current directory | Project path for connection lookup |
-| `--engine <ENGINE>` | — | Engine override: `postgres`, `mysql`, or `sqlite` |
+| `--engine <ENGINE>` | — | Engine override: `postgres`, `mysql`, `sqlite`, or `duckdb` |
 | `--host <HOST>` | — | Host override |
 | `--port <PORT>` | — | Port override |
 | `--user <USER>` | — | Username override |
 | `--password <PASSWORD>` | — | Password override |
 | `--database <DATABASE>` | — | Database override |
-| `--file <FILE>` | — | SQLite file override |
+| `--file <FILE>` | — | SQLite/DuckDB file override |
 | `--ssl-mode <MODE>` | — | TLS/SSL mode: `disable`, `require`, `verify-ca`, or `verify-full` (postgres/mysql) |
 | `--ssl-ca <PATH>` | — | PEM CA certificate (required for `verify-ca`/`verify-full`) |
 | `--ssl-cert <PATH>` | — | PEM client certificate for mTLS (pair with `--ssl-key`) |
@@ -171,14 +174,14 @@ Inspect database schema and return structured JSON.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--list-databases` | — | List all databases (requires a wildcard/no-database connection) |
-| `--list-schemas` | — | List all schemas (PostgreSQL only) |
+| `--list-schemas` | — | List all schemas (PostgreSQL/DuckDB) |
 | `--list-tables` | — | List all table names |
 | `--list-views` | — | List all view names |
 | `--list-indexes [TABLE]` | — | List all indexes, optionally filtered to a single table |
 | `--table <TABLE>` | — | Return full details for a specific table |
 | `--view <VIEW>` | — | Return details for a specific view |
 | `--target-database <DB>` | — | Switch to a different database before introspecting |
-| `--schema <SCHEMA>` | — | Filter results to a specific schema (PostgreSQL/MySQL only) |
+| `--schema <SCHEMA>` | — | Filter results to a specific schema (PostgreSQL/MySQL/DuckDB) |
 | `--diff-against <NAME>` | — | Structural schema diff against another named connection. Mutually exclusive with all other operation flags. Returns tables/views added, removed, and changed (columns, indexes, foreign keys, primary keys) |
 | `--diff-against-project-path <PATH>` | current project | Project path for the `--diff-against` connection (for cross-project comparison) |
 
@@ -411,6 +414,7 @@ Plenum uses native, engine-specific drivers (NOT sqlx):
 - **PostgreSQL**: `tokio-postgres`
 - **MySQL**: `mysql_async`
 - **SQLite**: `rusqlite`
+- **DuckDB**: `duckdb`
 
 This ensures maximum isolation between engines and preserves vendor-specific behavior.
 
