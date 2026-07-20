@@ -23,6 +23,10 @@ path = "src/main.rs"
 name = "generate-schemas"
 path = "src/bin/generate_schemas.rs"
 
+[[example]]
+name = "seed_duckdb"
+required-features = ["duckdb"]
+
 [dependencies]
 # CLI framework
 clap = { version = "4.5", features = ["derive"] }
