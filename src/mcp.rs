@@ -196,11 +196,24 @@ pub async fn serve() -> Result<()> {
 ///
 /// Routes the request to the appropriate handler based on the method name.
 async fn handle_request(request: JsonRpcRequest) -> JsonRpcResponse {
-    let result = match request.method.as_str() {
-        "initialize" => handle_initialize(request.params),
-        "tools/list" => handle_list_tools(),
-        "tools/call" => handle_call_tool(request.params).await,
-        _ => Err(anyhow!("Unknown method: {}", request.method)),
+    // JSON-RPC 2.0 reserves -32601 for an unimplemented method; -32603 ("Internal
+    // error") means the server itself failed. Reporting -32603 for a method we
+    // simply do not implement tells the client the server is broken, and strict
+    // clients drop the connection on it during capability probing.
+    const METHOD_NOT_FOUND: i32 = -32601;
+    const INTERNAL_ERROR: i32 = -32603;
+
+    let (result, err_code) = match request.method.as_str() {
+        "initialize" => (handle_initialize(request.params), INTERNAL_ERROR),
+        "tools/list" => (handle_list_tools(), INTERNAL_ERROR),
+        "tools/call" => (handle_call_tool(request.params).await, INTERNAL_ERROR),
+        // `ping` is REQUIRED by the MCP spec; an empty result is its success shape.
+        "ping" => (Ok(serde_json::json!({})), INTERNAL_ERROR),
+        // Clients probe these after initialize even when the capability is not
+        // advertised. Answer empty rather than erroring.
+        "resources/list" => (Ok(serde_json::json!({ "resources": [] })), INTERNAL_ERROR),
+        "prompts/list" => (Ok(serde_json::json!({ "prompts": [] })), INTERNAL_ERROR),
+        _ => (Err(anyhow!("Unknown method: {}", request.method)), METHOD_NOT_FOUND),
     };
 
     match result {
@@ -214,11 +227,7 @@ async fn handle_request(request: JsonRpcRequest) -> JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id: request.id,
             result: None,
-            error: Some(JsonRpcError {
-                code: -32603, // Internal error
-                message: e.to_string(),
-                data: None,
-            }),
+            error: Some(JsonRpcError { code: err_code, message: e.to_string(), data: None }),
         },
     }
 }
