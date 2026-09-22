@@ -810,6 +810,11 @@ fn duckdb_value_to_json(value: &Value) -> serde_json::Value {
             Json::Object(obj)
         }
         Value::Union(inner) => duckdb_value_to_json(inner),
+        // `duckdb::types::Value` is #[non_exhaustive] as of duckdb 1.10505.0, so a
+        // wildcard is required. Rendering the Debug form keeps an unknown future
+        // variant VISIBLE in the JSON rather than silently nulling it out; the
+        // compiler's suggested `todo!()` would panic inside a live MCP server.
+        other => Json::String(format!("{other:?}")),
     }
 }
 
