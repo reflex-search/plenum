@@ -31,7 +31,13 @@ use crate::error::{PlenumError, Result};
 /// `SQLite` database engine implementation
 pub struct SqliteEngine;
 
+// `DatabaseEngine` declares these methods as returning futures, so each impl must be
+// `async` whether or not its body awaits. The SQLite driver is synchronous, so all three
+// methods here have no `.await` and trip `clippy::unused_async` -- a lint that cannot be
+// satisfied without hand-rolling `impl Future` bodies purely to appease it. The
+// `postgres` and `mysql` impls are unaffected because their drivers genuinely await.
 impl DatabaseEngine for SqliteEngine {
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo> {
         // Validate config is for SQLite
         if config.engine != DatabaseType::SQLite {
@@ -74,6 +80,7 @@ impl DatabaseEngine for SqliteEngine {
         })
     }
 
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn introspect(
         config: &ConnectionConfig,
         operation: &IntrospectOperation,
@@ -149,6 +156,7 @@ impl DatabaseEngine for SqliteEngine {
         Ok(result)
     }
 
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn execute(
         config: &ConnectionConfig,
         query: &str,

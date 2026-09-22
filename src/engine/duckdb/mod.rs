@@ -39,7 +39,13 @@ pub struct DuckDbEngine;
 /// Default schema used when no `--schema` is provided.
 const DEFAULT_SCHEMA: &str = "main";
 
+// `DatabaseEngine` declares these methods as returning futures, so each impl must be
+// `async` whether or not its body awaits. The DuckDB driver is synchronous, so all three
+// methods here have no `.await` and trip `clippy::unused_async` -- a lint that cannot be
+// satisfied without hand-rolling `impl Future` bodies purely to appease it. The
+// `postgres` and `mysql` impls are unaffected because their drivers genuinely await.
 impl DatabaseEngine for DuckDbEngine {
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo> {
         let file_path = extract_file_path(config)?;
         let conn = open_connection(&file_path)?;
@@ -60,6 +66,7 @@ impl DatabaseEngine for DuckDbEngine {
         })
     }
 
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn introspect(
         config: &ConnectionConfig,
         operation: &IntrospectOperation,
@@ -97,6 +104,7 @@ impl DatabaseEngine for DuckDbEngine {
         Ok(result)
     }
 
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn execute(
         config: &ConnectionConfig,
         query: &str,
@@ -810,6 +818,11 @@ fn duckdb_value_to_json(value: &Value) -> serde_json::Value {
             Json::Object(obj)
         }
         Value::Union(inner) => duckdb_value_to_json(inner),
+        // `duckdb::types::Value` is #[non_exhaustive] as of duckdb 1.10505.0, so a
+        // wildcard is required. Rendering the Debug form keeps an unknown future
+        // variant VISIBLE in the JSON rather than silently nulling it out; the
+        // compiler's suggested `todo!()` would panic inside a live MCP server.
+        other => Json::String(format!("{other:?}")),
     }
 }
 

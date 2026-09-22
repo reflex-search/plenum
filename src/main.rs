@@ -69,7 +69,7 @@ enum Commands {
         project_path: Option<String>,
 
         /// Database engine
-        #[arg(long, value_parser = ["postgres", "mysql", "sqlite"])]
+        #[arg(long, value_parser = ["postgres", "mysql", "sqlite", "duckdb"])]
         engine: Option<String>,
 
         /// Host (postgres/mysql)
@@ -108,7 +108,7 @@ enum Commands {
         #[arg(long)]
         database: Option<String>,
 
-        /// `SQLite` file path
+        /// `SQLite` / `DuckDB` file path
         #[arg(long)]
         file: Option<PathBuf>,
 
@@ -153,7 +153,7 @@ enum Commands {
         project_path: Option<String>,
 
         /// Engine override
-        #[arg(long, value_parser = ["postgres", "mysql", "sqlite"])]
+        #[arg(long, value_parser = ["postgres", "mysql", "sqlite", "duckdb"])]
         engine: Option<String>,
 
         /// Host override
@@ -280,7 +280,7 @@ enum Commands {
         project_path: Option<String>,
 
         /// Engine override
-        #[arg(long, value_parser = ["postgres", "mysql", "sqlite"])]
+        #[arg(long, value_parser = ["postgres", "mysql", "sqlite", "duckdb"])]
         engine: Option<String>,
 
         /// Host override
