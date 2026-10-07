@@ -1308,7 +1308,7 @@ mod tests {
         assert!(result.is_ok(), "Connection validation failed: {:?}", result.err());
 
         let info = result.unwrap();
-        assert!(!info.database_version.is_empty());
+        assert_ne!(info.database_version, "");
         assert!(info.server_info.contains("PostgreSQL"));
         assert_eq!(info.connected_database, "postgres");
         assert_eq!(info.user, "postgres");
@@ -1330,7 +1330,7 @@ mod tests {
         assert!(result.is_ok(), "Wildcard connection validation failed: {:?}", result.err());
 
         let info = result.unwrap();
-        assert!(!info.database_version.is_empty());
+        assert_ne!(info.database_version, "");
         assert!(info.server_info.contains("PostgreSQL"));
         assert!(info.connected_database.contains("wildcard mode"));
         assert!(info.connected_database.contains("postgres"));
@@ -1360,7 +1360,7 @@ mod tests {
 
         let query_result = result.unwrap();
         assert_eq!(query_result.columns.len(), 1);
-        assert!(!query_result.rows.is_empty());
+        assert_ne!(query_result.rows.len(), 0);
     }
 
     #[tokio::test]

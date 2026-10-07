@@ -31,6 +31,12 @@ use crate::error::{PlenumError, Result};
 /// `SQLite` database engine implementation
 pub struct SqliteEngine;
 
+// `DatabaseEngine` declares these methods as returning futures, so each impl must
+// be `async` whether or not its body awaits. The SQLite driver is synchronous, so
+// no method here awaits. `clippy::unused_async_trait_impl` (Rust 1.98+) flags
+// that; `unknown_lints` keeps older toolchains from rejecting the new lint name.
+#[allow(unknown_lints)]
+#[allow(clippy::unused_async_trait_impl)]
 impl DatabaseEngine for SqliteEngine {
     async fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo> {
         // Validate config is for SQLite

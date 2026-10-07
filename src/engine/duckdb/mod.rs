@@ -39,6 +39,12 @@ pub struct DuckDbEngine;
 /// Default schema used when no `--schema` is provided.
 const DEFAULT_SCHEMA: &str = "main";
 
+// `DatabaseEngine` declares these methods as returning futures, so each impl must
+// be `async` whether or not its body awaits. The DuckDB driver is synchronous, so
+// no method here awaits. `clippy::unused_async_trait_impl` (Rust 1.98+) flags
+// that; `unknown_lints` keeps older toolchains from rejecting the new lint name.
+#[allow(unknown_lints)]
+#[allow(clippy::unused_async_trait_impl)]
 impl DatabaseEngine for DuckDbEngine {
     async fn validate_connection(config: &ConnectionConfig) -> Result<ConnectionInfo> {
         let file_path = extract_file_path(config)?;
@@ -1461,7 +1467,7 @@ mod tests {
         assert!(result.is_ok(), "native explain failed: {:?}", result.err());
         let qr = result.unwrap();
         assert!(qr.plan.is_none());
-        assert!(!qr.rows.is_empty());
+        assert_ne!(qr.rows.len(), 0);
     }
 
     // =========================================================================
