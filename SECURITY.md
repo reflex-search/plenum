@@ -172,6 +172,27 @@ When using the MCP server, credentials are passed per-invocation via JSON-RPC:
 
 **Security Note**: MCP communication over stdio is local-only (no network exposure).
 
+### MCP Credential References
+
+The MCP `connect` tool rejects an inline plaintext `password` with `CAPABILITY_VIOLATION`. Agents reference the secret instead:
+
+- `password_env` — the name of an environment variable that holds the password.
+- `keychain_service` + `keychain_account` — an OS keychain entry (both are required together).
+
+**`password_command` is rejected on every MCP tool** (`connect`, `introspect`, `query`) with `CAPABILITY_VIOLATION`. It executes a shell command via `sh -c`. Accepting it from tool arguments would give any connected agent arbitrary command execution on the host. The CLI flag `--password-command` and the `plenum connect` wizard still offer it, because a human types the command there.
+
+**Residual risk — saved configs:** a connection already saved with `password_command` still runs that command when the MCP server resolves it. The command comes from a config file, not from tool arguments. Review `password_command` entries in `.plenum/config.json` before you commit or pull that file, because it is team-shareable.
+
+### MCP Connection Binding
+
+`plenum mcp` binds its default connection at server start:
+
+- `--project-path <path>` — resolve config for that project, independent of the server's working directory.
+- `--name <connection>` — select a named connection within that project.
+- `--dsn-env <VAR>` — read the DSN from exactly the named environment variable. Plenum never reads `DATABASE_URL`, `PGPASSWORD`, or any other ambient variable on its own.
+
+`--dsn-env` cannot be combined with `--project-path` or `--name`. Connection fields in a tool call override the binding.
+
 ---
 
 ## SQL Injection & Query Validation
