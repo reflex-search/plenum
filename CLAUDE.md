@@ -266,6 +266,20 @@ Plenum is exposed via a local MCP server.
 
 The Plenum CLI remains the execution boundary.
 
+**Connection binding (`plenum mcp` flags):**
+- `--project-path <path>` — resolve config for that project, not the server's cwd
+- `--name <connection>` — select a named connection within that project
+- `--dsn-env <VAR>` — read the DSN from exactly that env var; never from ambient vars such as `DATABASE_URL`
+- `--dsn-env` conflicts with `--project-path` and `--name`
+- Connection fields in a tool call override the binding
+- No binding and no cwd config → structured error naming the flags to add
+
+**Credential references on MCP tools:**
+- Accepted: `password_env`, `keychain_service` + `keychain_account` (at most one source per call)
+- `connect` rejects inline plaintext `password` with `CAPABILITY_VIOLATION`
+- Every tool rejects `password_command` with `CAPABILITY_VIOLATION` — it executes a shell command, so it is CLI-only (a human types it)
+- `connect` with `save` (`"local"` | `"global"`) stores the reference, never the secret
+
 ---
 
 ## Rust Architecture Expectations

@@ -450,8 +450,8 @@ mod tests {
     fn test_identical_tables_produce_empty_diff() {
         let tables = vec![make_table("users", vec![make_col("id", "int", false)])];
         let (added, removed, changed) = diff_tables(&tables, &tables);
-        assert!(added.is_empty());
-        assert!(removed.is_empty());
+        assert_eq!(added, Vec::<String>::new());
+        assert_eq!(removed, Vec::<String>::new());
         assert!(changed.is_empty());
     }
 
@@ -464,7 +464,7 @@ mod tests {
         ];
         let (added, removed, _) = diff_tables(&base, &target);
         assert_eq!(added, vec!["orders"]);
-        assert!(removed.is_empty());
+        assert_eq!(removed, Vec::<String>::new());
     }
 
     #[test]
@@ -475,7 +475,7 @@ mod tests {
         ];
         let target = vec![make_table("users", vec![make_col("id", "int", false)])];
         let (added, removed, _) = diff_tables(&base, &target);
-        assert!(added.is_empty());
+        assert_eq!(added, Vec::<String>::new());
         assert_eq!(removed, vec!["orders"]);
     }
 
@@ -592,8 +592,8 @@ mod tests {
         let views =
             vec![make_view("v_active", Some("SELECT 1"), vec![make_col("id", "int", false)])];
         let (added, removed, changed) = diff_views(&views, &views);
-        assert!(added.is_empty());
-        assert!(removed.is_empty());
+        assert_eq!(added, Vec::<String>::new());
+        assert_eq!(removed, Vec::<String>::new());
         assert!(changed.is_empty());
     }
 

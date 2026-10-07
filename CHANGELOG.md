@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `plenum mcp` connection binding at server registration: `--project-path`, `--name`, and `--dsn-env` decouple resolution from the launcher's cwd ([REF-297](/REF/issues/REF-297))
+- MCP `connect` save mode (`save`: `"local"` | `"global"`, `project_path`, `name`) that persists connections by credential reference; `password_env` and `keychain_service`/`keychain_account` accepted on `connect`, `introspect`, and `query` ([REF-298](/REF/issues/REF-298))
+- `plenum connect` wizard offers plaintext, env var, shell command, and OS keychain credential sources ([REF-299](/REF/issues/REF-299))
+- `mcp_stanza` in `plenum connect --save` output: a ready-to-paste `mcpServers` block for the saved connection ([REF-299](/REF/issues/REF-299))
+- JSON Schema `schemas/connect_save_success.json` for the `connect --save` envelope, covered by schema drift ([REF-304](/REF/issues/REF-304))
 - `--diff-against` flag for `plenum introspect` — read-only schema diff against a prior snapshot ([REF-281](/REF/issues/REF-281))
 - Live-DB test harness: Docker Compose fixtures, vendor seed SQL per engine, gated test suites, and `scripts/test-live.sh` orchestration ([REF-275](/REF/issues/REF-275))
 - MySQL 8.0 and 8.4 live test matrix: connect, introspect, query, safety, and envelope coverage ([REF-276](/REF/issues/REF-276))
@@ -27,10 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- DuckDB: compile against `duckdb` 1.10506.0, where `Value` is `#[non_exhaustive]`; `UHUGEINT` converts to a string, `GEOMETRY` (WKB) to Base64, and an unknown value type is a structured `QUERY_FAILED` error instead of a guess
+- `plenum connect --project-path X --save local` reported success but persisted nothing when run from another directory; it now writes `X/.plenum/config.json` ([REF-303](/REF/issues/REF-303))
 - PostgreSQL: correct NULL detection, composite foreign-key introspection, and view definitions ([REF-277](/REF/issues/REF-277))
 - MySQL: route text-protocol statements correctly; classify `EXPLAIN`; surface timeout as a first-class error ([REF-258](/REF/issues/REF-258))
 - Build: vendor OpenSSL for hermetic release builds ([REF-258](/REF/issues/REF-258))
 - Capability: reject `WITH`-CTE DML bypasses across all engines ([REF-41](/REF/issues/REF-41))
+
+### Security
+
+- MCP `connect` rejects inline plaintext `password` with `CAPABILITY_VIOLATION` ([REF-298](/REF/issues/REF-298))
+- All MCP tools reject `password_command` with `CAPABILITY_VIOLATION`: it executes a shell command, so accepting it from tool arguments gave agents arbitrary command execution. The CLI flag and wizard still offer it.
 
 ### Changed
 
