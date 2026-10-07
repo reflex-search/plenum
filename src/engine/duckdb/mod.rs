@@ -689,7 +689,7 @@ fn execute_query(
             let value_ref = row.get_ref(idx).map_err(|e| {
                 PlenumError::query_failed(format!("Failed to read column {idx}: {e}"))
             })?;
-            values.push(duckdb_value_to_json(&value_ref.to_owned()));
+            values.push(duckdb_value_to_json(&value_ref.to_owned())?);
         }
         rows_data.push(values);
         pos += 1;
@@ -748,14 +748,17 @@ fn f64_to_json(f: f64) -> serde_json::Value {
 /// represent natively are stringified deterministically:
 /// - `HUGEINT` / `UHUGEINT` and `DECIMAL` → string (preserves precision)
 /// - `TIMESTAMP` / `DATE` / `TIME` → ISO-8601 string
-/// - `BLOB` → Base64 string
+/// - `BLOB` and `GEOMETRY` (WKB bytes) → Base64 string
 /// - `INTERVAL` → object with `months` / `days` / `nanos`
 /// - Nested types (`LIST`, `ARRAY`, `STRUCT`, `MAP`, `UNION`, `ENUM`) convert
 ///   recursively to JSON arrays / objects.
-fn duckdb_value_to_json(value: &Value) -> serde_json::Value {
+///
+/// `duckdb::types::Value` is `#[non_exhaustive]`. A variant this function does
+/// not know is a structured error, never a guessed representation.
+fn duckdb_value_to_json(value: &Value) -> Result<serde_json::Value> {
     use serde_json::Value as Json;
 
-    match value {
+    let json = match value {
         Value::Null => Json::Null,
         Value::Boolean(b) => Json::Bool(*b),
         Value::TinyInt(i) => Json::Number((*i).into()),
@@ -764,6 +767,7 @@ fn duckdb_value_to_json(value: &Value) -> serde_json::Value {
         Value::BigInt(i) => Json::Number((*i).into()),
         // HUGEINT exceeds JSON's i64 range; preserve precision as a string
         Value::HugeInt(i) => Json::String(i.to_string()),
+        Value::UHugeInt(i) => Json::String(i.to_string()),
         Value::UTinyInt(i) => Json::Number((*i).into()),
         Value::USmallInt(i) => Json::Number((*i).into()),
         Value::UInt(i) => Json::Number((*i).into()),
@@ -774,7 +778,7 @@ fn duckdb_value_to_json(value: &Value) -> serde_json::Value {
         Value::Decimal(d) => Json::String(d.to_string()),
         Value::Timestamp(unit, v) => format_timestamp(*unit, *v),
         Value::Text(s) | Value::Enum(s) => Json::String(s.clone()),
-        Value::Blob(b) => {
+        Value::Blob(b) | Value::Geometry(b) => {
             use base64::Engine;
             Json::String(base64::engine::general_purpose::STANDARD.encode(b))
         }
@@ -786,31 +790,40 @@ fn duckdb_value_to_json(value: &Value) -> serde_json::Value {
             "nanos": nanos,
         }),
         Value::List(items) | Value::Array(items) => {
-            Json::Array(items.iter().map(duckdb_value_to_json).collect())
+            Json::Array(items.iter().map(duckdb_value_to_json).collect::<Result<_>>()?)
         }
         Value::Struct(map) => {
-            let obj: serde_json::Map<String, Json> =
-                map.iter().map(|(k, v)| (k.clone(), duckdb_value_to_json(v))).collect();
+            let obj = map
+                .iter()
+                .map(|(k, v)| Ok((k.clone(), duckdb_value_to_json(v)?)))
+                .collect::<Result<serde_json::Map<String, Json>>>()?;
             Json::Object(obj)
         }
         Value::Map(map) => {
-            let obj: serde_json::Map<String, Json> = map
+            let obj = map
                 .iter()
                 .map(|(k, v)| {
                     let key = match k {
                         Value::Text(s) | Value::Enum(s) => s.clone(),
-                        other => match duckdb_value_to_json(other) {
+                        other => match duckdb_value_to_json(other)? {
                             Json::String(s) => s,
                             j => j.to_string(),
                         },
                     };
-                    (key, duckdb_value_to_json(v))
+                    Ok((key, duckdb_value_to_json(v)?))
                 })
-                .collect();
+                .collect::<Result<serde_json::Map<String, Json>>>()?;
             Json::Object(obj)
         }
-        Value::Union(inner) => duckdb_value_to_json(inner),
-    }
+        Value::Union(inner) => duckdb_value_to_json(inner)?,
+        other => {
+            return Err(PlenumError::query_failed(format!(
+                "Unsupported DuckDB value type in result set: {:?}",
+                other.data_type()
+            )));
+        }
+    };
+    Ok(json)
 }
 
 #[cfg(test)]
@@ -1177,6 +1190,44 @@ mod tests {
         assert_eq!(row[11], serde_json::json!([1, 2, 3]));
         assert_eq!(row[12], serde_json::json!({"a": 7, "b": "x"}));
         assert_eq!(row[13], serde_json::Value::Null);
+
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn uhugeint_converts_to_a_string() {
+        // UHUGEINT exceeds JSON's number range; preserve precision as a string.
+        let json = duckdb_value_to_json(&Value::UHugeInt(u128::MAX)).expect("convert");
+        assert_eq!(json, serde_json::json!("340282366920938463463374607431768211455"));
+    }
+
+    #[test]
+    fn geometry_converts_to_base64_wkb() {
+        // GEOMETRY arrives as WKB bytes; encode like BLOB.
+        let json =
+            duckdb_value_to_json(&Value::Geometry(vec![0xDE, 0xAD, 0xBE, 0xEF])).expect("convert");
+        assert_eq!(json, serde_json::json!("3q2+7w=="));
+    }
+
+    #[tokio::test]
+    async fn test_execute_uhugeint_max_value() {
+        let temp_file = fixture_path("uhugeint");
+        let _ = std::fs::remove_file(&temp_file);
+        {
+            let conn = Connection::open(&temp_file).expect("create");
+            conn.execute_batch(
+                "CREATE TABLE big (v UHUGEINT);
+                 INSERT INTO big VALUES (340282366920938463463374607431768211455)",
+            )
+            .expect("seed");
+        }
+
+        let config = ConnectionConfig::duckdb(temp_file.clone());
+        let caps = Capabilities::default();
+        let qr = DuckDbEngine::execute(&config, "SELECT v FROM big", &[], &caps)
+            .await
+            .expect("query failed");
+        assert_eq!(qr.rows[0][0], serde_json::json!("340282366920938463463374607431768211455"));
 
         let _ = std::fs::remove_file(&temp_file);
     }

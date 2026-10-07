@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- DuckDB: compile against `duckdb` 1.10506.0, where `Value` is `#[non_exhaustive]`; `UHUGEINT` converts to a string, `GEOMETRY` (WKB) to Base64, and an unknown value type is a structured `QUERY_FAILED` error instead of a guess
 - `plenum connect --project-path X --save local` reported success but persisted nothing when run from another directory; it now writes `X/.plenum/config.json` ([REF-303](/REF/issues/REF-303))
 - PostgreSQL: correct NULL detection, composite foreign-key introspection, and view definitions ([REF-277](/REF/issues/REF-277))
 - MySQL: route text-protocol statements correctly; classify `EXPLAIN`; surface timeout as a first-class error ([REF-258](/REF/issues/REF-258))
