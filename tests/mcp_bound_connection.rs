@@ -519,3 +519,87 @@ fn connect_save_requires_a_credential_reference_shape() {
     let _ = std::fs::remove_dir_all(&cwd);
     let _ = std::fs::remove_dir_all(&xdg);
 }
+
+// ─── password_command is not accepted from MCP tool arguments ────────────────
+//
+// `password_command` runs a shell command (`sh -c`). Accepting it from tool
+// arguments would let any agent execute arbitrary commands on the host, so
+// every MCP tool rejects it before anything runs. The CLI flag and wizard
+// remain available to humans.
+
+/// Call `tool` with `password_command` set to a command that creates a marker
+/// file, then assert a capability error and that the command never ran.
+fn assert_password_command_rejected(tool: &str, tag: &str, mut arguments: Value) {
+    let cwd = scratch(tag);
+    let xdg = scratch(&format!("{tag}-xdg"));
+    let marker = cwd.join("executed");
+    arguments["password_command"] = json!(format!("touch {}", marker.display()));
+
+    let mut child = spawn_mcp(&[], &[], &cwd, &xdg);
+    let resp = handshake_then_call(&mut child, tool, &arguments);
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let msg = error_message(&resp);
+    assert!(msg.contains("CAPABILITY_VIOLATION"), "must be a capability error: {msg}");
+    assert!(msg.contains("password_command"), "must name the rejected field: {msg}");
+    assert!(!marker.exists(), "password_command must never execute");
+    assert!(!cwd.join(".plenum").exists(), "nothing should be written");
+
+    let _ = std::fs::remove_dir_all(&cwd);
+    let _ = std::fs::remove_dir_all(&xdg);
+}
+
+#[test]
+fn connect_rejects_password_command() {
+    assert_password_command_rejected(
+        "connect",
+        "pwcmd-connect",
+        json!({ "engine": "postgres", "host": "h", "port": 5432, "user": "u", "database": "d" }),
+    );
+}
+
+#[test]
+fn connect_save_rejects_password_command() {
+    let cwd = scratch("pwcmd-save-path");
+    assert_password_command_rejected(
+        "connect",
+        "pwcmd-save",
+        json!({
+            "engine": "postgres", "host": "h", "port": 5432, "user": "u", "database": "d",
+            "save": "global", "project_path": cwd.to_str().unwrap()
+        }),
+    );
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn introspect_rejects_password_command() {
+    assert_password_command_rejected(
+        "introspect",
+        "pwcmd-introspect",
+        json!({ "engine": "postgres", "host": "h", "port": 5432, "user": "u", "database": "d" }),
+    );
+}
+
+#[test]
+fn query_rejects_password_command() {
+    assert_password_command_rejected(
+        "query",
+        "pwcmd-query",
+        json!({
+            "engine": "postgres", "host": "h", "port": 5432, "user": "u", "database": "d",
+            "sql": "SELECT 1"
+        }),
+    );
+}
+
+#[test]
+fn password_command_is_rejected_even_with_a_named_connection() {
+    // A named-connection call must not silently ignore the field either.
+    assert_password_command_rejected(
+        "query",
+        "pwcmd-named",
+        json!({ "name": "dev", "sql": "SELECT 1" }),
+    );
+}

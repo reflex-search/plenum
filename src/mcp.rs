@@ -346,15 +346,11 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "password_env": {
                             "type": "string",
-                            "description": "Credential reference for one-off explicit connections: name of the environment variable holding the password. The secret value never passes through Plenum. Combine with engine + host/port/user/database. Mutually exclusive with password_command and keychain_service/keychain_account."
-                        },
-                        "password_command": {
-                            "type": "string",
-                            "description": "Credential reference for one-off explicit connections: shell command whose stdout (trimmed) is the password. Mutually exclusive with password_env and keychain_service/keychain_account."
+                            "description": "Credential reference for one-off explicit connections: name of the environment variable holding the password. The secret value never passes through Plenum. Combine with engine + host/port/user/database. Mutually exclusive with keychain_service/keychain_account."
                         },
                         "keychain_service": {
                             "type": "string",
-                            "description": "Credential reference for one-off explicit connections: OS keychain service name. Must be paired with keychain_account. Mutually exclusive with password_env and password_command."
+                            "description": "Credential reference for one-off explicit connections: OS keychain service name. Must be paired with keychain_account. Mutually exclusive with password_env."
                         },
                         "keychain_account": {
                             "type": "string",
@@ -472,15 +468,11 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "password_env": {
                             "type": "string",
-                            "description": "Credential reference for one-off explicit connections: name of the environment variable holding the password. The secret value never passes through Plenum. Combine with engine + host/port/user/database. Mutually exclusive with password_command and keychain_service/keychain_account."
-                        },
-                        "password_command": {
-                            "type": "string",
-                            "description": "Credential reference for one-off explicit connections: shell command whose stdout (trimmed) is the password. Mutually exclusive with password_env and keychain_service/keychain_account."
+                            "description": "Credential reference for one-off explicit connections: name of the environment variable holding the password. The secret value never passes through Plenum. Combine with engine + host/port/user/database. Mutually exclusive with keychain_service/keychain_account."
                         },
                         "keychain_service": {
                             "type": "string",
-                            "description": "Credential reference for one-off explicit connections: OS keychain service name. Must be paired with keychain_account. Mutually exclusive with password_env and password_command."
+                            "description": "Credential reference for one-off explicit connections: OS keychain service name. Must be paired with keychain_account. Mutually exclusive with password_env."
                         },
                         "keychain_account": {
                             "type": "string",
@@ -517,7 +509,7 @@ fn handle_list_tools() -> Result<Value> {
             },
             {
                 "name": "connect",
-                "description": "Test a database connection OR save a connection config by reference. TWO MODES: (A) TEST (default, no 'save'): opens a connection, verifies liveness, returns ConnectionInfo, then disconnects. Stateless — no config mutated. (B) SAVE ('save': \"local\"|\"global\"): persists the connection config BY REFERENCE to .plenum/config.json (local) or ~/.config/plenum/connections.json (global), then returns a saved confirmation. No live connection required — provisions connections offline. CREDENTIAL SAFETY (non-negotiable): inline plaintext 'password' is REJECTED with CAPABILITY_VIOLATION. Source secrets ONLY by reference: 'password_env' (env var name), 'password_command' (shell command), or 'keychain_service'+'keychain_account' (OS keychain). The plaintext secret NEVER passes through Plenum — only the reference string is stored. Use TEST mode to health-check a saved connection; use SAVE mode to register a new one. Possible error codes: CAPABILITY_VIOLATION (inline plaintext password), CONNECTION_FAILED (unreachable host, bad credentials, missing file), INVALID_INPUT (missing required params), CONFIG_ERROR (no saved connection found).",
+                "description": "Test a database connection OR save a connection config by reference. TWO MODES: (A) TEST (default, no 'save'): opens a connection, verifies liveness, returns ConnectionInfo, then disconnects. Stateless — no config mutated. (B) SAVE ('save': \"local\"|\"global\"): persists the connection config BY REFERENCE to .plenum/config.json (local) or ~/.config/plenum/connections.json (global), then returns a saved confirmation. No live connection required — provisions connections offline. CREDENTIAL SAFETY (non-negotiable): inline plaintext 'password' is REJECTED with CAPABILITY_VIOLATION. Source secrets ONLY by reference: 'password_env' (env var name) or 'keychain_service'+'keychain_account' (OS keychain). 'password_command' is REJECTED with CAPABILITY_VIOLATION because it executes a shell command. The plaintext secret NEVER passes through Plenum — only the reference string is stored. Use TEST mode to health-check a saved connection; use SAVE mode to register a new one. Possible error codes: CAPABILITY_VIOLATION (inline plaintext password or password_command), CONNECTION_FAILED (unreachable host, bad credentials, missing file), INVALID_INPUT (missing required params), CONFIG_ERROR (no saved connection found).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -556,15 +548,11 @@ fn handle_list_tools() -> Result<Value> {
                         },
                         "password_env": {
                             "type": "string",
-                            "description": "Credential reference: name of the environment variable that holds the password (e.g. \"DB_PASSWORD\"). The reference string is stored/used, never the secret value. Mutually exclusive with password_command and keychain_service/keychain_account. Use this instead of inline 'password' (which is rejected)."
-                        },
-                        "password_command": {
-                            "type": "string",
-                            "description": "Credential reference: shell command whose stdout (trimmed) is the password (e.g. \"op read op://vault/db/password\"). The command string is stored/used, never the secret value. Mutually exclusive with password_env and keychain_service/keychain_account."
+                            "description": "Credential reference: name of the environment variable that holds the password (e.g. \"DB_PASSWORD\"). The reference string is stored/used, never the secret value. Mutually exclusive with keychain_service/keychain_account. Use this instead of inline 'password' (which is rejected)."
                         },
                         "keychain_service": {
                             "type": "string",
-                            "description": "Credential reference: OS keychain service name. Must be paired with keychain_account. The password is looked up from the platform keychain at connection time. Mutually exclusive with password_env and password_command."
+                            "description": "Credential reference: OS keychain service name. Must be paired with keychain_account. The password is looked up from the platform keychain at connection time. Mutually exclusive with password_env."
                         },
                         "keychain_account": {
                             "type": "string",
@@ -573,7 +561,7 @@ fn handle_list_tools() -> Result<Value> {
                         "save": {
                             "type": "string",
                             "enum": ["local", "global"],
-                            "description": "SAVE MODE: persist this connection config by reference. \"local\" writes .plenum/config.json (team-shareable, per-project); \"global\" writes ~/.config/plenum/connections.json (per-user). Requires explicit 'engine' + connection params. Credentials are stored only as references (password_env/password_command/keychain_*) — never plaintext. Omit to run in TEST mode instead."
+                            "description": "SAVE MODE: persist this connection config by reference. \"local\" writes .plenum/config.json (team-shareable, per-project); \"global\" writes ~/.config/plenum/connections.json (per-user). Requires explicit 'engine' + connection params. Credentials are stored only as references (password_env/keychain_*) — never plaintext. Omit to run in TEST mode instead."
                         },
                         "project_path": {
                             "type": "string",
@@ -598,6 +586,17 @@ async fn handle_call_tool(params: Option<Value>, binding: &McpBinding) -> Result
     let name = params["name"].as_str().ok_or_else(|| anyhow!("Missing tool name"))?;
     let arguments = &params["arguments"];
 
+    // Capability boundary: `password_command` runs a shell command, so accepting
+    // it from tool arguments would let an agent execute arbitrary commands on the
+    // host. Reject it for every tool before anything runs.
+    if arguments.get("password_command").is_some() {
+        return Err(anyhow!(
+            "CAPABILITY_VIOLATION: 'password_command' is not permitted on MCP tools because \
+             it executes a shell command. Reference the secret via 'password_env' or \
+             'keychain_service' + 'keychain_account'."
+        ));
+    }
+
     match name {
         "connect" => tool_connect(arguments, binding).await,
         "introspect" => tool_introspect(arguments, binding).await,
@@ -621,16 +620,15 @@ async fn handle_call_tool(params: Option<Value>, binding: &McpBinding) -> Result
 ///   connections offline.
 ///
 /// Inline plaintext passwords are rejected unconditionally: callers must source
-/// secrets via `password_env`, `password_command`, or `keychain_service` +
-/// `keychain_account`. This guarantees the plaintext secret never passes through
-/// Plenum.
+/// secrets via `password_env` or `keychain_service` + `keychain_account`. This
+/// guarantees the plaintext secret never passes through Plenum.
 async fn tool_connect(args: &Value, binding: &McpBinding) -> Result<Value> {
     // Capability boundary: the MCP connect tool never handles plaintext secrets.
     if args.get("password").and_then(|v| v.as_str()).is_some() {
         return Err(anyhow!(
             "CAPABILITY_VIOLATION: inline plaintext 'password' is not permitted on the MCP \
-             connect tool. Reference the secret instead via 'password_env', 'password_command', \
-             or 'keychain_service' + 'keychain_account'."
+             connect tool. Reference the secret instead via 'password_env' or \
+             'keychain_service' + 'keychain_account'."
         ));
     }
 
@@ -701,8 +699,8 @@ fn tool_connect_save(args: &Value, binding: &McpBinding, save_raw: &Value) -> Re
         anyhow!("'save' requires explicit connection params, starting with 'engine'")
     })?;
 
-    let (password_env, password_command, keychain_entry) = parse_credential_refs(args)?;
-    let has_ref = password_env.is_some() || password_command.is_some() || keychain_entry.is_some();
+    let (password_env, keychain_entry) = parse_credential_refs(args)?;
+    let has_ref = password_env.is_some() || keychain_entry.is_some();
 
     // Build the config to store. `allow_missing_password` keeps the config free of
     // any inline secret — the reference is the sole password authority.
@@ -726,7 +724,7 @@ fn tool_connect_save(args: &Value, binding: &McpBinding, save_raw: &Value) -> Re
         name.clone(),
         config,
         password_env.clone(),
-        password_command.clone(),
+        None,
         keychain_entry.clone(),
         location,
     )
@@ -734,8 +732,6 @@ fn tool_connect_save(args: &Value, binding: &McpBinding, save_raw: &Value) -> Re
 
     let credential_source = if password_env.is_some() {
         "password_env"
-    } else if password_command.is_some() {
-        "password_command"
     } else if keychain_entry.is_some() {
         "keychain"
     } else {
@@ -981,21 +977,19 @@ async fn tool_query(args: &Value, binding: &McpBinding) -> Result<Value> {
 
 /// Extract credential-reference arguments from a tool call.
 ///
-/// Recognizes `password_env`, `password_command`, and the keychain pair
-/// `keychain_service` + `keychain_account`. These name where a secret lives;
-/// the plaintext secret itself never passes through Plenum.
+/// Recognizes `password_env` and the keychain pair `keychain_service` +
+/// `keychain_account`. (`password_command` is rejected earlier, in
+/// `handle_call_tool`, because it executes a shell command.) These name where
+/// a secret lives; the plaintext secret itself never passes through Plenum.
 ///
 /// Enforces the same invariants the config layer does:
 /// - at most one credential source may be specified;
 /// - `keychain_service` and `keychain_account` must be supplied together.
 ///
-/// Returns `(password_env, password_command, keychain_entry)` — all `None` when
-/// no reference was provided.
-fn parse_credential_refs(
-    args: &Value,
-) -> Result<(Option<String>, Option<String>, Option<KeychainEntry>)> {
+/// Returns `(password_env, keychain_entry)` — both `None` when no reference
+/// was provided.
+fn parse_credential_refs(args: &Value) -> Result<(Option<String>, Option<KeychainEntry>)> {
     let password_env = args.get("password_env").and_then(|v| v.as_str()).map(String::from);
-    let password_command = args.get("password_command").and_then(|v| v.as_str()).map(String::from);
     let service = args.get("keychain_service").and_then(|v| v.as_str()).map(String::from);
     let account = args.get("keychain_account").and_then(|v| v.as_str()).map(String::from);
 
@@ -1009,27 +1003,21 @@ fn parse_credential_refs(
         }
     };
 
-    let source_count =
-        [password_env.is_some(), password_command.is_some(), keychain_entry.is_some()]
-            .iter()
-            .filter(|&&b| b)
-            .count();
-
-    if source_count > 1 {
+    if password_env.is_some() && keychain_entry.is_some() {
         return Err(anyhow!(
             "Only one credential reference is allowed: \
-             password_env, password_command, or keychain_service/keychain_account"
+             password_env or keychain_service/keychain_account"
         ));
     }
 
-    Ok((password_env, password_command, keychain_entry))
+    Ok((password_env, keychain_entry))
 }
 
 /// Build `ConnectionConfig` from JSON arguments.
 ///
 /// When `allow_missing_password` is true the inline `password` field is
 /// optional — the caller is expected to supply a credential reference
-/// (`password_env` / `password_command` / `keychain_service`+`keychain_account`)
+/// (`password_env` / `keychain_service`+`keychain_account`)
 /// that resolves the secret at connection time. The resulting config carries
 /// `password: None` so the reference is the sole authority.
 fn build_connection_config_from_args(
@@ -1178,9 +1166,8 @@ fn resolve_connection_from_args(
     // Scenario 2: Explicit connection parameters
     if has_engine {
         let engine_str = args["engine"].as_str().unwrap();
-        let (password_env, password_command, keychain_entry) = parse_credential_refs(args)?;
-        let has_ref =
-            password_env.is_some() || password_command.is_some() || keychain_entry.is_some();
+        let (password_env, keychain_entry) = parse_credential_refs(args)?;
+        let has_ref = password_env.is_some() || keychain_entry.is_some();
 
         let config = build_connection_config_from_args(args, engine_str, has_ref)?;
 
@@ -1191,7 +1178,7 @@ fn resolve_connection_from_args(
             let stored = StoredConnection {
                 config,
                 password_env,
-                password_command,
+                password_command: None,
                 keychain_entry,
                 readonly: None,
             };
@@ -1465,16 +1452,16 @@ mod tests {
 
     #[test]
     fn parse_credential_refs_none_when_absent() {
-        let (env, cmd, kc) = parse_credential_refs(&serde_json::json!({})).unwrap();
-        assert!(env.is_none() && cmd.is_none() && kc.is_none());
+        let (env, kc) = parse_credential_refs(&serde_json::json!({})).unwrap();
+        assert!(env.is_none() && kc.is_none());
     }
 
     #[test]
     fn parse_credential_refs_env() {
-        let (env, cmd, kc) =
+        let (env, kc) =
             parse_credential_refs(&serde_json::json!({ "password_env": "DB_PASSWORD" })).unwrap();
         assert_eq!(env.as_deref(), Some("DB_PASSWORD"));
-        assert!(cmd.is_none() && kc.is_none());
+        assert!(kc.is_none());
     }
 
     #[test]
@@ -1487,7 +1474,11 @@ mod tests {
 
     #[test]
     fn parse_credential_refs_rejects_multiple_sources() {
-        let args = serde_json::json!({ "password_env": "A", "password_command": "echo b" });
+        let args = serde_json::json!({
+            "password_env": "A",
+            "keychain_service": "svc",
+            "keychain_account": "acct"
+        });
         let err = parse_credential_refs(&args).unwrap_err().to_string();
         assert!(err.contains("Only one credential reference"), "got: {err}");
     }
