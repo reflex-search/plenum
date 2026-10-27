@@ -910,6 +910,167 @@ mysql_matrix!(
 );
 
 // ============================================================================
+// query — side effects inside accepted statements
+// ============================================================================
+
+/// A statement the classifier accepts as read-only, and a scalar check that
+/// returns `1` while the database is unchanged.
+struct SideEffectCase {
+    sql: String,
+    unchanged: String,
+}
+
+/// A per-run marker for the probes to write. A leak from an earlier run on a
+/// kept container cannot then hide or fake a result in this run.
+fn side_effect_marker(prefix: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is before the Unix epoch")
+        .as_nanos();
+    format!("{prefix}_{}_{nanos}", std::process::id())
+}
+
+/// Check SQL that returns `1` while no canary row carries `note`.
+fn canary_unchanged(note: &str) -> String {
+    format!("SELECT COUNT(*) = 0 FROM side_effect_canary WHERE note = '{note}'")
+}
+
+/// Fail fast unless `03_side_effects.sql` is loaded and the test user holds
+/// `FILE`. Without them the probes fail for the wrong reason, and the suite
+/// would false-pass. Returns the `secure_file_priv` directory with a
+/// trailing `/`.
+fn require_side_effect_seed(home: &Path, dsn: &str) -> String {
+    let ready = query_ok(
+        home,
+        dsn,
+        "SELECT (SELECT COUNT(*) FROM information_schema.ROUTINES \
+                 WHERE ROUTINE_SCHEMA = DATABASE() AND ROUTINE_NAME = 'side_effect_write') = 1 \
+            AND (SELECT COUNT(*) FROM information_schema.USER_PRIVILEGES \
+                 WHERE PRIVILEGE_TYPE = 'FILE') > 0",
+    );
+    assert_eq!(
+        ready.pointer("/data/rows/0/0"),
+        Some(&Value::from("1")),
+        "side-effect probes need the objects and the FILE grant from \
+         tests/live/seed/mysql/03_side_effects.sql. Recreate the containers: \
+         docker compose -f tests/live/compose.yaml down --volumes"
+    );
+
+    let file_dir = query_ok(home, dsn, "SELECT @@secure_file_priv");
+    let dir = file_dir
+        .pointer("/data/rows/0/0")
+        .and_then(Value::as_str)
+        .filter(|dir| !dir.is_empty())
+        .unwrap_or_else(|| panic!("secure_file_priv must name a directory: {file_dir}"));
+    format!("{}/", dir.trim_end_matches('/'))
+}
+
+/// Run every case and describe each leak. A case leaks when Plenum reports
+/// success, or when its check shows a change. All cases run, so one failure
+/// shows the full picture.
+///
+/// The invariant is "refused, and nothing changed". The error code is not
+/// pinned: the capability layer or the server may be the one that refuses.
+fn side_effect_leaks(home: &Path, dsn: &str, cases: &[SideEffectCase]) -> Vec<String> {
+    let mut leaks = Vec::new();
+    for case in cases {
+        let (code, stdout) = query(home, dsn, &case.sql);
+        let envelope: Value = serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|e| panic!("stdout is not valid JSON ({e}): {stdout:?}"));
+        if code == 0 || envelope.get("ok") != Some(&Value::Bool(false)) {
+            leaks.push(format!("accepted {:?}: {envelope}", case.sql));
+        }
+        let check = query_ok(home, dsn, &case.unchanged);
+        if check.pointer("/data/rows/0/0") != Some(&Value::from("1")) {
+            leaks.push(format!("state changed by {:?}: {:?} is not 1", case.sql, case.unchanged));
+        }
+    }
+    leaks
+}
+
+/// A function called from a plain `SELECT` must not change anything. The
+/// session is read-only, so the server refuses a function that writes.
+fn query_side_effect_functions_leave_state_unchanged(dsn_var: &str, tag: &str) {
+    let dsn = require_dsn(dsn_var);
+    let home = scratch_home(tag);
+    require_side_effect_seed(&home, &dsn);
+
+    let marker = side_effect_marker("fn");
+    let cases = [SideEffectCase {
+        sql: format!("SELECT side_effect_write('{marker}_function')"),
+        unchanged: canary_unchanged(&format!("{marker}_function")),
+    }];
+
+    let leaks = side_effect_leaks(&home, &dsn, &cases);
+    assert!(leaks.is_empty(), "side effects leaked:\n{}", leaks.join("\n"));
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+mysql_matrix!(
+    mysql80_query_side_effect_functions_leave_state_unchanged,
+    mysql84_query_side_effect_functions_leave_state_unchanged,
+    query_side_effect_functions_leave_state_unchanged
+);
+
+/// Comment markers must not hide SQL from the read-only check. The
+/// classifier strips `/* … */` before it looks, but `MySQL` runs the body of
+/// a `/*! … */` comment. The classifier also ignores quotes, so it reads
+/// `'/*' … '*/'` as one comment. The driver allows several statements per
+/// call, so the hidden SQL reaches the server. The read-only session stops
+/// hidden DML and DDL. It does not stop `INTO OUTFILE`, which writes a file
+/// on the server.
+fn query_comment_markers_leave_state_unchanged(dsn_var: &str, tag: &str) {
+    let dsn = require_dsn(dsn_var);
+    let home = scratch_home(tag);
+    let file_dir = require_side_effect_seed(&home, &dsn);
+
+    let marker = side_effect_marker("cm");
+    let file_absent = |path: &str| format!("SELECT LOAD_FILE('{path}') IS NULL");
+    let executable_comment_file = format!("{file_dir}plenum_{marker}_executable_comment");
+    let string_marker_file = format!("{file_dir}plenum_{marker}_string_marker");
+
+    let cases = [
+        SideEffectCase {
+            sql: format!("SELECT 1 /*!80000 INTO OUTFILE '{executable_comment_file}' */"),
+            unchanged: file_absent(&executable_comment_file),
+        },
+        SideEffectCase {
+            sql: format!(
+                "SELECT '/*', 1 INTO OUTFILE '{string_marker_file}' FROM DUAL WHERE '*/' <> ''"
+            ),
+            unchanged: file_absent(&string_marker_file),
+        },
+        SideEffectCase {
+            sql: format!(
+                "SELECT '/*'; INSERT INTO side_effect_canary (note) VALUES ('{marker}_multi'); \
+                 SELECT '*/'"
+            ),
+            unchanged: canary_unchanged(&format!("{marker}_multi")),
+        },
+        SideEffectCase {
+            sql: format!(
+                "SELECT '/*'; ALTER TABLE side_effect_canary COMMENT = '{marker}_alter'; \
+                 SELECT '*/'"
+            ),
+            unchanged: format!(
+                "SELECT TABLE_COMMENT <> '{marker}_alter' FROM information_schema.TABLES \
+                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'side_effect_canary'"
+            ),
+        },
+    ];
+
+    let leaks = side_effect_leaks(&home, &dsn, &cases);
+    assert!(leaks.is_empty(), "side effects leaked:\n{}", leaks.join("\n"));
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+mysql_matrix!(
+    mysql80_query_comment_markers_leave_state_unchanged,
+    mysql84_query_comment_markers_leave_state_unchanged,
+    query_comment_markers_leave_state_unchanged
+);
+
+// ============================================================================
 // safety constraints
 // ============================================================================
 
