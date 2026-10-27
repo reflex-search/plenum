@@ -102,6 +102,33 @@ Every query execution path calls `validate_query()` before database interaction:
 
 **No bypass paths exist.** Capability enforcement has been audited and verified complete.
 
+### Defense in Depth and Its Limits
+
+The read-only check is one layer, not the whole boundary. Each engine also
+opens its connection read-only: PostgreSQL sets
+`default_transaction_read_only = ON`, MySQL sets
+`SET SESSION TRANSACTION READ ONLY`, and SQLite/DuckDB open the file read-only.
+
+A SQL function can still escape the read-only session. The function runs, but
+its effect is not a write *through that session*:
+
+- PostgreSQL `dblink` / `dblink_exec` open a **second** session that is not
+  read-only, and run arbitrary SQL there.
+- PostgreSQL `lo_export` writes a file on the server; `lo_import` creates a
+  large object.
+- MySQL executes the body of a `/*! ... */` conditional comment, which can
+  hide SQL (e.g. `INTO OUTFILE`) from a static check.
+
+Plenum rejects these specific forms before execution (REF-305). That is a
+small blocklist, not a general guarantee: the function set is engine-specific
+and grows over time.
+
+**The strongest defense is a read-only database role.** Connect Plenum with a
+login that has only `SELECT` (and `USAGE`) grants, no `FILE`, and no rights on
+tables you do not want read. Then no classifier gap can write, because the
+server itself refuses. Treat Plenum's checks as a convenience layer on top of
+that role, never as a replacement for it.
+
 ### Validation Process
 
 ```
