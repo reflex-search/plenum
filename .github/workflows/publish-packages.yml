@@ -1,10 +1,12 @@
 name: Publish Packages
 
 on:
+  # No `branches` filter: the Release workflow is triggered by a version tag
+  # push, so its run reports head_branch = "vX.Y.Z" (not "main"), and a
+  # `branches: [main]` filter would never match. The jobs below guard instead.
   workflow_run:
     workflows: ["Release"]
     types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
@@ -19,8 +21,9 @@ jobs:
   publish-crates-io:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    # Only run if release workflow succeeded (or manual dispatch)
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # Auto: only after a successful Release triggered by a version-tag push
+    # (excludes the Release workflow's pull_request runs). Or manual dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'v')) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,8 +42,9 @@ jobs:
   publish-npm:
     name: Publish to NPM
     runs-on: ubuntu-latest
-    # Only run if release workflow succeeded (or manual dispatch)
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # Auto: only after a successful Release triggered by a version-tag push
+    # (excludes the Release workflow's pull_request runs). Or manual dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'v')) }}
     steps:
       - uses: actions/checkout@v4
 
