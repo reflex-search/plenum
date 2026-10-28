@@ -102,6 +102,33 @@ Every query execution path calls `validate_query()` before database interaction:
 
 **No bypass paths exist.** Capability enforcement has been audited and verified complete.
 
+### Defense in Depth and Its Limits
+
+The read-only check is one layer, not the whole boundary. Each engine also
+opens its connection read-only: PostgreSQL sets
+`default_transaction_read_only = ON`, MySQL sets
+`SET SESSION TRANSACTION READ ONLY`, and SQLite/DuckDB open the file read-only.
+
+A SQL function can still escape the read-only session. The function runs, but
+its effect is not a write *through that session*:
+
+- PostgreSQL `dblink` / `dblink_exec` open a **second** session that is not
+  read-only, and run arbitrary SQL there.
+- PostgreSQL `lo_export` writes a file on the server; `lo_import` creates a
+  large object.
+- MySQL executes the body of a `/*! ... */` conditional comment, which can
+  hide SQL (e.g. `INTO OUTFILE`) from a static check.
+
+Plenum rejects these specific forms before execution (REF-305). That is a
+small blocklist, not a general guarantee: the function set is engine-specific
+and grows over time.
+
+**The strongest defense is a read-only database role.** Connect Plenum with a
+login that has only `SELECT` (and `USAGE`) grants, no `FILE`, and no rights on
+tables you do not want read. Then no classifier gap can write, because the
+server itself refuses. Treat Plenum's checks as a convenience layer on top of
+that role, never as a replacement for it.
+
 ### Validation Process
 
 ```
@@ -171,6 +198,27 @@ When using the MCP server, credentials are passed per-invocation via JSON-RPC:
 ```
 
 **Security Note**: MCP communication over stdio is local-only (no network exposure).
+
+### MCP Credential References
+
+The MCP `connect` tool rejects an inline plaintext `password` with `CAPABILITY_VIOLATION`. Agents reference the secret instead:
+
+- `password_env` — the name of an environment variable that holds the password.
+- `keychain_service` + `keychain_account` — an OS keychain entry (both are required together).
+
+**`password_command` is rejected on every MCP tool** (`connect`, `introspect`, `query`) with `CAPABILITY_VIOLATION`. It executes a shell command via `sh -c`. Accepting it from tool arguments would give any connected agent arbitrary command execution on the host. The CLI flag `--password-command` and the `plenum connect` wizard still offer it, because a human types the command there.
+
+**Residual risk — saved configs:** a connection already saved with `password_command` still runs that command when the MCP server resolves it. The command comes from a config file, not from tool arguments. Review `password_command` entries in `.plenum/config.json` before you commit or pull that file, because it is team-shareable.
+
+### MCP Connection Binding
+
+`plenum mcp` binds its default connection at server start:
+
+- `--project-path <path>` — resolve config for that project, independent of the server's working directory.
+- `--name <connection>` — select a named connection within that project.
+- `--dsn-env <VAR>` — read the DSN from exactly the named environment variable. Plenum never reads `DATABASE_URL`, `PGPASSWORD`, or any other ambient variable on its own.
+
+`--dsn-env` cannot be combined with `--project-path` or `--name`. Connection fields in a tool call override the binding.
 
 ---
 

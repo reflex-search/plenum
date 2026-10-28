@@ -42,7 +42,8 @@ pub mod output; // JSON output envelopes (Phase 1.2) // MCP server (Phase 7) - M
 pub use capability::validate_query;
 pub use config::{
     list_connections, list_connections_for_project, list_connections_raw, resolve_connection,
-    save_connection, ConfigLocation, ConnectionRegistry, KeychainEntry, StoredConnection,
+    resolve_connection_in_project, save_connection, save_connection_in_project, ConfigLocation,
+    ConnectionRegistry, KeychainEntry, StoredConnection,
 };
 pub use dsn::{parse_dsn, redact_dsn};
 pub use engine::{
@@ -52,7 +53,10 @@ pub use engine::{
     SchemaInfo, TableDiff, TableInfo, TimeOnlyResult, ViewDiff, ViewInfo,
 };
 pub use error::{PlenumError, Result};
-pub use output::{ErrorEnvelope, ErrorInfo, Metadata, SuccessEnvelope, CONTRACT_VERSION};
+pub use output::{
+    ConnectSaveResult, ErrorEnvelope, ErrorInfo, McpServerConfig, McpStanza, Metadata,
+    SuccessEnvelope, CONTRACT_VERSION,
+};
 
 #[cfg(test)]
 mod tests {

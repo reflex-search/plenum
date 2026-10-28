@@ -30,17 +30,24 @@ use plenum::engine::postgres::PostgresEngine;
 #[cfg(feature = "sqlite")]
 use plenum::engine::sqlite::SqliteEngine;
 
-/// Resolved arguments for `plenum connect`:
-/// connection name, project path, config, `password_env`, `password_command`, `keychain_entry`, save location.
-type ConnectArgs = (
-    String,
-    Option<String>,
-    ConnectionConfig,
-    Option<String>,
-    Option<String>,
-    Option<KeychainEntry>,
-    ConfigLocation,
-);
+/// Resolved arguments for `plenum connect`, produced by the interactive picker,
+/// interactive wizard, or non-interactive flag path and consumed by the save step.
+struct ConnectArgs {
+    /// Connection name to save under.
+    name: String,
+    /// Explicit project path, or `None` to default to the current directory.
+    project_path: Option<String>,
+    /// Resolved connection configuration.
+    config: ConnectionConfig,
+    /// Indirect credential source: environment variable name.
+    password_env: Option<String>,
+    /// Indirect credential source: shell command producing the password.
+    password_command: Option<String>,
+    /// Indirect credential source: OS keychain entry.
+    keychain_entry: Option<KeychainEntry>,
+    /// Where to persist the connection (local or global).
+    location: ConfigLocation,
+}
 
 /// Plenum - Agent-First Database Control CLI
 #[derive(Parser)]
@@ -371,7 +378,20 @@ enum Commands {
 
     /// Start MCP server (hidden from help, for AI agent integration)
     #[command(hide = true)]
-    Mcp,
+    Mcp {
+        /// Pin config resolution to this project path (overrides the launcher's cwd)
+        #[arg(long)]
+        project_path: Option<String>,
+
+        /// Pin to a named connection within the resolved project
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Read the DSN from this named environment variable at connection time.
+        /// Only the named variable is read — never an ambient fallback.
+        #[arg(long, conflicts_with_all = ["project_path", "name"])]
+        dsn_env: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -571,7 +591,9 @@ async fn main() {
             )
             .await
         }
-        Some(Commands::Mcp) => handle_mcp().await,
+        Some(Commands::Mcp { project_path, name, dsn_env }) => {
+            handle_mcp(project_path, name, dsn_env).await
+        }
         None => {
             // No subcommand provided
             let error_envelope = ErrorEnvelope::new(
@@ -734,22 +756,43 @@ async fn handle_connect(
         .await
     } else {
         // Interactive mode: show picker
-        interactive_connect_picker().await.map(|(n, p, c, l)| (n, p, c, None, None, None, l))
+        interactive_connect_picker().await
     };
 
     match result {
-        Ok((
-            conn_name,
-            proj_path,
+        Ok(ConnectArgs {
+            name: conn_name,
+            project_path: proj_path,
             config,
             password_env,
             password_command,
             keychain_entry,
             location,
-        )) => {
-            // Save connection
-            match plenum::save_connection(
-                proj_path,
+        }) => {
+            // Resolve the effective project path up front so the saved connection
+            // and the emitted mcp_stanza reference the exact same path. When
+            // proj_path is None, save_connection would fall back to the current
+            // directory; resolve it here so both stay in lockstep.
+            let effective_project_path = match proj_path {
+                Some(p) => p,
+                None => match plenum::config::get_current_project_path() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let envelope = ErrorEnvelope::from_error("", "connect", &e);
+                        output_error(&envelope);
+                        return Err(1);
+                    }
+                },
+            };
+
+            // Save connection. Use the project-scoped writer so `--save local`
+            // targets `<project_path>/.plenum/config.json` rather than the
+            // current working directory. The local config format is
+            // single-project and keyed by its own directory, so writing under
+            // cwd while keying the entry under an explicit `--project-path`
+            // would silently drop the connection.
+            match plenum::save_connection_in_project(
+                &effective_project_path,
                 Some(conn_name.clone()),
                 config.clone(),
                 password_env,
@@ -760,15 +803,20 @@ async fn handle_connect(
                 Ok(()) => {
                     // Build success response
                     let elapsed_ms = start.elapsed().as_millis() as u64;
-                    let data = serde_json::json!({
-                        "connection_name": conn_name,
-                        "engine": config.engine.as_str(),
-                        "saved_to": match location {
-                            ConfigLocation::Local => "local",
-                            ConfigLocation::Global => "global",
+                    let mcp_stanza = plenum::McpStanza::for_saved_connection(
+                        &effective_project_path,
+                        &conn_name,
+                    );
+                    let data = plenum::ConnectSaveResult {
+                        message: format!("Connection '{conn_name}' saved successfully"),
+                        connection_name: conn_name,
+                        engine: config.engine.as_str().to_string(),
+                        saved_to: match location {
+                            ConfigLocation::Local => "local".to_string(),
+                            ConfigLocation::Global => "global".to_string(),
                         },
-                        "message": format!("Connection '{}' saved successfully", conn_name),
-                    });
+                        mcp_stanza,
+                    };
 
                     let envelope = SuccessEnvelope::new(
                         config.engine.as_str(),
@@ -956,8 +1004,7 @@ async fn handle_connect_test(
 }
 
 /// Interactive connection picker (when no args provided)
-async fn interactive_connect_picker(
-) -> Result<(String, Option<String>, ConnectionConfig, ConfigLocation)> {
+async fn interactive_connect_picker() -> Result<ConnectArgs> {
     use dialoguer::Select;
 
     // Get current project path
@@ -1017,13 +1064,150 @@ async fn interactive_connect_picker(
         // Ask for save location
         let location = prompt_save_location()?;
 
-        Ok((name.clone(), None, config.clone(), location))
+        // Re-saving an existing connection preserves its stored credential
+        // reference as-is; the picker never re-prompts for or scans credentials.
+        Ok(ConnectArgs {
+            name: name.clone(),
+            project_path: None,
+            config: config.clone(),
+            password_env: None,
+            password_command: None,
+            keychain_entry: None,
+            location,
+        })
+    }
+}
+
+/// A credential source chosen in the interactive wizard.
+///
+/// Each variant carries only what the user explicitly typed — an env var name,
+/// a command string, or a keychain service/account. The wizard never scans the
+/// environment, keychain, or filesystem to populate these; there is no ambient
+/// pickup or discovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WizardCredential {
+    /// Plaintext password typed directly.
+    Plaintext(String),
+    /// Name of an environment variable to read at connection time.
+    Env(String),
+    /// Shell command whose stdout yields the password at connection time.
+    Command(String),
+    /// OS keychain service + account reference.
+    Keychain { service: String, account: String },
+}
+
+/// Split a wizard credential choice into the persisted fields
+/// `(password, password_env, password_command, keychain_entry)`.
+///
+/// Only the user-typed reference is propagated. For indirect sources the inline
+/// `password` is `None` (resolved at use time); nothing here reads the
+/// environment, keychain, or filesystem.
+fn wizard_credential_fields(
+    cred: WizardCredential,
+) -> (Option<String>, Option<String>, Option<String>, Option<KeychainEntry>) {
+    match cred {
+        WizardCredential::Plaintext(p) => (Some(p), None, None, None),
+        WizardCredential::Env(var) => (None, Some(var), None, None),
+        WizardCredential::Command(cmd) => (None, None, Some(cmd), None),
+        WizardCredential::Keychain { service, account } => {
+            (None, None, None, Some(KeychainEntry { service, account }))
+        }
+    }
+}
+
+/// Validate that an indirect credential source resolves now, so the wizard fails
+/// fast instead of persisting a broken reference.
+///
+/// Error messages name the exact field the user must fix and never suggest a
+/// discovered alternative (no "did you mean" from a scan of the environment or
+/// keychain).
+fn validate_wizard_credential(cred: &WizardCredential) -> Result<()> {
+    match cred {
+        WizardCredential::Plaintext(_) => Ok(()),
+        WizardCredential::Env(var) => match std::env::var(var) {
+            Ok(v) if v.is_empty() => Err(PlenumError::invalid_input(format!(
+                "Environment variable {var} is set but empty — set {var} or choose a different credential source"
+            ))),
+            Ok(_) => Ok(()),
+            Err(_) => Err(PlenumError::invalid_input(format!(
+                "Environment variable {var} is not set — set {var} or choose a different credential source"
+            ))),
+        },
+        WizardCredential::Command(cmd) => plenum::config::run_password_command_pub(cmd)
+            .map(|_| ())
+            .map_err(|e| {
+                PlenumError::invalid_input(format!(
+                    "password command failed validation: {} — fix the command or choose a different credential source",
+                    e.message()
+                ))
+            }),
+        WizardCredential::Keychain { service, account } => {
+            plenum::config::lookup_keychain_password_pub(service, account).map(|_| ()).map_err(|e| {
+                PlenumError::invalid_input(format!(
+                    "keychain lookup for service '{service}' / account '{account}' failed: {} — fix the service/account or choose a different credential source",
+                    e.message()
+                ))
+            })
+        }
+    }
+}
+
+/// Prompt for how the password should be provided. The user always *types* the
+/// source reference; the wizard never lists or suggests discovered credentials.
+fn prompt_wizard_credential() -> Result<WizardCredential> {
+    use dialoguer::{Input, Password, Select};
+
+    let choices = vec![
+        "Enter password directly",
+        "Environment variable (you type the name)",
+        "Shell command (you type the command)",
+        "OS keychain (you type service + account)",
+    ];
+    let idx = Select::new()
+        .with_prompt("How should the password be provided?")
+        .items(&choices)
+        .default(0)
+        .interact()
+        .map_err(|e| PlenumError::invalid_input(format!("Selection failed: {e}")))?;
+
+    match idx {
+        0 => {
+            let pw: String = Password::new()
+                .with_prompt("Password")
+                .interact()
+                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
+            Ok(WizardCredential::Plaintext(pw))
+        }
+        1 => {
+            let var: String = Input::new()
+                .with_prompt("Environment variable name (e.g. PGPASSWORD)")
+                .interact_text()
+                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
+            Ok(WizardCredential::Env(var))
+        }
+        2 => {
+            let cmd: String = Input::new()
+                .with_prompt("Shell command to produce the password")
+                .interact_text()
+                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
+            Ok(WizardCredential::Command(cmd))
+        }
+        _ => {
+            let service: String = Input::new()
+                .with_prompt("Keychain service name")
+                .interact_text()
+                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
+            let account: String = Input::new()
+                .with_prompt("Keychain account name")
+                .interact_text()
+                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
+            Ok(WizardCredential::Keychain { service, account })
+        }
     }
 }
 
 /// Interactive connection wizard
-async fn interactive_connect_wizard(
-) -> Result<(String, Option<String>, ConnectionConfig, ConfigLocation)> {
+async fn interactive_connect_wizard() -> Result<ConnectArgs> {
     use dialoguer::{Input, Select};
 
     eprintln!("\n=== Create New Database Connection ===\n");
@@ -1037,8 +1221,8 @@ async fn interactive_connect_wizard(
         .map_err(|e| PlenumError::invalid_input(format!("Selection failed: {e}")))?;
     let engine = parse_engine(engine_choices[engine_idx])?;
 
-    // Build config based on engine type
-    let config = match engine {
+    // Build config and resolve any indirect credential reference based on engine type.
+    let (config, password_env, password_command, keychain_entry) = match engine {
         DatabaseType::Postgres | DatabaseType::MySQL => {
             let host: String = Input::new()
                 .with_prompt("Host")
@@ -1057,21 +1241,30 @@ async fn interactive_connect_wizard(
                 .interact_text()
                 .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
 
-            let password: String = dialoguer::Password::new()
-                .with_prompt("Password")
-                .interact()
-                .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
+            // Offer plaintext or an indirect credential source, validating that
+            // the chosen source resolves before we persist the reference.
+            let cred = prompt_wizard_credential()?;
+            validate_wizard_credential(&cred)?;
 
             let database: String = Input::new()
                 .with_prompt("Database name")
                 .interact_text()
                 .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
 
-            if engine == DatabaseType::Postgres {
-                ConnectionConfig::postgres(host, port, user, password, database)
-            } else {
-                ConnectionConfig::mysql(host, port, user, password, database)
-            }
+            let (password, p_env, p_cmd, keychain) = wizard_credential_fields(cred);
+
+            let config = ConnectionConfig {
+                engine,
+                host: Some(host),
+                port: Some(port),
+                user: Some(user),
+                // None for indirect sources — resolved at use time, never stored inline.
+                password,
+                database: Some(database),
+                file: None,
+                tls: None,
+            };
+            (config, p_env, p_cmd, keychain)
         }
         DatabaseType::SQLite | DatabaseType::DuckDB => {
             let file: String = Input::new()
@@ -1079,11 +1272,13 @@ async fn interactive_connect_wizard(
                 .interact_text()
                 .map_err(|e| PlenumError::invalid_input(format!("Input failed: {e}")))?;
 
-            if engine == DatabaseType::DuckDB {
+            let config = if engine == DatabaseType::DuckDB {
                 ConnectionConfig::duckdb(PathBuf::from(file))
             } else {
                 ConnectionConfig::sqlite(PathBuf::from(file))
-            }
+            };
+            // File-based engines have no authentication credential.
+            (config, None, None, None)
         }
     };
 
@@ -1098,7 +1293,15 @@ async fn interactive_connect_wizard(
     let location = prompt_save_location()?;
 
     // Use None for project_path (will default to current directory)
-    Ok((name, None, config, location))
+    Ok(ConnectArgs {
+        name,
+        project_path: None,
+        config,
+        password_env,
+        password_command,
+        keychain_entry,
+        location,
+    })
 }
 
 /// Non-interactive connect (with CLI args)
@@ -1260,7 +1463,15 @@ async fn non_interactive_connect(
         }
     };
 
-    Ok((conn_name, project_path, config, password_env, password_command, keychain_entry, location))
+    Ok(ConnectArgs {
+        name: conn_name,
+        project_path,
+        config,
+        password_env,
+        password_command,
+        keychain_entry,
+        location,
+    })
 }
 
 /// Prompt user for save location
@@ -1357,7 +1568,7 @@ async fn handle_introspect(
         // --diff-against-project-path overrides; otherwise fall back to the primary project path
         // (or current directory when neither is specified).
         let target_proj = diff_against_project_path.as_deref().or(project_path.as_deref());
-        let target_config = match plenum::resolve_connection(target_proj, Some(&target_name)) {
+        let target_config = match resolve_connection_cli(target_proj, Some(&target_name)) {
             Ok((cfg, _)) => cfg,
             Err(e) => {
                 let envelope = ErrorEnvelope::from_error(config.engine.as_str(), "introspect", &e);
@@ -1787,10 +1998,25 @@ async fn handle_query(
 }
 
 #[allow(clippy::future_not_send)]
-async fn handle_mcp() -> std::result::Result<(), i32> {
+async fn handle_mcp(
+    project_path: Option<String>,
+    name: Option<String>,
+    dsn_env: Option<String>,
+) -> std::result::Result<(), i32> {
     // Phase 7: MCP server using manual JSON-RPC 2.0 implementation
     // Follows the proven pattern from reflex-search (no unstable rmcp dependency)
-    match plenum::mcp::serve().await {
+    //
+    // Bind the connection source at server registration so resolution is
+    // decoupled from the launcher's cwd (REF-297).
+    let binding = match plenum::mcp::McpBinding::new(project_path, name, dsn_env) {
+        Ok(binding) => binding,
+        Err(e) => {
+            eprintln!("MCP server error: {e}");
+            return Err(1);
+        }
+    };
+
+    match plenum::mcp::serve(binding).await {
         Ok(()) => Ok(()),
         Err(e) => {
             // MCP server errors go to stderr (not stdout, which is for JSON-RPC)
@@ -1862,6 +2088,23 @@ fn build_tls_config(
 /// This helper resolves a connection from config or builds one from CLI arguments.
 /// Precedence: Named connection at project path → CLI arguments only
 /// Returns a tuple of (`ConnectionConfig`, `is_readonly`).
+/// Resolve a saved connection honoring an explicit `--project-path`.
+///
+/// When a project path is given, the connection is resolved from that project's
+/// own `.plenum/config.json` (merged with the global registry), matching the
+/// documented `--project-path /other/project` semantics and the way
+/// `plenum mcp --project-path` binds. When no project path is given, resolution
+/// falls back to the current working directory's local config.
+fn resolve_connection_cli(
+    project_path: Option<&str>,
+    name: Option<&str>,
+) -> Result<(ConnectionConfig, bool)> {
+    match project_path {
+        Some(path) => plenum::resolve_connection_in_project(path, name),
+        None => plenum::resolve_connection(None, name),
+    }
+}
+
 fn build_connection_config(
     name: Option<&str>,
     project_path: Option<&str>,
@@ -1885,7 +2128,7 @@ fn build_connection_config(
 
     let mut resolved_connection: Option<(ConnectionConfig, bool)> = if should_try_resolve {
         // Try to load connection from config
-        match plenum::resolve_connection(project_path, name) {
+        match resolve_connection_cli(project_path, name) {
             Ok(cfg_tuple) => Some(cfg_tuple),
             Err(_) if has_explicit_args => None, // Ignore error if explicit args provided as fallback
             Err(e) => return Err(e),             // Propagate error if no fallback
@@ -1985,5 +2228,92 @@ fn parse_engine(engine: &str) -> Result<DatabaseType> {
         _ => Err(PlenumError::invalid_input(format!(
             "Invalid engine '{engine}'. Must be postgres, mysql, sqlite, or duckdb"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wizard_env_credential_stores_only_typed_name() {
+        // Capability test: the typed env var name is stored verbatim; no inline
+        // password value is produced, and nothing is read from the environment.
+        let (password, p_env, p_cmd, keychain) =
+            wizard_credential_fields(WizardCredential::Env("PGPASSWORD".to_string()));
+        assert_eq!(p_env.as_deref(), Some("PGPASSWORD"));
+        assert!(password.is_none(), "indirect source must not store an inline password");
+        assert!(p_cmd.is_none());
+        assert!(keychain.is_none());
+    }
+
+    #[test]
+    fn wizard_command_credential_stores_only_typed_command() {
+        let (password, p_env, p_cmd, keychain) =
+            wizard_credential_fields(WizardCredential::Command("op read secret".to_string()));
+        assert_eq!(p_cmd.as_deref(), Some("op read secret"));
+        assert!(password.is_none());
+        assert!(p_env.is_none());
+        assert!(keychain.is_none());
+    }
+
+    #[test]
+    fn wizard_keychain_credential_stores_only_typed_service_account() {
+        let (password, p_env, p_cmd, keychain) =
+            wizard_credential_fields(WizardCredential::Keychain {
+                service: "plenum-db".to_string(),
+                account: "app".to_string(),
+            });
+        let entry = keychain.expect("keychain entry stored");
+        assert_eq!(entry.service, "plenum-db");
+        assert_eq!(entry.account, "app");
+        assert!(password.is_none());
+        assert!(p_env.is_none());
+        assert!(p_cmd.is_none());
+    }
+
+    #[test]
+    fn wizard_plaintext_credential_stores_inline_password() {
+        let (password, p_env, p_cmd, keychain) =
+            wizard_credential_fields(WizardCredential::Plaintext("hunter2".to_string()));
+        assert_eq!(password.as_deref(), Some("hunter2"));
+        assert!(p_env.is_none());
+        assert!(p_cmd.is_none());
+        assert!(keychain.is_none());
+    }
+
+    #[test]
+    fn wizard_validate_env_missing_names_the_field_to_fix() {
+        // A missing env var must fail fast and name the exact variable — never
+        // suggest a discovered alternative.
+        let var = "PLENUM_WIZARD_TEST_MISSING_XYZ";
+        // Ensure it is unset for the duration of this assertion.
+        assert!(std::env::var(var).is_err(), "test precondition: var must be unset");
+        let err = validate_wizard_credential(&WizardCredential::Env(var.to_string()))
+            .expect_err("missing env var must fail validation");
+        let msg = err.message();
+        assert!(msg.contains(var), "error should name the missing variable, got {msg:?}");
+        assert!(msg.contains("not set"), "error should explain it is unset, got {msg:?}");
+    }
+
+    #[test]
+    fn wizard_validate_env_present_passes() {
+        let var = "PLENUM_WIZARD_TEST_PRESENT_ABC";
+        std::env::set_var(var, "resolved-secret");
+        let result = validate_wizard_credential(&WizardCredential::Env(var.to_string()));
+        std::env::remove_var(var);
+        assert!(result.is_ok(), "present env var should pass validation");
+    }
+
+    #[test]
+    fn wizard_validate_env_empty_names_the_field_to_fix() {
+        let var = "PLENUM_WIZARD_TEST_EMPTY_DEF";
+        std::env::set_var(var, "");
+        let result = validate_wizard_credential(&WizardCredential::Env(var.to_string()));
+        std::env::remove_var(var);
+        let err = result.expect_err("empty env var must fail");
+        let msg = err.message();
+        assert!(msg.contains(var), "error should name the empty variable, got {msg:?}");
+        assert!(msg.contains("empty"), "error should explain it is empty, got {msg:?}");
     }
 }

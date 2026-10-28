@@ -1317,7 +1317,7 @@ mod tests {
         assert!(result.is_ok(), "Connection validation failed: {:?}", result.err());
 
         let info = result.unwrap();
-        assert!(!info.database_version.is_empty());
+        assert_ne!(info.database_version, "");
         assert!(info.server_info.contains("MySQL") || info.server_info.contains("MariaDB"));
     }
 
@@ -1337,7 +1337,7 @@ mod tests {
         assert!(result.is_ok(), "Wildcard connection validation failed: {:?}", result.err());
 
         let info = result.unwrap();
-        assert!(!info.database_version.is_empty());
+        assert_ne!(info.database_version, "");
         assert!(info.server_info.contains("MySQL") || info.server_info.contains("MariaDB"));
         assert_eq!(info.connected_database, "(no database selected)");
     }
@@ -1360,7 +1360,7 @@ mod tests {
 
         let query_result = result.unwrap();
         assert_eq!(query_result.columns.len(), 1);
-        assert!(!query_result.rows.is_empty());
+        assert_ne!(query_result.rows.len(), 0);
     }
 
     #[tokio::test]

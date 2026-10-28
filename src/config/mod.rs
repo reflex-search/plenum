@@ -457,6 +457,103 @@ pub fn load_with_precedence() -> Result<ConnectionRegistry> {
     }
 }
 
+/// Resolve a connection for a specific project directory.
+///
+/// Unlike [`resolve_connection`], this loads the local config from
+/// `<project_path>/.plenum/config.json` rather than from the current working
+/// directory. Required when `plenum mcp --project-path <path>` is invoked from
+/// a different directory than the project (e.g. MCP clients that start the
+/// server from `$HOME`).
+pub fn resolve_connection_in_project(
+    project_path: &str,
+    name: Option<&str>,
+) -> Result<(ConnectionConfig, bool)> {
+    // Load local config from the project directory itself, not from CWD.
+    let local_path = PathBuf::from(project_path).join(".plenum").join("config.json");
+    let global_path = global_config_path()?;
+    let registry = load_with_explicit_local(&local_path, &global_path)?;
+
+    // The project key stored by load_registry is the canonicalized parent of
+    // `.plenum/config.json`. Canonicalize the given path to match.
+    let canon = PathBuf::from(project_path)
+        .canonicalize()
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_string))
+        .unwrap_or_else(|| project_path.to_string());
+
+    resolve_from_registry(&registry, &canon, name)
+}
+
+/// Load a merged registry using an explicit local config path instead of CWD.
+///
+/// Merging semantics are identical to [`load_with_precedence`]: local wins for
+/// the same project path, global provides everything else.
+fn load_with_explicit_local(local_path: &Path, global_path: &Path) -> Result<ConnectionRegistry> {
+    match (local_path.exists(), global_path.exists()) {
+        (false, false) => Ok(ConnectionRegistry::default()),
+        (true, false) => load_registry(local_path),
+        (false, true) => load_registry(global_path),
+        (true, true) => {
+            let global_registry = load_registry(global_path)?;
+            let local_registry = load_registry(local_path)?;
+            let mut merged = global_registry;
+            for (project_path, local_project) in local_registry.projects {
+                let project_entry = merged.projects.entry(project_path).or_default();
+                for (conn_name, conn) in local_project.connections {
+                    project_entry.connections.insert(conn_name, conn);
+                }
+                if local_project.default.is_some() {
+                    project_entry.default = local_project.default;
+                }
+            }
+            Ok(merged)
+        }
+    }
+}
+
+/// Look up a named (or default) connection from a registry for a given project path.
+fn resolve_from_registry(
+    registry: &ConnectionRegistry,
+    path: &str,
+    name: Option<&str>,
+) -> Result<(ConnectionConfig, bool)> {
+    let project = registry.projects.get(path).ok_or_else(|| {
+        PlenumError::config_error(format!(
+            "No connections found for project path '{path}'. Run 'plenum connect' to create one."
+        ))
+    })?;
+
+    let conn_name = match name {
+        Some(n) => n.to_string(),
+        None => project
+            .default
+            .as_ref()
+            .ok_or_else(|| {
+                let available: Vec<_> = project.connections.keys().collect();
+                PlenumError::config_error(format!(
+                    "No default connection set for project '{path}'. \
+                         Available connections: {available:?}. \
+                         Specify one with --name or set a default in the config."
+                ))
+            })?
+            .clone(),
+    };
+
+    let stored = project.connections.get(&conn_name).ok_or_else(|| {
+        let available: Vec<_> = project.connections.keys().collect();
+        let default_info = match &project.default {
+            Some(d) => format!(" (default: '{d}')"),
+            None => String::new(),
+        };
+        PlenumError::config_error(format!(
+            "Connection '{conn_name}' not found for project '{path}'. \
+             Available connections: {available:?}{default_info}"
+        ))
+    })?;
+
+    stored.resolve()
+}
+
 /// Resolve a connection by project path and name
 ///
 /// Searches in merged view (both local and global configs).
@@ -479,46 +576,7 @@ pub fn resolve_connection(
     // Search in merged view (both local and global)
     let registry = load_with_precedence()?;
 
-    // Look up project in registry
-    let project = registry.projects.get(&path).ok_or_else(|| {
-        PlenumError::config_error(format!(
-            "No connections found for project path '{path}'. Run 'plenum connect' to create one."
-        ))
-    })?;
-
-    // Determine connection name (use provided or project's default)
-    let conn_name = match name {
-        Some(n) => n.to_string(),
-        None => {
-            // Use project's default
-            project
-                .default
-                .as_ref()
-                .ok_or_else(|| {
-                    let available: Vec<_> = project.connections.keys().collect();
-                    PlenumError::config_error(format!(
-                    "No default connection set for project '{path}'. Available connections: {available:?}. \
-                     Specify one with --name or set a default in the config."
-                ))
-                })?
-                .clone()
-        }
-    };
-
-    // Look up connection by name within project
-    let stored = project.connections.get(&conn_name).ok_or_else(|| {
-        let available: Vec<_> = project.connections.keys().collect();
-        let default_info = match &project.default {
-            Some(d) => format!(" (default: '{d}')"),
-            None => String::new(),
-        };
-        PlenumError::config_error(format!(
-            "Connection '{conn_name}' not found for project '{path}'. Available connections: {available:?}{default_info}"
-        ))
-    })?;
-
-    // Resolve environment variables and get readonly flag
-    stored.resolve()
+    resolve_from_registry(&registry, &path, name)
 }
 
 /// Save a connection to a config file
@@ -582,6 +640,66 @@ pub fn save_connection(
     }
 
     // Save registry
+    save_registry(&config_path, &registry)?;
+
+    Ok(())
+}
+
+/// Save a connection scoped to an explicit project directory.
+///
+/// Unlike [`save_connection`], the local config file is written to
+/// `<project_path>/.plenum/config.json` rather than `<cwd>/.plenum/config.json`.
+/// This is required by the MCP server, which is long-lived and started from an
+/// arbitrary cwd (Claude Desktop, editors, daemons) — the project path must be
+/// explicit, never inferred from cwd.
+///
+/// Credentials are persisted only as references (`password_env`,
+/// `password_command`, `keychain_entry`); no plaintext secret is ever written.
+///
+/// Only one of `password_env`, `password_command`, or `keychain_entry` may be `Some`.
+pub fn save_connection_in_project(
+    project_path: &str,
+    name: Option<String>,
+    config: ConnectionConfig,
+    password_env: Option<String>,
+    password_command: Option<String>,
+    keychain_entry: Option<KeychainEntry>,
+    location: ConfigLocation,
+) -> Result<()> {
+    let conn_name = name.unwrap_or_else(|| "default".to_string());
+
+    // Local config lives under the project directory itself; global is per-user.
+    let config_path = match location {
+        ConfigLocation::Local => PathBuf::from(project_path).join(".plenum").join("config.json"),
+        ConfigLocation::Global => global_config_path()?,
+    };
+
+    // Registry key: `save_registry` (local path) and `load_registry` both key by
+    // the canonicalized project root. Match that so lookups line up.
+    let key = PathBuf::from(project_path)
+        .canonicalize()
+        .ok()
+        .and_then(|p| p.to_str().map(String::from))
+        .unwrap_or_else(|| project_path.to_string());
+
+    let mut registry = if config_path.exists() {
+        load_registry(&config_path)?
+    } else {
+        ConnectionRegistry::default()
+    };
+
+    let project = registry.projects.entry(key).or_default();
+    let is_first_connection = project.connections.is_empty();
+
+    project.connections.insert(
+        conn_name.clone(),
+        StoredConnection { config, password_env, password_command, keychain_entry, readonly: None },
+    );
+
+    if is_first_connection {
+        project.default = Some(conn_name);
+    }
+
     save_registry(&config_path, &registry)?;
 
     Ok(())
@@ -1595,5 +1713,63 @@ mod tests {
         let result = stored.resolve();
         assert!(result.is_err());
         assert!(result.unwrap_err().message().contains("Only one password source"));
+    }
+
+    // --- save_connection_in_project tests ---
+
+    #[test]
+    fn test_save_connection_in_project_local_writes_by_reference() {
+        // Local save must write to <project>/.plenum/config.json and persist the
+        // credential reference (password_env) with NO plaintext password.
+        let project = std::env::temp_dir().join(format!(
+            "plenum-save-itest-{}-{:p}",
+            std::process::id(),
+            &0u8
+        ));
+        let _ = fs::remove_dir_all(&project);
+        fs::create_dir_all(&project).unwrap();
+        let project_str = project.to_str().unwrap().to_string();
+
+        let config = ConnectionConfig {
+            engine: DatabaseType::Postgres,
+            host: Some("db.example.com".to_string()),
+            port: Some(5432),
+            user: Some("agent".to_string()),
+            password: None,
+            database: Some("app".to_string()),
+            file: None,
+            tls: None,
+        };
+
+        save_connection_in_project(
+            &project_str,
+            Some("prod".to_string()),
+            config,
+            Some("DB_PASSWORD".to_string()),
+            None,
+            None,
+            ConfigLocation::Local,
+        )
+        .unwrap();
+
+        let written = fs::read_to_string(project.join(".plenum").join("config.json")).unwrap();
+        assert!(written.contains("\"password_env\""), "reference stored: {written}");
+        assert!(written.contains("DB_PASSWORD"), "env var name stored: {written}");
+        assert!(!written.contains("\"password\":"), "no plaintext password: {written}");
+        // First connection becomes the default pointer.
+        assert!(written.contains("\"default\""));
+        assert!(written.contains("prod"));
+
+        // Round-trip: load the file back and confirm the connection is keyed by
+        // the canonicalized project root with its reference intact.
+        let canon = project.canonicalize().unwrap();
+        let registry = load_registry(&project.join(".plenum").join("config.json")).unwrap();
+        let stored_project = registry.projects.get(canon.to_str().unwrap()).unwrap();
+        assert_eq!(stored_project.default.as_deref(), Some("prod"));
+        let stored = stored_project.connections.get("prod").unwrap();
+        assert_eq!(stored.password_env.as_deref(), Some("DB_PASSWORD"));
+        assert!(stored.config.password.is_none());
+
+        let _ = fs::remove_dir_all(&project);
     }
 }

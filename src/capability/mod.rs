@@ -73,40 +73,99 @@ fn preprocess_sql(sql: &str) -> Result<String> {
     Ok(processed)
 }
 
-/// Strip SQL comments from query
+/// Strip SQL comments from query.
 ///
 /// Handles:
-/// - Line comments: -- comment
-/// - Block comments: /* comment */
+/// - Line comments: `-- comment`
+/// - Block comments: `/* comment */`
+///
+/// The scan is quote-aware: a comment opener inside a `'...'` string literal,
+/// a `"..."` quoted identifier, or a `` `...` `` backtick identifier is data,
+/// not a comment. Without this, `SELECT '/*', ... , '*/'` would read the
+/// text between the two string literals as one block comment and hide it from
+/// the read-only checks (REF-305).
+///
+/// Executable comments (`/*! ... */`) and optimizer hints (`/*+ ... */`) are
+/// preserved verbatim rather than discarded: MySQL *executes* the body of a
+/// `/*! */` comment, so stripping it would hide SQL from the checks. Keeping
+/// the `/*!` / `/*+` marker lets [`is_read_only_mysql`] reject these outright
+/// (REF-305).
 fn strip_comments(sql: &str) -> String {
+    let chars: Vec<char> = sql.chars().collect();
     let mut result = String::new();
-    let mut chars = sql.chars().peekable();
+    let mut i = 0;
 
-    while let Some(ch) = chars.next() {
+    while i < chars.len() {
+        let ch = chars[i];
         match ch {
-            '-' if chars.peek() == Some(&'-') => {
-                // Line comment: skip until newline
-                chars.next(); // consume second '-'
-                for ch in chars.by_ref() {
-                    if ch == '\n' {
-                        result.push('\n'); // preserve newline
+            // Quoted region: copy verbatim up to and including the closing
+            // quote, honoring the doubled-quote escape (`''`, `""`, ` `` `).
+            '\'' | '"' | '`' => {
+                let quote = ch;
+                result.push(ch);
+                i += 1;
+                while i < chars.len() {
+                    result.push(chars[i]);
+                    if chars[i] == quote {
+                        if i + 1 < chars.len() && chars[i + 1] == quote {
+                            result.push(chars[i + 1]);
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
                         break;
                     }
+                    i += 1;
                 }
             }
-            '/' if chars.peek() == Some(&'*') => {
-                // Block comment: skip until */
-                chars.next(); // consume '*'
-                let mut prev = ' ';
-                for ch in chars.by_ref() {
-                    if prev == '*' && ch == '/' {
-                        break;
+            // Line comment: skip until newline, which is preserved.
+            '-' if i + 1 < chars.len() && chars[i + 1] == '-' => {
+                i += 2;
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                if i < chars.len() {
+                    result.push('\n');
+                    i += 1;
+                }
+            }
+            '/' if i + 1 < chars.len() && chars[i + 1] == '*' => {
+                let executable =
+                    i + 2 < chars.len() && (chars[i + 2] == '!' || chars[i + 2] == '+');
+                if executable {
+                    // Preserve `/*! ... */` / `/*+ ... */` verbatim so the
+                    // engine checks can see (and reject) it.
+                    result.push('/');
+                    result.push('*');
+                    i += 2;
+                    while i < chars.len() {
+                        result.push(chars[i]);
+                        if chars[i - 1] == '*' && chars[i] == '/' {
+                            i += 1;
+                            break;
+                        }
+                        i += 1;
                     }
-                    prev = ch;
+                } else {
+                    // Normal block comment: skip until `*/`, replace with a
+                    // space so tokens on either side do not merge.
+                    i += 2;
+                    let mut prev = ' ';
+                    while i < chars.len() {
+                        if prev == '*' && chars[i] == '/' {
+                            i += 1;
+                            break;
+                        }
+                        prev = chars[i];
+                        i += 1;
+                    }
+                    result.push(' ');
                 }
-                result.push(' '); // replace comment with space
             }
-            _ => result.push(ch),
+            _ => {
+                result.push(ch);
+                i += 1;
+            }
         }
     }
 
@@ -313,6 +372,71 @@ fn is_safe_cte_query(sql: &str) -> bool {
     sql.starts_with("WITH ") && scan_for_write_keyword(sql).is_none()
 }
 
+/// Scan an uppercase, comment-stripped SQL string for a PostgreSQL function
+/// that escapes read-only enforcement, respecting quoted regions.
+///
+/// Plenum's read-only session (`SET default_transaction_read_only = ON`)
+/// cannot stop these, because they do not write *through that session*:
+/// - `dblink*` opens a *second*, unconstrained session and runs arbitrary
+///   SQL there, including writes.
+/// - `lo_export` writes a file on the server; `lo_import` creates a large
+///   object. Both change state from inside a read-only transaction.
+///
+/// So they are read-only bypasses and are rejected before execution
+/// (REF-305). The session setting remains the backstop for everything else;
+/// a read-only database role is the defense this list cannot give (see
+/// SECURITY.md). This is a deliberately small blocklist, not SQL validation.
+fn scan_for_postgres_unsafe_function(sql: &str) -> Option<&'static str> {
+    const EXACT: &[&str] = &["LO_IMPORT", "LO_EXPORT"];
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match c {
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\'' {
+                        if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            _ if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                let token = &sql[start..i];
+                // The whole `dblink` family routes through a second session.
+                if token.starts_with("DBLINK") {
+                    return Some("DBLINK");
+                }
+                if let Some(kw) = EXACT.iter().find(|k| **k == token) {
+                    return Some(kw);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
 // PostgreSQL read-only check
 fn is_read_only_postgres(sql: &str) -> bool {
     // Strip EXPLAIN/EXPLAIN ANALYZE prefix
@@ -330,11 +454,15 @@ fn is_read_only_postgres(sql: &str) -> bool {
         // WRITE_KEYWORDS, and the scanner walks past `'...'` and
         // `"..."` quoted regions so `INTO` inside a string literal
         // or quoted identifier is not a false positive.
-        return scan_for_write_keyword(sql).is_none();
+        return scan_for_write_keyword(sql).is_none()
+            && scan_for_postgres_unsafe_function(sql).is_none();
     }
 
-    is_safe_cte_query(sql)
-        || sql.starts_with("BEGIN")
+    if sql.starts_with("WITH ") {
+        return is_safe_cte_query(sql) && scan_for_postgres_unsafe_function(sql).is_none();
+    }
+
+    sql.starts_with("BEGIN")
         || sql.starts_with("COMMIT")
         || sql.starts_with("ROLLBACK")
         || sql.starts_with("START TRANSACTION")
@@ -342,8 +470,57 @@ fn is_read_only_postgres(sql: &str) -> bool {
         || sql.starts_with("RELEASE")
 }
 
+/// Scan a comment-stripped SQL string for a MySQL executable comment
+/// (`/*! ... */`) or optimizer hint (`/*+ ... */`), skipping quoted regions.
+///
+/// [`strip_comments`] preserves these markers verbatim (it discards only
+/// ordinary comments), so any `/*!` / `/*+` found outside a quote here is a
+/// real executable comment, and `/*!` inside a string literal
+/// (e.g. `SELECT '/*!'`) is correctly ignored.
+fn contains_mysql_executable_comment(sql: &str) -> bool {
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' | b'`' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == quote {
+                        if i + 1 < bytes.len() && bytes[i + 1] == quote {
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'/' if i + 2 < bytes.len()
+                && bytes[i + 1] == b'*'
+                && (bytes[i + 2] == b'!' || bytes[i + 2] == b'+') =>
+            {
+                return true;
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
 // MySQL read-only check
 fn is_read_only_mysql(sql: &str) -> bool {
+    // MySQL executes the body of a `/*! ... */` conditional comment, so it can
+    // hide arbitrary SQL from static inspection (e.g.
+    // `SELECT 1 /*!80000 INTO OUTFILE '...' */`). We cannot safely classify
+    // what the server will run, so reject outright (REF-305). Optimizer hints
+    // (`/*+ ... */`) are rejected too — an agent has no read-only need for
+    // either form.
+    if contains_mysql_executable_comment(sql) {
+        return false;
+    }
+
     // Strip EXPLAIN prefix
     let sql = strip_explain_prefix(sql);
     let sql = sql.trim();
@@ -848,6 +1025,44 @@ mod tests {
         );
     }
 
+    // REF-305: a `SELECT` is read-only in Plenum's session, but these
+    // functions escape it — `dblink*` runs SQL in a second session, and
+    // `lo_export` / `lo_import` touch the server filesystem / large objects.
+    #[test]
+    fn test_postgres_dblink_rejected() {
+        assert_rejected(
+            "SELECT dblink_exec('dbname=app', 'DELETE FROM users')",
+            DatabaseType::Postgres,
+        );
+        assert_rejected(
+            "SELECT * FROM dblink('dbname=app', 'DELETE FROM users RETURNING id') AS t(id int)",
+            DatabaseType::Postgres,
+        );
+    }
+
+    #[test]
+    fn test_postgres_large_object_file_functions_rejected() {
+        assert_rejected("SELECT lo_export(16388, '/tmp/leak')", DatabaseType::Postgres);
+        assert_rejected("SELECT lo_import('/etc/passwd')", DatabaseType::Postgres);
+    }
+
+    // The blocklist must not reject these inside a CTE either.
+    #[test]
+    fn test_postgres_dblink_in_cte_rejected() {
+        assert_rejected(
+            "WITH t AS (SELECT dblink_exec('dbname=app', 'DELETE FROM users')) SELECT * FROM t",
+            DatabaseType::Postgres,
+        );
+    }
+
+    // A column or string that merely contains the substring must stay allowed:
+    // the scan matches whole identifier tokens and skips quoted regions.
+    #[test]
+    fn test_postgres_unsafe_function_substring_allowed() {
+        assert_allowed("SELECT lo_exported FROM audit", DatabaseType::Postgres);
+        assert_allowed("SELECT 'call lo_export here' AS note", DatabaseType::Postgres);
+    }
+
     // MySQL read-only tests
 
     #[test]
@@ -970,6 +1185,42 @@ mod tests {
             DatabaseType::MySQL,
         );
         assert!(result.is_err());
+    }
+
+    // REF-305: a `/*` comment opener inside a string literal must not hide
+    // SQL from the read-only checks. `strip_comments` is quote-aware, so the
+    // `INTO OUTFILE` between the two string literals stays visible.
+    #[test]
+    fn test_mysql_comment_marker_in_string_does_not_hide_outfile() {
+        assert_rejected(
+            "SELECT '/*', 1 INTO OUTFILE '/var/lib/mysql-files/x' FROM DUAL WHERE '*/' <> ''",
+            DatabaseType::MySQL,
+        );
+    }
+
+    // REF-305: MySQL executes the body of a `/*! ... */` conditional comment,
+    // so an executable comment is rejected outright on every engine path.
+    #[test]
+    fn test_mysql_executable_comment_rejected() {
+        assert_rejected(
+            "SELECT 1 /*!80000 INTO OUTFILE '/var/lib/mysql-files/x' */",
+            DatabaseType::MySQL,
+        );
+        assert_rejected("SELECT 1 /*!80000 UNION SELECT 2 */", DatabaseType::MySQL);
+    }
+
+    // REF-305: an optimizer hint `/*+ ... */` is an executable comment form
+    // too; an agent has no read-only need for it, so it is rejected.
+    #[test]
+    fn test_mysql_optimizer_hint_rejected() {
+        assert_rejected("SELECT /*+ MAX_EXECUTION_TIME(1) */ 1", DatabaseType::MySQL);
+    }
+
+    // REF-305: a literal `/*!` that lives inside a string is data, not an
+    // executable comment — it must still be allowed.
+    #[test]
+    fn test_mysql_executable_marker_inside_string_allowed() {
+        assert_allowed("SELECT '/*!80000 nope */' AS literal", DatabaseType::MySQL);
     }
 
     // SQLite read-only tests

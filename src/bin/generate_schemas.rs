@@ -6,7 +6,10 @@
 //! Run this whenever output types change to keep the checked-in schemas in sync.
 //! The drift test in `tests/schema_drift.rs` fails if schemas are stale.
 
-use plenum::{ConnectionInfo, ErrorEnvelope, IntrospectResult, QueryResult, SuccessEnvelope};
+use plenum::{
+    ConnectSaveResult, ConnectionInfo, ErrorEnvelope, IntrospectResult, QueryResult,
+    SuccessEnvelope,
+};
 use schemars::schema_for;
 use std::fs;
 
@@ -14,6 +17,7 @@ fn main() {
     let schemas: &[(&str, schemars::schema::RootSchema)] = &[
         ("schemas/error_envelope.json", schema_for!(ErrorEnvelope)),
         ("schemas/connect_success.json", schema_for!(SuccessEnvelope<ConnectionInfo>)),
+        ("schemas/connect_save_success.json", schema_for!(SuccessEnvelope<ConnectSaveResult>)),
         ("schemas/introspect_success.json", schema_for!(SuccessEnvelope<IntrospectResult>)),
         ("schemas/query_success.json", schema_for!(SuccessEnvelope<QueryResult>)),
     ];

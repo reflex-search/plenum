@@ -40,6 +40,70 @@ cargo build --release
 - Rust 1.70 or later
 - Supported platforms: Linux, macOS, Windows
 
+## Zero to Query
+
+Two paths from nothing to a working query result.
+
+### Path A — CLI-first (recommended for most setups)
+
+**1. Save a connection:**
+
+```bash
+# Save a PostgreSQL connection to the current project (password via env var — never plaintext)
+plenum connect --name dev --engine postgres \
+  --host localhost --port 5432 --user myuser \
+  --password-env PGPASSWORD --database mydb --save local
+```
+
+**2. Query immediately:**
+
+```bash
+plenum query --sql "SELECT COUNT(*) FROM users"
+# => {"ok":true,"engine":"postgres","command":"query","data":{"rows":[{"count":42}]},"meta":{...}}
+```
+
+Plenum resolves the `dev` connection automatically from `.plenum/config.json` because it is the default for this project directory.
+
+---
+
+### Path B — MCP-first (for AI coding agents via Claude Desktop or editors)
+
+Register Plenum in your MCP client config with the project path bound at registration time. **You must supply `--project-path`** — see the [cwd-Coupling Warning](#cwd-coupling-warning) below.
+
+**Option 1 — use a saved named connection:**
+
+```json
+{
+  "mcpServers": {
+    "plenum": {
+      "command": "plenum",
+      "args": ["mcp", "--project-path", "/abs/path/to/your/project", "--name", "dev"]
+    }
+  }
+}
+```
+
+Run `plenum connect` first (Path A) to save the connection, then add the stanza above.
+
+**Option 2 — use a DSN from a named env var (no saved config needed):**
+
+```json
+{
+  "mcpServers": {
+    "plenum": {
+      "command": "plenum",
+      "args": ["mcp", "--dsn-env", "DATABASE_URL"]
+    }
+  }
+}
+```
+
+`DATABASE_URL` is read at connection time from that env var only. No ambient credential scanning.
+
+Once the MCP server is running the agent can call the `query` tool without any further setup.
+
+---
+
 ## Usage
 
 Plenum provides exactly three commands:
@@ -355,29 +419,63 @@ Agents should:
 
 ## MCP Integration
 
-Plenum exposes functionality via MCP (Model Context Protocol) server:
+Plenum exposes all three CLI commands as MCP tools via a local MCP server. The server is started with `plenum mcp` and connection binding is controlled at registration time:
 
 ```bash
-# Start MCP server (hidden command, for AI agent use)
-plenum mcp
+plenum mcp --project-path /abs/path/to/project          # pin to a project (recommended)
+plenum mcp --project-path /abs/path/to/project --name prod  # pin to a named connection
+plenum mcp --dsn-env DATABASE_URL                        # read DSN from a named env var
 ```
 
-Configure in your MCP client:
+### cwd-Coupling Warning
+
+When `plenum mcp` is started **without** `--project-path` or `--dsn-env`, connection resolution falls back to the server process's working directory. MCP clients (Claude Desktop, editors, daemons) launch `plenum mcp` from arbitrary directories — often not your project root. The result is a failed resolution, not a wrong connection: the tool call fails with a structured error that names the missing flag to add.
+
+**Always supply `--project-path` or `--dsn-env` in your `mcpServers` stanza.**
+
+### mcpServers configuration
+
 ```json
 {
   "mcpServers": {
     "plenum": {
       "command": "plenum",
-      "args": ["mcp"]
+      "args": ["mcp", "--project-path", "/abs/path/to/your/project", "--name", "dev"]
     }
   }
 }
 ```
 
-Each CLI command maps to an MCP tool:
-- `connect` → Validate and save database connections
-- `introspect` → Retrieve schema information
-- `query` → Execute constrained SQL queries
+### MCP tools
+
+Each CLI command maps to one MCP tool. Tool-call arguments mirror the CLI flags and take precedence over the binding set at server start.
+
+#### `connect` tool
+
+Validates and persists a database connection **by credential reference**. Inline plaintext passwords and `password_command` are rejected with `CAPABILITY_VIOLATION` at the MCP boundary — never pass raw secrets through tool arguments.
+
+| Field | Description |
+|-------|-------------|
+| `engine` | `postgres`, `mysql`, `sqlite`, or `duckdb` |
+| `host`, `port`, `user`, `database` | Server coordinates (postgres/mysql) |
+| `file` | File path (sqlite/duckdb) |
+| `password_env` | Name of env var holding the password |
+| `keychain_service` + `keychain_account` | OS keychain lookup pair (both required together) |
+| `save` | `"local"` (`.plenum/config.json`) or `"global"` (`~/.config/plenum/connections.json`) |
+| `project_path` | Absolute path of the project to save the connection under |
+| `name` | Connection name (defaults to `"default"`) |
+
+At most one credential-reference source (`password_env` or the keychain pair) may be supplied per call.
+
+`password_command` is rejected on every MCP tool because it executes a shell command. Accepting it from tool arguments would let an agent run arbitrary commands on the host. Use `--password-command` from the CLI (`plenum connect`) instead — a human types it there.
+
+#### `introspect` tool
+
+Retrieves schema information. Accepts the same credential-reference fields (`password_env`, `keychain_service`/`keychain_account`) for one-off explicit connections — secrets are resolved at connect time and never appear in tool arguments or logs.
+
+#### `query` tool
+
+Executes a constrained, read-only SQL query. Accepts the same credential-reference fields as `introspect`.
 
 ## Architecture
 
@@ -401,6 +499,15 @@ Credentials are stored as **plaintext JSON** in config files:
 - Use `password_env` for production (environment variables)
 - Secure config files with OS-level permissions (`chmod 600`)
 - Avoid `--password` CLI flag (visible in process listings)
+
+#### Credential Sourcing Safety Rules
+
+Plenum's credential sourcing is deterministic and reference-based. These rules hold unconditionally:
+
+1. **Explicit reference only** — The MCP `connect` tool rejects inline plaintext passwords with `CAPABILITY_VIOLATION`. Credentials flow through Plenum only as named references (`password_env`, `keychain_service`/`keychain_account`). MCP tools reject `password_command` because it executes a shell command; it is available only from the CLI. The CLI `--password` flag is available but strongly discouraged (visible in process listings and shell history).
+2. **No ambient pickup** — `--dsn-env` reads exactly the one env var you name. Plenum never scans `DATABASE_URL`, `PGPASSWORD`, or any other ambient variable on its own.
+3. **No scanning** — Plenum reads only the two fixed config file paths (`.plenum/config.json` and `~/.config/plenum/connections.json`). No directory walking, no inference from arbitrary paths.
+4. **Deterministic resolution** — Given the same `--project-path`, `--name`, and env vars, the same connection is always resolved. The precedence order is: explicit CLI flags → local config → global config → structured error.
 
 #### Security Reporting
 

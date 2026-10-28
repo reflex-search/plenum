@@ -1,0 +1,178 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SuccessEnvelope_for_ConnectSaveResult",
+  "description": "Success envelope for operation results\n\nGeneric over the data type to support different operation return values.",
+  "type": "object",
+  "required": [
+    "command",
+    "data",
+    "engine",
+    "meta",
+    "ok"
+  ],
+  "properties": {
+    "command": {
+      "description": "Command that was executed (connect, introspect, query)",
+      "type": "string"
+    },
+    "data": {
+      "description": "Operation-specific data",
+      "allOf": [
+        {
+          "$ref": "#/definitions/ConnectSaveResult"
+        }
+      ]
+    },
+    "engine": {
+      "description": "Database engine used for this operation (postgres, mysql, sqlite)",
+      "type": "string"
+    },
+    "meta": {
+      "description": "Execution metadata",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Metadata"
+        }
+      ]
+    },
+    "ok": {
+      "description": "Always true for success envelopes",
+      "type": "boolean"
+    }
+  },
+  "definitions": {
+    "ConnectSaveResult": {
+      "description": "Success `data` payload emitted by `plenum connect --save` after a connection is persisted.\n\nTyping this envelope — rather than assembling it inline via `serde_json::json!` at the call site — keeps the emitted shape, including the nested [`McpStanza`], under `generate-schemas` + `tests/schema_drift.rs` coverage so the stanza cannot drift without a failing test.",
+      "type": "object",
+      "required": [
+        "connection_name",
+        "engine",
+        "mcp_stanza",
+        "message",
+        "saved_to"
+      ],
+      "properties": {
+        "connection_name": {
+          "description": "Name the connection was saved under.",
+          "type": "string"
+        },
+        "engine": {
+          "description": "Database engine of the saved connection (postgres, mysql, sqlite).",
+          "type": "string"
+        },
+        "mcp_stanza": {
+          "description": "Ready-to-paste MCP server stanza for the saved connection.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpStanza"
+            }
+          ]
+        },
+        "message": {
+          "description": "Human-readable confirmation message.",
+          "type": "string"
+        },
+        "saved_to": {
+          "description": "Where the connection was persisted: `\"local\"` or `\"global\"`.",
+          "type": "string"
+        }
+      }
+    },
+    "McpServerConfig": {
+      "description": "A single MCP server entry within an [`McpStanza`].\n\nMirrors the shape MCP hosts expect under `mcpServers.<name>`: an executable plus the exact argv used to launch Plenum's MCP server for the saved connection.",
+      "type": "object",
+      "required": [
+        "args",
+        "command"
+      ],
+      "properties": {
+        "args": {
+          "description": "Arguments passed to the executable. Reflects the W1 launch flags (`mcp --project-path <path> --name <name>`) for the connection just saved.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "command": {
+          "description": "Executable to launch (always `\"plenum\"`).",
+          "type": "string"
+        }
+      }
+    },
+    "McpStanza": {
+      "description": "Ready-to-paste `mcpServers` configuration block emitted after `plenum connect` saves a connection.\n\nThe agent operator can copy this verbatim into an MCP host config (e.g. `claude_desktop_config.json`) to wire up the Plenum MCP server for the saved connection without consulting setup documentation.\n\nOnly the connection's project path and name are encoded — never a credential or secret. Indirect credential sources remain resolved at connection time by the stored connection reference.",
+      "type": "object",
+      "required": [
+        "mcpServers"
+      ],
+      "properties": {
+        "mcpServers": {
+          "description": "Map of MCP server name to launch config. Always contains a single `\"plenum\"` entry.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/McpServerConfig"
+          }
+        }
+      }
+    },
+    "Metadata": {
+      "description": "Execution metadata included in all responses",
+      "type": "object",
+      "required": [
+        "contract_version",
+        "execution_ms"
+      ],
+      "properties": {
+        "contract_version": {
+          "description": "Output contract version — agents use this to guard against silent breaking changes",
+          "type": "string"
+        },
+        "execution_ms": {
+          "description": "Execution time in milliseconds",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "has_more": {
+          "description": "Whether more rows are available beyond this page (query results only)",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "next_offset": {
+          "description": "Offset to pass as --offset for the next page (present only when `has_more` is true)",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "rows_returned": {
+          "description": "Number of rows returned (for query results, None for other operations)",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "rows_truncated": {
+          "description": "Whether the result set was capped by `max_rows` (query results only)",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "truncated_by": {
+          "description": "Why the result was truncated: \"bytes\" when `max_bytes` triggered the cut; absent for row-count truncation or when rows are not truncated",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}
