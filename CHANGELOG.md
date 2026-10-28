@@ -67,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `plenum connect --project-path X --save local` reported success but persisted nothing when run from another directory; it now writes `X/.plenum/config.json` ([REF-303](/REF/issues/REF-303))
 - DuckDB: compile against `duckdb` 1.10506.0, where `Value` is `#[non_exhaustive]`; `UHUGEINT` converts to a string, `GEOMETRY` (WKB) to Base64, and an unknown value type is a structured `QUERY_FAILED` error instead of a guess
 - Build/lint: satisfy Rust 1.99 `clippy` lints (`unused_async_trait_impl`, `assert_is_empty`)
+- Build: pin DuckDB to `=1.10506.0` so `aarch64-unknown-linux-gnu` release binaries link; a newer duckdb-rs regressed aarch64 static-extension linking under GNU ld ([duckdb-rs #920](https://github.com/duckdb/duckdb-rs/issues/920))
 
 ### Security
 
