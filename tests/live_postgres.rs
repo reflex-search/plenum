@@ -12,6 +12,8 @@
 //! - query allowed: SELECT, EXPLAIN, EXPLAIN ANALYZE, transaction control
 //! - query denied: writes/DDL → `CAPABILITY_VIOLATION` with DB state proven
 //!   unchanged afterwards
+//! - side effects: statements the classifier accepts (`dblink`, `lo_export`,
+//!   writing functions, `'/*'` inside strings) are refused and change nothing
 //! - safety: `max_rows` truncation on the >1,000-row table, `timeout_ms`
 //!   via `pg_sleep()`
 //! - envelope: required fields from `schemas/*.json`, deterministic output
@@ -929,6 +931,166 @@ fn postgres16_query_denied_writes_leave_state_unchanged() {
         Some(4),
         "order_items row count changed after denied TRUNCATE"
     );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+// ===== query: side effects inside accepted statements =====
+
+/// A statement the classifier accepts as read-only, and a scalar check that
+/// returns `true` while the database is unchanged.
+struct SideEffectCase {
+    sql: String,
+    unchanged: String,
+}
+
+/// A per-run marker for the probes to write. A leak from an earlier run on a
+/// kept container cannot then hide or fake a result in this run.
+fn side_effect_marker(prefix: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is before the Unix epoch")
+        .as_nanos();
+    format!("{prefix}_{}_{nanos}", std::process::id())
+}
+
+/// Check SQL that returns `true` while no canary row carries `note`.
+fn canary_unchanged(note: &str) -> String {
+    format!("SELECT count(*) = 0 FROM side_effect_canary WHERE note = '{note}'")
+}
+
+/// Fail fast unless `03_side_effects.sql` is loaded and the connection is a
+/// superuser. Without them the probes fail for the wrong reason, and the
+/// suite would false-pass.
+fn require_side_effect_seed(home: &Path, dsn: &str) {
+    let ready = scalar_query(
+        home,
+        dsn,
+        "SELECT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) \
+         AND EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'dblink') \
+         AND EXISTS (SELECT 1 FROM pg_largeobject_metadata WHERE oid = 4242) \
+         AND to_regclass('side_effect_canary') IS NOT NULL",
+    );
+    assert_eq!(
+        ready,
+        Value::Bool(true),
+        "side-effect probes need a superuser connection and the objects from \
+         tests/live/seed/postgres/03_side_effects.sql. Recreate the containers: \
+         docker compose -f tests/live/compose.yaml down --volumes"
+    );
+}
+
+/// Run every case and describe each leak. A case leaks when Plenum reports
+/// success, or when its check shows a change. All cases run, so one failure
+/// shows the full picture.
+///
+/// The invariant is "refused, and nothing changed". The error code is not
+/// pinned: the capability layer or the server may be the one that refuses.
+fn side_effect_leaks(home: &Path, dsn: &str, cases: &[SideEffectCase]) -> Vec<String> {
+    let mut leaks = Vec::new();
+    for case in cases {
+        let (code, stdout) = run_plenum(home, &["query", "--dsn", dsn, "--sql", &case.sql]);
+        let envelope: Value = serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|e| panic!("stdout is not valid JSON ({e}): {stdout:?}"));
+        if code == 0 || envelope.get("ok") != Some(&Value::Bool(false)) {
+            leaks.push(format!("accepted {:?}: {envelope}", case.sql));
+        }
+        if scalar_query(home, dsn, &case.unchanged) != Value::Bool(true) {
+            leaks
+                .push(format!("state changed by {:?}: {:?} is not true", case.sql, case.unchanged));
+        }
+    }
+    leaks
+}
+
+/// Functions called from a plain `SELECT` must not change anything. The
+/// session is read-only, but `dblink` opens a second session that is not,
+/// and `lo_export` writes a file on the server. A writing function and
+/// `nextval` run inside the read-only session, so the server refuses them.
+#[test]
+#[ignore = "requires live DB (scripts/test-live.sh)"]
+fn postgres16_query_side_effect_functions_leave_state_unchanged() {
+    let dsn = require_dsn(POSTGRES_DSN_VAR);
+    let parts = parse_dsn(&dsn);
+    let home = scratch_home("side_effect_functions");
+    require_side_effect_seed(&home, &dsn);
+
+    let marker = side_effect_marker("fn");
+    let dblink_target =
+        format!("dbname={} user={} password={}", parts.database, parts.user, parts.password);
+    let export_path = format!("/tmp/plenum_{marker}_lo_export");
+    let sequence_before = scalar_query(&home, &dsn, "SELECT last_value FROM type_matrix_id_seq");
+
+    let cases = [
+        SideEffectCase {
+            sql: format!(
+                "SELECT dblink_exec('{dblink_target}', \
+                 'INSERT INTO side_effect_canary (note) VALUES (''{marker}_dblink_exec'')')"
+            ),
+            unchanged: canary_unchanged(&format!("{marker}_dblink_exec")),
+        },
+        SideEffectCase {
+            sql: format!(
+                "SELECT * FROM dblink('{dblink_target}', \
+                 'INSERT INTO side_effect_canary (note) VALUES (''{marker}_dblink'') RETURNING note') \
+                 AS t(note text)"
+            ),
+            unchanged: canary_unchanged(&format!("{marker}_dblink")),
+        },
+        SideEffectCase {
+            sql: format!("SELECT lo_export(4242, '{export_path}')"),
+            unchanged: format!("SELECT (pg_stat_file('{export_path}', true)).size IS NULL"),
+        },
+        SideEffectCase {
+            sql: format!("SELECT side_effect_write('{marker}_function')"),
+            unchanged: canary_unchanged(&format!("{marker}_function")),
+        },
+        SideEffectCase {
+            sql: "SELECT nextval('type_matrix_id_seq')".to_string(),
+            unchanged: format!("SELECT last_value = {sequence_before} FROM type_matrix_id_seq"),
+        },
+    ];
+
+    let leaks = side_effect_leaks(&home, &dsn, &cases);
+    assert!(leaks.is_empty(), "side effects leaked:\n{}", leaks.join("\n"));
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// A `/*` inside a string literal must not hide SQL from the read-only
+/// check. The classifier strips comments without tracking quotes, so it
+/// reads `'/*' … '*/'` as one comment. `PostgreSQL` refuses both forms
+/// today (read-only transaction, one statement per prepare). This test
+/// keeps it that way.
+#[test]
+#[ignore = "requires live DB (scripts/test-live.sh)"]
+fn postgres16_query_comment_markers_leave_state_unchanged() {
+    let dsn = require_dsn(POSTGRES_DSN_VAR);
+    let home = scratch_home("comment_markers");
+    require_side_effect_seed(&home, &dsn);
+
+    let marker = side_effect_marker("cm");
+
+    let cases = [
+        SideEffectCase {
+            sql: format!(
+                "WITH a AS (SELECT '/*'), \
+                 w AS (INSERT INTO side_effect_canary (note) VALUES ('{marker}_cte') RETURNING 1) \
+                 SELECT '*/' FROM w"
+            ),
+            unchanged: canary_unchanged(&format!("{marker}_cte")),
+        },
+        SideEffectCase {
+            sql: format!(
+                "SELECT '/*'; INSERT INTO side_effect_canary (note) VALUES ('{marker}_multi'); \
+                 SELECT '*/'"
+            ),
+            unchanged: canary_unchanged(&format!("{marker}_multi")),
+        },
+    ];
+
+    let leaks = side_effect_leaks(&home, &dsn, &cases);
+    assert!(leaks.is_empty(), "side effects leaked:\n{}", leaks.join("\n"));
 
     let _ = std::fs::remove_dir_all(&home);
 }

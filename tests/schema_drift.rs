@@ -3,7 +3,10 @@
 //!
 //! When this test fails, run `cargo run --bin generate-schemas` to regenerate.
 
-use plenum::{ConnectionInfo, ErrorEnvelope, IntrospectResult, QueryResult, SuccessEnvelope};
+use plenum::{
+    ConnectSaveResult, ConnectionInfo, ErrorEnvelope, IntrospectResult, QueryResult,
+    SuccessEnvelope,
+};
 use schemars::schema_for;
 
 fn expected_schema(schema: &schemars::schema::RootSchema) -> String {
@@ -34,6 +37,16 @@ fn connect_success_schema_not_stale() {
     assert_eq!(
         on_disk, generated,
         "schemas/connect_success.json is stale — run: cargo run --bin generate-schemas"
+    );
+}
+
+#[test]
+fn connect_save_success_schema_not_stale() {
+    let generated = expected_schema(&schema_for!(SuccessEnvelope<ConnectSaveResult>));
+    let on_disk = on_disk("connect_save_success.json");
+    assert_eq!(
+        on_disk, generated,
+        "schemas/connect_save_success.json is stale — run: cargo run --bin generate-schemas"
     );
 }
 
