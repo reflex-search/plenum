@@ -1353,6 +1353,39 @@ async fn execute_query(
 mod tests {
     use super::*;
 
+    // ── JSON-RPC method routing (regression for PR #13 / MCP spec) ──────────
+
+    #[tokio::test]
+    async fn ping_returns_empty_result_not_an_error() {
+        // `ping` is REQUIRED by the MCP spec. Before it was routed, it fell
+        // through to the unknown-method arm and came back as a -32603 error,
+        // which strict clients treat as an unhealthy server.
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(1)),
+            method: "ping".to_string(),
+            params: None,
+        };
+        let resp = handle_request(req, &McpBinding::default()).await;
+        assert!(resp.error.is_none(), "ping must not error: {:?}", resp.error);
+        assert_eq!(resp.result, Some(serde_json::json!({})), "ping result must be an empty object");
+    }
+
+    #[tokio::test]
+    async fn unknown_method_returns_json_rpc_method_not_found() {
+        // JSON-RPC 2.0: an unimplemented method is -32601 (Method not found),
+        // never -32603 (Internal error, i.e. the server itself failed).
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(7)),
+            method: "does/not/exist".to_string(),
+            params: None,
+        };
+        let resp = handle_request(req, &McpBinding::default()).await;
+        let err = resp.error.expect("unknown method must produce an error");
+        assert_eq!(err.code, -32601, "unknown method must map to METHOD_NOT_FOUND");
+    }
+
     // ── McpBinding construction / conflict rules ────────────────────────────
 
     #[test]

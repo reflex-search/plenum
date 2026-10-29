@@ -468,3 +468,41 @@ fn connect_test_and_save_are_mutually_exclusive() {
 
     cleanup(&dir);
 }
+
+/// Regression for the `DuckDB` CLI engine gate (PR #12): the `--engine`
+/// `value_parser` arrays omitted `duckdb`, so clap rejected `--engine duckdb`
+/// with "invalid value 'duckdb'" before any Plenum logic ran — even though
+/// `DuckDB` is a first-class engine. A non-interactive `connect --save` must now
+/// accept it and persist a `DuckDB` connection.
+#[test]
+fn connect_accepts_duckdb_engine() {
+    let dir = unique_tmp_dir("duckdb_engine");
+    let db_path = dir.join("analytics.duckdb");
+
+    let (code, stdout, stderr) = run_connect(
+        &dir,
+        &[],
+        &["--engine", "duckdb", "--file", db_path.to_str().expect("utf-8 path"), "--save", "local"],
+    );
+
+    // clap must not reject the engine value before Plenum logic runs.
+    assert!(
+        !stderr.contains("invalid value 'duckdb'"),
+        "clap rejected --engine duckdb: stderr={stderr}"
+    );
+    assert_eq!(code, 0, "expected success, stdout={stdout} stderr={stderr}");
+
+    let envelope: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("non-JSON stdout {stdout:?}: {e}"));
+    assert_eq!(envelope.get("ok").and_then(Value::as_bool), Some(true));
+
+    // The persisted connection records the `DuckDB` engine.
+    let cfg_path = dir.join(".plenum").join("config.json");
+    let contents = std::fs::read_to_string(&cfg_path).expect("local config written");
+    assert!(
+        contents.to_lowercase().contains("duckdb"),
+        "config should record the duckdb engine: {contents}"
+    );
+
+    cleanup(&dir);
+}
