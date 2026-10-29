@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- DuckDB: unpinned to `1.20000.1` now that duckdb-rs #923 fixes aarch64 static-extension linking; 2.1.0 pinned `=1.10506.0` to dodge the broken 1.20000.0 ([duckdb-rs #920](https://github.com/duckdb/duckdb-rs/issues/920))
 - SQLite: tighten read-only `PRAGMA` allowlist ([REF-44](/REF/issues/REF-44))
 - Code style: `rustfmt` and `clippy` pedantic lint compliance enforced across the tree ([REF-258](/REF/issues/REF-258))
 - Docs: live-DB testing directives added to `CLAUDE.md` ([REF-275](/REF/issues/REF-275))

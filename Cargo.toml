@@ -65,7 +65,7 @@ postgres-native-tls = { version = "0.5", optional = true }  # TLS for tokio-post
 native-tls = { version = "0.2", optional = true, features = ["vendored"] }   # Platform TLS (OpenSSL/Secure Transport/SChannel)
 mysql_async = { version = "0.34", default-features = false, features = ["default-rustls"], optional = true }     # MySQL native async driver
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }  # SQLite native driver with bundled lib
-duckdb = { version = "=1.10506.0", features = ["bundled"], optional = true }  # Pinned: newer duckdb-rs (1.20000.0) fails to link on aarch64 (GNU ld archive order, duckdb-rs #920); unpin after the #923 fix ships
+duckdb = { version = "1.20000.1", features = ["bundled"], optional = true }  # >=1.20000.1 carries duckdb-rs #923 (aarch64 static-extension link fix); 1.20000.0 is broken there (#920), so do not drop below 1.20000.1
 
 # BLOB encoding (Base64) - used by SQLite and PostgreSQL
 base64 = "0.22"
