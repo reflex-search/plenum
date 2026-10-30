@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- MySQL: bump `mysql_async` to `0.37` so it no longer pulls the vulnerable transitive `zstd` 0.13 / `zstd-safe` 7 crates; this clears the `cargo audit` failure ([RUSTSEC-2026-0391](https://rustsec.org/advisories/RUSTSEC-2026-0391), [RUSTSEC-2026-0398](https://rustsec.org/advisories/RUSTSEC-2026-0398), [RUSTSEC-2026-0403](https://rustsec.org/advisories/RUSTSEC-2026-0403))
 - MCP `connect` rejects inline plaintext `password` with `CAPABILITY_VIOLATION` ([REF-298](/REF/issues/REF-298))
 - All MCP tools reject `password_command` with `CAPABILITY_VIOLATION`: it executes a shell command, so accepting it from tool arguments gave agents arbitrary command execution. The CLI flag and wizard still offer it.
 
