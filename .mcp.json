@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "plenum": {
+      "type": "stdio",
+      "command": "/home/brad/Code/personal/plenum/plenum",
+      "args": [
+        "mcp",
+        "--project-path",
+        "/home/brad/Code/personal/plenum"
+      ],
+      "env": {}
+    }
+  }
+}
