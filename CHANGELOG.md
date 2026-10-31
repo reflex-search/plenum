@@ -41,16 +41,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- MySQL: bump `mysql_async` to `0.37` so it no longer pulls the vulnerable transitive `zstd` 0.13 / `zstd-safe` 7 crates; this clears the `cargo audit` failure ([RUSTSEC-2026-0391](https://rustsec.org/advisories/RUSTSEC-2026-0391), [RUSTSEC-2026-0398](https://rustsec.org/advisories/RUSTSEC-2026-0398), [RUSTSEC-2026-0403](https://rustsec.org/advisories/RUSTSEC-2026-0403))
 - MCP `connect` rejects inline plaintext `password` with `CAPABILITY_VIOLATION` ([REF-298](/REF/issues/REF-298))
 - All MCP tools reject `password_command` with `CAPABILITY_VIOLATION`: it executes a shell command, so accepting it from tool arguments gave agents arbitrary command execution. The CLI flag and wizard still offer it.
 
 ### Changed
 
-- DuckDB: unpinned to `1.20000.1` now that duckdb-rs #923 fixes aarch64 static-extension linking; 2.1.0 pinned `=1.10506.0` to dodge the broken 1.20000.0 ([duckdb-rs #920](https://github.com/duckdb/duckdb-rs/issues/920))
 - SQLite: tighten read-only `PRAGMA` allowlist ([REF-44](/REF/issues/REF-44))
 - Code style: `rustfmt` and `clippy` pedantic lint compliance enforced across the tree ([REF-258](/REF/issues/REF-258))
 - Docs: live-DB testing directives added to `CLAUDE.md` ([REF-275](/REF/issues/REF-275))
+
+---
+
+## [2.1.1] - 2026-10-30
+
+### Security
+
+- MySQL: bump `mysql_async` to `0.37` so it no longer pulls the vulnerable transitive `zstd` 0.13 / `zstd-safe` 7 crates; this clears the `cargo audit` failure ([RUSTSEC-2026-0391](https://rustsec.org/advisories/RUSTSEC-2026-0391), [RUSTSEC-2026-0398](https://rustsec.org/advisories/RUSTSEC-2026-0398), [RUSTSEC-2026-0403](https://rustsec.org/advisories/RUSTSEC-2026-0403))
+
+### Changed
+
+- DuckDB: unpinned to `1.20000.1` now that duckdb-rs #923 fixes aarch64 static-extension linking; 2.1.0 pinned `=1.10506.0` to dodge the broken 1.20000.0 ([duckdb-rs #920](https://github.com/duckdb/duckdb-rs/issues/920))
 
 ---
 
