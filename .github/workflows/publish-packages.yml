@@ -1,12 +1,12 @@
 name: Publish Packages
 
 on:
-  # No `branches` filter: the Release workflow is triggered by a version tag
-  # push, so its run reports head_branch = "vX.Y.Z" (not "main"), and a
-  # `branches: [main]` filter would never match. The jobs below guard instead.
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
+  # Fire when the GitHub Release is published. cargo-dist creates that release
+  # after a successful version-tag build. crates.io Trusted Publishing REJECTS
+  # the `workflow_run` trigger ("does not support the workflow_run event"), so
+  # we key off `release`, which it accepts, instead.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -21,9 +21,8 @@ jobs:
   publish-crates-io:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    # Auto: only after a successful Release triggered by a version-tag push
-    # (excludes the Release workflow's pull_request runs). Or manual dispatch.
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'v')) }}
+    # Auto: when the GitHub Release is published. Or manual dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'release' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -42,9 +41,8 @@ jobs:
   publish-npm:
     name: Publish to NPM
     runs-on: ubuntu-latest
-    # Auto: only after a successful Release triggered by a version-tag push
-    # (excludes the Release workflow's pull_request runs). Or manual dispatch.
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'v')) }}
+    # Auto: when the GitHub Release is published. Or manual dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'release' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -53,10 +51,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.tag }}"
-          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
-            # Extract tag from the Release workflow that triggered us
-            TAG="${{ github.event.workflow_run.head_branch }}"
           else
+            # release event: the published release's tag
             TAG="${{ github.event.release.tag_name }}"
           fi
 
